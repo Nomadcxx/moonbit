@@ -146,13 +146,10 @@ func initialModel() Model {
 	}
 
 	// Check if we have existing scan results
-	if cache, err := m.loadSessionCache(); err == nil {
-		m.totalSize = cache.TotalSize
-		m.totalFiles = cache.TotalFiles
-		m.hasCache = true
-
-		// Convert cache results to UI format
-		for _, file := range cache.ScanResults.Files {
+	if m.loadSessionCache() {
+		// Cache already loaded in loadSessionCache method
+		// Already populated m.totalSize, m.totalFiles, m.hasCache, m.scanResults
+	}
 			m.scanResults = append(m.scanResults, scanResult{
 				Category: "Total Cleanable",
 				Files:    1,
@@ -337,7 +334,8 @@ func (m Model) navigateToThemes() (Model, tea.Cmd) {
 
 // Menu action handlers that integrate with our comprehensive scanning system
 func (m Model) handleCleanFiles() (Model, tea.Cmd) {
-	if !m.hasCache {
+	// Check if we have scan results
+	if !m.loadSessionCache() {
 		m.mode = ModeScan
 		m.scanState.currentPhase = "No scan results found. Please run a scan first."
 		return m, nil
@@ -351,7 +349,8 @@ func (m Model) handleCleanFiles() (Model, tea.Cmd) {
 }
 
 func (m Model) handleDryRun() (Model, tea.Cmd) {
-	if !m.hasCache {
+	// Check if we have scan results
+	if !m.loadSessionCache() {
 		m.mode = ModeScan
 		m.scanState.currentPhase = "No scan results found. Please run a scan first."
 		return m, nil
@@ -365,7 +364,8 @@ func (m Model) handleDryRun() (Model, tea.Cmd) {
 }
 
 func (m Model) handleShowResults() (Model, tea.Cmd) {
-	if !m.hasCache {
+	// Check if we have scan results
+	if !m.loadSessionCache() {
 		m.mode = ModeScan
 		m.scanState.currentPhase = "No scan results found. Please run a scan first."
 		return m, nil
@@ -377,6 +377,73 @@ func (m Model) handleShowResults() (Model, tea.Cmd) {
 	m.scanState.currentPhase = fmt.Sprintf("Scan completed! Found %d files (%s)",
 		m.totalFiles, m.humanizeBytes(m.totalSize))
 	return m, nil
+}
+
+// loadSessionCache loads scan results from CLI session cache
+func (m *Model) loadSessionCache() bool {
+	// Check for existing session cache
+	cache, err := m.getSessionCache()
+	if err != nil {
+		m.hasCache = false
+		return false
+	}
+
+	// Populate model with cache data
+	m.totalSize = cache.TotalSize
+	m.totalFiles = cache.TotalFiles
+	m.hasCache = true
+
+	// Convert scan results to UI format
+	m.scanResults = make([]scanResult, len(cache.ScanResults.Files))
+	for i, file := range cache.ScanResults.Files {
+		m.scanResults[i] = scanResult{
+			Category: "Cleanable",
+			Files:    1,
+			Size:     m.humanizeBytes(file.Size),
+			Duration: "",
+			Status:   "Found",
+		}
+	}
+
+	return true
+}
+
+// getSessionCache loads the scan results from the CLI cache
+func (m *Model) getSessionCache() (*SessionCache, error) {
+	cachePath := m.getSessionCachePath()
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var cache SessionCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, err
+	}
+
+	return &cache, nil
+}
+
+// getSessionCachePath returns the path to session cache
+func (m *Model) getSessionCachePath() string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
+}
+
+// Execute cleaning operation
+func (m *Model) executeClean(dryRun bool) error {
+	// This would call the CLI cleaning functions
+	// For now, show a message that CLI cleaning is available
+	m.scanState.currentPhase = fmt.Sprintf("%s cleaning via CLI: moonbit clean --%s",
+		map[bool]string{true: "Dry run preview", false: "Executing"}[dryRun],
+		map[bool]string{true: "dry-run", false: "force"}[dryRun])
+	return nil
+}
+
+// getSessionCachePath returns the path to session cache
+func (m *Model) getSessionCachePath() string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
 }
 
 // Execute cleaning operation
