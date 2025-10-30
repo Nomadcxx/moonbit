@@ -123,3 +123,4 @@ moonbit_overview.md
 opencode.json
 test_runner.go
 clean_session.go
+.beads/
