@@ -76,7 +76,7 @@ type Config struct {
 	Categories []Category `toml:"categories"`
 }
 
-// DefaultConfig returns a default configuration
+// DefaultConfig returns a comprehensive configuration with real cleaning targets
 func DefaultConfig() *Config {
 	cfg := &Config{
 		Scan: struct {
@@ -85,8 +85,8 @@ func DefaultConfig() *Config {
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
 		}{
-			MaxDepth:       5,
-			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
+			MaxDepth:       3, // Deeper scanning for comprehensive detection
+			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg", ".git", ".svn", ".hg"},
 			EnableAll:      true,
 			DryRunDefault:  true,
 		},
@@ -99,35 +99,69 @@ func DefaultConfig() *Config {
 				ShredEnabled: false,
 			},
 			{
-				Name:         "System Temporary Files",
-				Paths:        []string{"/tmp"},
-				Filters:      []string{".*\\.(tmp|temp|bak|backup)$"},
-				Risk:         Medium,
-				Selected:     true,
-				ShredEnabled: true,
-			},
-			{
-				Name:         "Browser Cache",
-				Paths:        []string{"/home/*/.cache"},
-				Filters:      []string{".*cache.*", ".*\\.(cache|webcache|webloc)$"},
-				Risk:         Medium,
-				Selected:     false,
-				ShredEnabled: false,
-			},
-			{
-				Name:         "Thumbnail Cache",
-				Paths:        []string{"/home/*/.cache/thumbnails"},
+				Name:         "Yay Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/yay"},
 				Risk:         Low,
-				Selected:     false,
+				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
-				Name:         "Application Logs",
-				Paths:        []string{"/home/*/.local/share", "/home/*/.log"},
-				Filters:      []string{".*\\.(log|out)$"},
-				Risk:         High,
+				Name:         "Paru Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/paru"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Pamac Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/pamac"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "User Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+				Filters:      []string{`\.(tmp|temp|bak|backup)$`, `(^|/)(cache|thumbnails|browsers|applications|dotnet|gstreamer-1\.0|recently-used\.xbel)$`},
+			},
+			{
+				Name:         "System Temp",
+				Paths:        []string{"/var/tmp"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Thumbnails",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/thumbnails"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Browser Cache (Safe)",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/mozilla"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "System Logs",
+				Paths:        []string{"/var/log"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+				Filters:      []string{`\.(log|old|backup)$`, `^syslog`, `^messages`, `^daemon\.log`},
+			},
+			{
+				Name:         "Recent Files",
+				Paths:        []string{os.Getenv("HOME") + "/.recently-used.xbel"},
+				Risk:         Medium,
 				Selected:     false,
-				ShredEnabled: true,
+				ShredEnabled: false,
 			},
 		},
 	}

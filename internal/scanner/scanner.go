@@ -9,7 +9,71 @@ import (
 
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/karrick/godirwalk"
+	"github.com/spf13/afero"
 )
+
+// FileSystem provides an abstraction for filesystem operations
+type FileSystem interface {
+	Stat(name string) (os.FileInfo, error)
+	Walk(root string, walkFunc filepath.WalkFunc) error
+	ReadDir(dirname string) ([]os.FileInfo, error)
+}
+
+// OsFileSystem implements FileSystem for real OS filesystem using godirwalk
+type OsFileSystem struct{}
+
+func (fs *OsFileSystem) Stat(name string) (os.FileInfo, error) {
+	return os.Stat(name)
+}
+
+func (fs *OsFileSystem) Walk(root string, walkFunc filepath.WalkFunc) error {
+	return godirwalk.Walk(root, &godirwalk.Options{
+		FollowSymbolicLinks: false,
+		AllowNonDirectory:   false,
+		Unsorted:            false,
+		Callback: func(osPathname string, de *godirwalk.Dirent) error {
+			info, err := os.Stat(osPathname)
+			if err != nil {
+				return walkFunc(osPathname, nil, err)
+			}
+			return walkFunc(osPathname, info, nil)
+		},
+	})
+}
+
+func (fs *OsFileSystem) ReadDir(dirname string) ([]os.FileInfo, error) {
+	entries, err := afero.ReadDir(afero.NewOsFs(), dirname)
+	if err != nil {
+		return nil, err
+	}
+	// Convert []afero.FileInfo to []os.FileInfo
+	result := make([]os.FileInfo, len(entries))
+	for i, entry := range entries {
+		result[i] = entry
+	}
+	return result, nil
+}
+
+// AferoFileSystem implements FileSystem for afero filesystems
+type AferoFileSystem struct {
+	fs afero.Fs
+}
+
+func NewAferoFileSystem(fs afero.Fs) *AferoFileSystem {
+	return &AferoFileSystem{fs: fs}
+}
+
+func (fs *AferoFileSystem) Stat(name string) (os.FileInfo, error) {
+	return fs.fs.Stat(name)
+}
+
+func (fs *AferoFileSystem) Walk(root string, walkFunc filepath.WalkFunc) error {
+	return afero.Walk(fs.fs, root, walkFunc)
+}
+
+func (fs *AferoFileSystem) ReadDir(dirname string) ([]os.FileInfo, error) {
+	return afero.ReadDir(fs.fs, dirname)
+}
 
 // ScanProgress represents progress updates during scanning
 type ScanProgress struct {
@@ -39,6 +103,7 @@ type Scanner struct {
 	cfg     *config.Config
 	filter  *regexp.Regexp
 	workers int
+	fs      FileSystem
 }
 
 // NewScanner creates a new scanner instance
@@ -59,6 +124,29 @@ func NewScanner(cfg *config.Config) *Scanner {
 		cfg:     cfg,
 		filter:  filter,
 		workers: 4, // Parallel workers
+		fs:      &OsFileSystem{},
+	}
+}
+
+// NewScannerWithFs creates a new scanner instance with a specific filesystem
+func NewScannerWithFs(cfg *config.Config, fs FileSystem) *Scanner {
+	// Compile filter patterns
+	filterStr := "("
+	for i, pattern := range cfg.Scan.IgnorePatterns {
+		if i > 0 {
+			filterStr += "|"
+		}
+		filterStr += pattern
+	}
+	filterStr += ")"
+
+	filter := regexp.MustCompile(filterStr)
+
+	return &Scanner{
+		cfg:     cfg,
+		filter:  filter,
+		workers: 4, // Parallel workers
+		fs:      fs,
 	}
 }
 
@@ -115,8 +203,8 @@ func (s *Scanner) scanPath(ctx context.Context, pathPattern string, stats *confi
 
 // WalkDirectory performs the actual directory walking
 func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *config.Category, progressCh chan<- ScanMsg) error {
-	// Check if path exists and is readable
-	if info, err := os.Stat(rootPath); err != nil {
+	// Check if path exists and is readable using our filesystem
+	if info, err := s.fs.Stat(rootPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil // Skip non-existent paths silently
 		}
@@ -125,90 +213,62 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		return nil // Skip non-directories
 	}
 
-	// Create walker configuration using godirwalk.Options
-	options := &godirwalk.Options{
-		FollowSymbolicLinks: false,
-		AllowNonDirectory:   false,
-		Unsorted:          false,
-		Callback: func(osPathname string, de *godirwalk.Dirent) error {
-			// Check for context cancellation
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
+	// Use our filesystem abstraction to walk directories
+	return s.fs.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 
-			// Skip if matches ignore patterns
-			if s.filter.MatchString(osPathname) {
-				return nil
-			}
+		if err != nil {
+			return nil // Skip files we can't access
+		}
 
-			// Process file based on category filters
-			if s.shouldIncludeFile(osPathname, de, stats.Filters) {
-				// Get file info for size and mod time
-				fileInfo, err := os.Stat(osPathname)
-				if err != nil {
-					return nil // Skip files we can't stat
-				}
-				
-				fileEntry := config.FileInfo{
-					Path:    osPathname,
-					Size:    uint64(fileInfo.Size()),
-					ModTime: fileInfo.ModTime().Format(time.RFC3339),
-				}
-				
-				stats.Files = append(stats.Files, fileEntry)
-				stats.Size += uint64(fileInfo.Size())
-				stats.FileCount++
-				
-				// Send progress update every 100 files
-				if stats.FileCount%100 == 0 {
-					progressCh <- ScanMsg{
-						Progress: &ScanProgress{
-							Path:        osPathname,
-							Bytes:       stats.Size,
-							FilesScanned: stats.FileCount,
-							CurrentDir:  filepath.Dir(osPathname),
-						},
-					}
-				}
-			}
-
-				fileEntry := config.FileInfo{
-					Path:    osPathname,
-					Size:    uint64(fileInfo.Size()),
-					ModTime: fileInfo.ModTime().Format(time.RFC3339),
-				}
-
-				stats.Files = append(stats.Files, fileEntry)
-				stats.Size += uint64(fileInfo.Size())
-				stats.FileCount++
-
-				// Send progress update every 100 files
-				if stats.FileCount%100 == 0 {
-					progressCh <- ScanMsg{
-						Progress: &ScanProgress{
-							Path:        osPathname,
-							Bytes:       stats.Size,
-							FilesScanned: stats.FileCount,
-							CurrentDir:  filepath.Dir(osPathname),
-						},
-					}
-				}
-			}
-
+		// Skip if matches ignore patterns
+		if s.filter.MatchString(path) {
 			return nil
-		},
-	}
+		}
 
-	// Walk directory with error handling
-	return godirwalk.Walk(rootPath, options)
+		// Skip directories for now (focus on files)
+		if info.IsDir() {
+			return nil
+		}
+
+		// Process file based on category filters
+		if s.shouldIncludeFile(path, info, stats.Filters) {
+			fileEntry := config.FileInfo{
+				Path:    path,
+				Size:    uint64(info.Size()),
+				ModTime: info.ModTime().Format(time.RFC3339),
+			}
+
+			stats.Files = append(stats.Files, fileEntry)
+			stats.Size += uint64(info.Size())
+			stats.FileCount++
+
+			// Send progress update every 100 files
+			if stats.FileCount%100 == 0 {
+				progressCh <- ScanMsg{
+					Progress: &ScanProgress{
+						Path:         path,
+						Bytes:        stats.Size,
+						FilesScanned: stats.FileCount,
+						CurrentDir:   filepath.Dir(path),
+					},
+				}
+			}
+		}
+
+		return nil
+	})
 }
 
 // ShouldIncludeFile determines if a file should be included based on filters
-func (s *Scanner) shouldIncludeFile(path string, de *godirwalk.Dirent, filters []string) bool {
+func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, filters []string) bool {
 	// Skip directories for now (focus on files)
-	if de.IsDir() {
+	if info.IsDir() {
 		return false
 	}
 

@@ -1,4 +1,4 @@
-package cli
+package main
 
 import (
 	"context"
@@ -10,12 +10,6 @@ import (
 
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
-	"github.com/Nomadcxx/moonbit/internal/ui"
-	"github.com/spf13/cobra"
-)
-
-var (
-	dryRun bool
 )
 
 // SessionCache stores scan results for the current session
@@ -26,84 +20,10 @@ type SessionCache struct {
 	ScannedAt   time.Time        `json:"scanned_at"`
 }
 
-var rootCmd = &cobra.Command{
-	Use:   "moonbit",
-	Short: "MoonBit – system cleaner TUI",
-	Long: `MoonBit is a Go-based TUI application for system cleaning and privacy scrubbing.
-It provides interactive scanning, previewing, and selective deletion of temporary files,
-caches, logs, and application data on Linux (Arch-primary).
-
-Features:
-• Interactive TUI with beautiful theming (sysc-greet inspired)
-• Safe dry-runs and undo mechanisms
-• Parallel scanning with progress tracking
-• Multiple cleaning categories (Pacman cache, temporary files, browser cache, etc.)
-• JSON output for automation and launcher integration`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// Start Bubble Tea UI with MoonBit model
-		ui.Start()
-	},
-}
-
-var scanCmd = &cobra.Command{
-	Use:   "scan",
-	Short: "Scan system for cleanable files",
-	Long:  "Scan the system for cleanable files and cache locations",
-	Run: func(cmd *cobra.Command, args []string) {
-		// Check if we need sudo for system-wide scanning
-		if requiresSudo() {
-			fmt.Println("⚠️  WARNING: This scan requires sudo access for some locations.")
-			fmt.Println("   Run with: sudo moonbit scan")
-			fmt.Println("   Continuing with user-space scan only...")
-			fmt.Println()
-		}
-
-		ScanAndSave()
-	},
-}
-
-var cleanCmd = &cobra.Command{
-	Use:   "clean",
-	Short: "Clean discovered files",
-	Long:  "Clean files discovered in the last scan",
-	Run: func(cmd *cobra.Command, args []string) {
-		// Check if we need sudo for system-wide cleaning
-		if requiresSudo() && !dryRun {
-			fmt.Println("⚠️  WARNING: Cleaning system locations requires sudo.")
-			fmt.Println("   Run with: sudo moonbit clean --force")
-			fmt.Println("   Continuing with dry-run mode...")
-			dryRun = true
-		}
-
-		CleanSession(dryRun)
-	},
-}
-
-// requiresSudo checks if any of the scan targets require root access
-func requiresSudo() bool {
-	systemPaths := []string{
-		"/var/cache/pacman/pkg",
-		"/var/tmp",
-		"/var/log",
-	}
-
-	for _, path := range systemPaths {
-		if _, err := os.Stat(path); err == nil {
-			return true // At least one system path exists
-		}
-	}
-	return false
-}
-
 // ScanAndSave runs a comprehensive scan and saves results to cache
-func ScanAndSave() error {
+func ScanAndSave(cfg *config.Config) (*SessionCache, error) {
 	fmt.Println("🧹 MoonBit Comprehensive System Scan")
 	fmt.Println("=====================================")
-
-	cfg, err := config.Load("")
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
 
 	// Create scanner
 	s := scanner.NewScanner(cfg)
@@ -115,50 +35,61 @@ func ScanAndSave() error {
 	scanResults.Name = "Total Cleanable"
 	scanResults.Files = []config.FileInfo{}
 
-	// Check available categories dynamically
+	// Scan each category
+	allCategories := []config.Category{}
+
+	// Detect available categories dynamically
 	availableCategories := detectAvailableCategories()
-
-	// Create combined category list
-	allCategories := append([]config.Category{}, cfg.Categories...)
-	allCategories = append(allCategories, availableCategories...)
-
-	for i, category := range allCategories {
-		// Check if this category path exists (for categories from config)
+	for _, cat := range cfg.Categories {
+		// Check if this category path exists
 		exists := false
-		for _, path := range category.Paths {
+		for _, path := range cat.Paths {
 			if _, err := os.Stat(path); err == nil {
 				exists = true
 				break
 			}
 		}
+		if exists {
+			allCategories = append(allCategories, cat)
+		}
+	}
 
-		if exists || category.Name == "Thumbnail Cache" {
-			fmt.Printf("🔍 Scanning %s (%d/%d)...\n", category.Name, i+1, len(allCategories))
+	if len(availableCategories) > 0 {
+		allCategories = append(allCategories, availableCategories...)
+	}
 
-			progressCh := make(chan scanner.ScanMsg, 10)
-			go s.ScanCategory(context.Background(), &category, progressCh)
+	// Add detected categories
+	for _, category := range availableCategories {
+		fmt.Printf("📁 Found %s: %v\n", category.Name, category.Paths)
+	}
 
-			// Collect results for this category
-			for msg := range progressCh {
-				if msg.Complete != nil {
-					fmt.Printf("   ✅ Found %d files (%s) in %s\n",
-						msg.Complete.Stats.FileCount,
-						humanizeBytes(msg.Complete.Stats.Size),
-						category.Name)
+	// Scan each category
+	progressCh := make(chan scanner.ScanMsg, 100)
 
-					// Add to totals
-					totalSize += msg.Complete.Stats.Size
-					totalFiles += msg.Complete.Stats.FileCount
-					scanResults.Files = append(scanResults.Files, msg.Complete.Stats.Files...)
-					break
-				}
-				if msg.Error != nil {
-					fmt.Printf("   ❌ Error scanning %s: %v\n", category.Name, msg.Error)
-					break
-				}
+	for i, category := range allCategories {
+		fmt.Printf("🔍 Scanning %s (%d/%d)...\n", category.Name, i+1, len(allCategories))
+
+		go s.ScanCategory(context.Background(), &category, progressCh)
+
+		// Collect results for this category
+		for msg := range progressCh {
+			if msg.Complete != nil {
+				fmt.Printf("   ✅ Found %d files (%s) in %s\n",
+					msg.Complete.Stats.FileCount,
+					humanizeBytes(msg.Complete.Stats.Size),
+					category.Name)
+
+				// Add to totals
+				totalSize += msg.Complete.Stats.Size
+				totalFiles += msg.Complete.Stats.FileCount
+				scanResults.Files = append(scanResults.Files, msg.Complete.Stats.Files...)
+
+				break // Move to next category
 			}
-		} else {
-			fmt.Printf("⚠️  Skipping %s (path not found)\n", category.Name)
+			if msg.Error != nil {
+				fmt.Printf("   ❌ Error scanning %s: %v\n", category.Name, msg.Error)
+				break
+			}
 		}
 
 		// Small delay between scans
@@ -175,7 +106,7 @@ func ScanAndSave() error {
 
 	// Save to cache file
 	if err := saveSessionCache(cache); err != nil {
-		return fmt.Errorf("failed to save session cache: %w", err)
+		return nil, fmt.Errorf("failed to save session cache: %w", err)
 	}
 
 	fmt.Println("\n📊 SCAN RESULTS")
@@ -184,7 +115,7 @@ func ScanAndSave() error {
 	fmt.Printf("💾 Total space to save: %s\n", humanizeBytes(totalSize))
 	fmt.Printf("⏱️  Scan completed at: %s\n", time.Now().Format("15:04:05"))
 
-	return nil
+	return cache, nil
 }
 
 // CleanSession executes the actual cleaning based on session cache
@@ -258,6 +189,17 @@ func CleanSession(dryRun bool) error {
 func detectAvailableCategories() []config.Category {
 	var categories []config.Category
 
+	// Check for Docker images (if docker installed)
+	if _, err := os.Stat("/var/lib/docker"); err == nil {
+		// This is a simplified check - real implementation would use docker API
+		categories = append(categories, config.Category{
+			Name:     "Docker Images",
+			Paths:    []string{"/var/lib/docker"},
+			Risk:     config.Low,
+			Selected: false, // Default off - more risky
+		})
+	}
+
 	// Check for thumbnails directory
 	if _, err := os.Stat(os.Getenv("HOME") + "/.cache/thumbnails"); err == nil {
 		categories = append(categories, config.Category{
@@ -322,19 +264,5 @@ func humanizeBytes(bytes uint64) string {
 		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(KB))
 	default:
 		return fmt.Sprintf("%d B", bytes)
-	}
-}
-
-func init() {
-	rootCmd.AddCommand(scanCmd)
-	rootCmd.AddCommand(cleanCmd)
-	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
-	cleanCmd.Flags().BoolVarP(&dryRun, "force", "f", false, "Actually delete files (disable dry-run)")
-}
-
-func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
 	}
 }
