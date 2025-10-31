@@ -253,6 +253,13 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 
 			// Collect results for this category
 			for msg := range progressCh {
+				// Note: Progress updates could be sent here but would need
+				// a different message type to avoid blocking the scan
+				if msg.Progress != nil {
+					// Progress update - could send intermediate message
+					// For now, we just track internally
+				}
+				
 				if msg.Complete != nil {
 					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
 					totalSize += msg.Complete.Stats.Size
@@ -633,13 +640,25 @@ func (m Model) renderScanProgress() string {
 	content.WriteString("\n\n")
 
 	// Current phase
-	content.WriteString(phaseStyle.Render(m.currentPhase))
+	phaseText := m.currentPhase
+	if m.scanActive {
+		elapsed := time.Since(m.scanStarted)
+		phaseText = fmt.Sprintf("%s (%.1fs elapsed)", m.currentPhase, elapsed.Seconds())
+	}
+	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress bar
+	// Progress bar (shows activity even without real-time updates)
 	progress := int(m.scanProgress * 50)
-	progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
-	content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
+	if progress == 0 && m.scanActive {
+		// Show animated bar while scanning
+		animFrame := int(time.Since(m.scanStarted).Seconds()) % 50
+		progressBar := strings.Repeat("░", animFrame) + "█" + strings.Repeat("░", 49-animFrame)
+		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] Scanning...", progressBar)))
+	} else {
+		progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
+		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
+	}
 	content.WriteString("\n\n")
 
 	return content.String()
