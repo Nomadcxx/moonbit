@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -72,6 +72,12 @@ type Model struct {
 	scanResults  *SessionCache
 	scanProgress float64
 	currentPhase string
+	scanError    string
+
+	// Clean state
+	cleanActive  bool
+	cleanStarted time.Time
+	cleanError   string
 
 	// Categories for selection
 	categories    []CategoryInfo
@@ -300,6 +306,8 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 
 	if !msg.Success {
 		m.currentPhase = "Scan failed: " + msg.Error
+		m.scanError = msg.Error
+		m.mode = ModeResults // Show error in results view
 		return m, nil
 	}
 
@@ -307,9 +315,11 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	if cache, err := m.loadSessionCache(); err == nil {
 		m.scanResults = cache
 		m.mode = ModeResults
+		m.scanError = "" // Clear any previous errors
 		m.parseScanResults(cache, msg.Categories)
 	} else {
 		m.currentPhase = "Failed to load scan results"
+		m.scanError = err.Error()
 	}
 
 	return m, nil
@@ -437,39 +447,82 @@ func (m Model) showConfirm() (tea.Model, tea.Cmd) {
 func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	m.mode = ModeClean
 	m.menuIndex = 0
+	m.cleanActive = true
+	m.cleanStarted = time.Now()
 	m.currentPhase = "Cleaning in progress..."
 
-	return m, func() tea.Msg {
-		return runCleanCmd()
-	}
+	return m, runCleanCmd(m.cfg, m.scanResults)
 }
 
-// runCleanCmd executes cleaning
-func runCleanCmd() tea.Msg {
-	cmd := exec.Command("moonbit", "clean", "--force")
-	output, err := cmd.CombinedOutput()
-
-	if err != nil {
-		return cleanCompleteMsg{
-			Success: false,
-			Error:   err.Error(),
-			Output:  string(output),
+// runCleanCmd executes cleaning using the cleaner package
+func runCleanCmd(cfg *config.Config, cache *SessionCache) tea.Cmd {
+	return func() tea.Msg {
+		if cache == nil || cache.ScanResults == nil {
+			return cleanCompleteMsg{
+				Success: false,
+				Error:   "No scan results available",
+			}
 		}
-	}
 
-	return cleanCompleteMsg{
-		Success: true,
-		Output:  string(output),
+		ctx := context.Background()
+		c := cleaner.NewCleaner(cfg)
+
+		progressCh := make(chan cleaner.CleanMsg, 10)
+		go c.CleanCategory(ctx, cache.ScanResults, false, progressCh)
+
+		var deletedFiles int
+		var deletedBytes uint64
+		var errors []string
+
+		// Process cleaning messages
+		for msg := range progressCh {
+			if msg.Complete != nil {
+				deletedFiles = msg.Complete.FilesDeleted
+				deletedBytes = msg.Complete.BytesFreed
+				errors = msg.Complete.Errors
+				break
+			}
+
+			if msg.Error != nil {
+				return cleanCompleteMsg{
+					Success: false,
+					Error:   msg.Error.Error(),
+				}
+			}
+		}
+
+		errorMsg := ""
+		if len(errors) > 0 {
+			errorMsg = fmt.Sprintf("%d files failed to delete", len(errors))
+		}
+
+		return cleanCompleteMsg{
+			Success:      true,
+			FilesDeleted: deletedFiles,
+			BytesFreed:   deletedBytes,
+			Error:        errorMsg,
+		}
 	}
 }
 
 // handleCleanComplete processes cleaning completion
 func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
+	m.cleanActive = false
+
 	if msg.Success {
 		m.mode = ModeComplete
-		m.currentPhase = "Cleaning completed successfully!"
+		m.cleanError = ""
+		if msg.Error != "" {
+			m.currentPhase = fmt.Sprintf("Cleaned %d files (%s) with some errors: %s",
+				msg.FilesDeleted, humanizeBytes(msg.BytesFreed), msg.Error)
+		} else {
+			m.currentPhase = fmt.Sprintf("Successfully cleaned %d files, freed %s",
+				msg.FilesDeleted, humanizeBytes(msg.BytesFreed))
+		}
 	} else {
 		m.currentPhase = "Cleaning failed: " + msg.Error
+		m.cleanError = msg.Error
+		m.mode = ModeResults // Return to results view on error
 	}
 	return m, nil
 }
@@ -600,7 +653,15 @@ func (m Model) renderResults() string {
 	content.WriteString(resultsHeaderStyle.Render("SCAN RESULTS"))
 	content.WriteString("\n\n")
 
-	if m.scanResults != nil {
+	// Show error if present
+	if m.scanError != "" {
+		content.WriteString(errorStyle.Render("⚠️  Error: " + m.scanError))
+		content.WriteString("\n\n")
+		content.WriteString(nextActionStyle.Render("Press Esc to return to main menu"))
+		return content.String()
+	}
+
+	if m.scanResults != nil && len(m.categories) > 0 {
 		// Summary stats
 		summary := fmt.Sprintf("Found %d cleanable files (%s)",
 			m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize))
@@ -625,6 +686,8 @@ func (m Model) renderResults() string {
 		content.WriteString(nextActionStyle.Render("Press Enter to select categories for cleaning"))
 	} else {
 		content.WriteString(errorStyle.Render("No scan results available"))
+		content.WriteString("\n\n")
+		content.WriteString(nextActionStyle.Render("Press Esc to return to main menu and run a scan"))
 	}
 
 	return content.String()
@@ -825,9 +888,11 @@ type scanCompleteMsg struct {
 }
 
 type cleanCompleteMsg struct {
-	Success bool
-	Error   string
-	Output  string
+	Success      bool
+	Error        string
+	Output       string
+	FilesDeleted int
+	BytesFreed   uint64
 }
 
 // Style definitions based on sysc-greet patterns

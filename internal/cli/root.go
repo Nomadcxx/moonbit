@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/ui"
@@ -75,7 +76,10 @@ var cleanCmd = &cobra.Command{
 			dryRun = true
 		}
 
-		CleanSession(dryRun)
+		if err := CleanSession(dryRun); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	},
 }
 
@@ -203,6 +207,15 @@ func CleanSession(dryRun bool) error {
 		return nil
 	}
 
+	// Load config and create cleaner
+	cfg, err := config.Load("")
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	c := cleaner.NewCleaner(cfg)
+	ctx := context.Background()
+
 	if dryRun {
 		fmt.Printf("🔍 DRY RUN - Would delete %d files (%s)\n",
 			cache.TotalFiles, humanizeBytes(cache.TotalSize))
@@ -219,33 +232,58 @@ func CleanSession(dryRun bool) error {
 		return nil
 	}
 
-	// Actual cleaning
+	// Actual cleaning using cleaner package
 	fmt.Printf("🗑️  Deleting %d files (%s)...\n",
 		cache.TotalFiles, humanizeBytes(cache.TotalSize))
 
+	progressCh := make(chan cleaner.CleanMsg, 10)
+	go c.CleanCategory(ctx, cache.ScanResults, dryRun, progressCh)
+
 	var deletedBytes uint64
 	var deletedFiles int
+	var errors []string
 
-	for _, file := range cache.ScanResults.Files {
-		if err := os.Remove(file.Path); err != nil {
-			fmt.Printf("   ⚠️  Failed to delete %s: %v\n", file.Path, err)
-			continue
+	// Process cleaning messages
+	for msg := range progressCh {
+		if msg.Progress != nil {
+			// Progress update every 100 files
+			if msg.Progress.FilesProcessed%100 == 0 && msg.Progress.FilesProcessed > 0 {
+				fmt.Printf("   Progress: %d/%d files (%s)\n",
+					msg.Progress.FilesProcessed,
+					msg.Progress.TotalFiles,
+					humanizeBytes(msg.Progress.BytesFreed))
+			}
 		}
 
-		deletedBytes += file.Size
-		deletedFiles++
+		if msg.Complete != nil {
+			deletedFiles = msg.Complete.FilesDeleted
+			deletedBytes = msg.Complete.BytesFreed
+			errors = msg.Complete.Errors
 
-		// Progress update every 100 files
-		if deletedFiles%100 == 0 {
-			fmt.Printf("   Progress: %d/%d files (%s)\n",
-				deletedFiles, len(cache.ScanResults.Files),
-				humanizeBytes(deletedBytes))
+			if msg.Complete.BackupCreated {
+				fmt.Printf("   📦 Backup created: %s\n", msg.Complete.BackupPath)
+			}
+			break
+		}
+
+		if msg.Error != nil {
+			return fmt.Errorf("cleaning failed: %w", msg.Error)
 		}
 	}
 
 	fmt.Printf("\n✅ CLEANING COMPLETE!\n")
 	fmt.Printf("   🗑️  Deleted: %d files\n", deletedFiles)
 	fmt.Printf("   💾 Freed up: %s\n", humanizeBytes(deletedBytes))
+
+	if len(errors) > 0 {
+		fmt.Printf("   ⚠️  Errors: %d files could not be deleted\n", len(errors))
+		if len(errors) <= 5 {
+			for _, err := range errors {
+				fmt.Printf("      - %s\n", err)
+			}
+		}
+	}
+
 	fmt.Printf("   ⚡ Scan data cleared\n")
 
 	// Clear session cache
