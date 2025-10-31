@@ -152,7 +152,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanCompleteMsg:
 		return m.handleScanComplete(msg)
 	case cleanCompleteMsg:
-		return m.handleCleanComplete(msg)
+		fmt.Fprintf(os.Stderr, "DEBUG: cleanCompleteMsg received, success=%v, error=%s\n", msg.Success, msg.Error)
+		newModel, cmd := m.handleCleanComplete(msg)
+		fmt.Fprintf(os.Stderr, "DEBUG: After handleCleanComplete, mode=%s\n", newModel.(Model).mode)
+		return newModel, cmd
 	}
 
 	return m, nil
@@ -631,9 +634,11 @@ func runCleanCmd(cfg *config.Config, cache *SessionCache) tea.Cmd {
 
 // handleCleanComplete processes cleaning completion
 func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
+	fmt.Fprintf(os.Stderr, "DEBUG: handleCleanComplete called, success=%v\n", msg.Success)
 	m.cleanActive = false
 
 	if msg.Success {
+		fmt.Fprintf(os.Stderr, "DEBUG: Clean successful, setting mode to ModeComplete\n")
 		m.mode = ModeComplete
 		m.cleanError = ""
 		m.cleanFilesDeleted = msg.FilesDeleted
