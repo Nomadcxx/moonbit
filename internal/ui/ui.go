@@ -195,6 +195,13 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		case 3: // Exit
 			return m, tea.Quit
 		}
+	case ModeResults:
+		// Pressing Enter on results view goes to category selection
+		if m.scanResults != nil && len(m.categories) > 0 {
+			m.mode = ModeSelect
+			m.menuIndex = 0
+		}
+		return m, nil
 	case ModeConfirm:
 		if m.menuIndex == 0 { // Cancel
 			m.mode = ModeSelect
@@ -203,18 +210,31 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 			return m.executeClean()
 		}
 	case ModeSelect:
-		if m.menuIndex == len(m.categories)+1 { // Back
+		totalOptions := len(m.categories) + 3 // categories + Select All + Clean + Back
+		
+		if m.menuIndex == totalOptions - 1 { // Back
 			m.mode = ModeResults
 			m.menuIndex = 0
-		} else if m.menuIndex == len(m.categories) { // Clean Selected
+		} else if m.menuIndex == totalOptions - 2 { // Clean Selected
 			return m.showConfirm()
-		} else {
-			// Toggle category selection
-			idx := m.menuIndex - 1
-			if idx >= 0 && idx < len(m.categories) {
-				m.categories[idx].Enabled = !m.categories[idx].Enabled
-				m.updateSelectedCount()
+		} else if m.menuIndex == len(m.categories) { // Select All
+			// Toggle select all
+			allSelected := true
+			for _, cat := range m.categories {
+				if !cat.Enabled {
+					allSelected = false
+					break
+				}
 			}
+			// If all selected, deselect all. Otherwise, select all
+			for i := range m.categories {
+				m.categories[i].Enabled = !allSelected
+			}
+			m.updateSelectedCount()
+		} else if m.menuIndex >= 0 && m.menuIndex < len(m.categories) {
+			// Toggle individual category
+			m.categories[m.menuIndex].Enabled = !m.categories[m.menuIndex].Enabled
+			m.updateSelectedCount()
 		}
 	}
 
@@ -788,35 +808,52 @@ func (m Model) renderSelect() string {
 			style = categoryItemSelectedStyle
 		}
 
-		indicator := "○"
+		indicator := "[ ]"
 		if cat.Enabled {
-			indicator = "✓"
+			indicator = "[✓]"
+		}
+
+		// Apply enabled style on top if checked
+		if cat.Enabled && i != m.menuIndex {
 			style = categoryItemEnabledStyle
 		}
 
-		line := fmt.Sprintf("%s%s %s (%s)", prefix, indicator, cat.Name, cat.Size)
+		line := fmt.Sprintf("%s%s %s - %s (%d files)", prefix, indicator, cat.Name, cat.Size, cat.Files)
 		content.WriteString(style.Render(line))
 		content.WriteString("\n")
 	}
 
-	// Action options
+	// Select All option
 	content.WriteString("\n")
-	if m.menuIndex == len(m.categories) {
-		content.WriteString(actionItemSelectedStyle.Render("> Clean Selected"))
+	selectAllIdx := len(m.categories)
+	if m.menuIndex == selectAllIdx {
+		content.WriteString(actionItemSelectedStyle.Render("> [Select All / Deselect All]"))
 	} else {
-		content.WriteString(actionItemStyle.Render("  Clean Selected"))
+		content.WriteString(actionItemStyle.Render("  [Select All / Deselect All]"))
+	}
+	content.WriteString("\n\n")
+
+	// Clean Selected button
+	cleanIdx := len(m.categories) + 1
+	if m.menuIndex == cleanIdx {
+		content.WriteString(actionItemSelectedStyle.Render("> ▶ Clean Selected"))
+	} else {
+		content.WriteString(actionItemStyle.Render("  ▶ Clean Selected"))
 	}
 	content.WriteString("\n")
-	if m.menuIndex == len(m.categories)+1 {
-		content.WriteString(actionItemSelectedStyle.Render("> Back"))
+	
+	// Back button
+	backIdx := len(m.categories) + 2
+	if m.menuIndex == backIdx {
+		content.WriteString(actionItemSelectedStyle.Render("> ← Back"))
 	} else {
-		content.WriteString(actionItemStyle.Render("  Back"))
+		content.WriteString(actionItemStyle.Render("  ← Back"))
 	}
 
 	// Selection info
 	selectedSize := m.calculateSelectedSize()
 	content.WriteString("\n\n")
-	content.WriteString(selectionInfoStyle.Render(fmt.Sprintf("Selected: %d categories (%s)", m.selectedCount, selectedSize)))
+	content.WriteString(selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize)))
 
 	return content.String()
 }
