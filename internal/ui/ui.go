@@ -166,7 +166,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.menuIndex--
 		}
 	case "down":
-		if m.menuIndex < len(m.menuOptions)-1 {
+		// Calculate max index based on current mode
+		maxIndex := len(m.menuOptions) - 1
+		if m.mode == ModeSelect {
+			// categories + Select All + Clean + Back
+			maxIndex = len(m.categories) + 2
+		} else if m.mode == ModeConfirm {
+			maxIndex = 1 // Cancel and Confirm
+		}
+		
+		if m.menuIndex < maxIndex {
 			m.menuIndex++
 		}
 	case "enter", " ":
@@ -376,12 +385,16 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	// Load scan results from cache
 	if cache, err := m.loadSessionCache(); err == nil {
 		m.scanResults = cache
-		m.mode = ModeResults
 		m.scanError = "" // Clear any previous errors
 		m.parseScanResults(cache, msg.Categories)
+		
+		// Go directly to category selection instead of results view
+		m.mode = ModeSelect
+		m.menuIndex = 0
 	} else {
 		m.currentPhase = "Failed to load scan results"
 		m.scanError = err.Error()
+		m.mode = ModeResults
 	}
 
 	return m, nil
@@ -810,7 +823,7 @@ func (m Model) renderSelect() string {
 
 		indicator := "[ ]"
 		if cat.Enabled {
-			indicator = "[✓]"
+			indicator = "[X]"
 		}
 
 		// Apply enabled style on top if checked
