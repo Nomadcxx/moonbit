@@ -174,28 +174,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up":
+		// Don't use up/down in confirm mode
+		if m.mode == ModeConfirm {
+			return m, nil
+		}
 		if m.menuIndex > 0 {
 			m.menuIndex--
 		}
 	case "down":
+		// Don't use up/down in confirm mode
+		if m.mode == ModeConfirm {
+			return m, nil
+		}
 		// Calculate max index based on current mode
 		maxIndex := len(m.menuOptions) - 1
 		if m.mode == ModeSelect {
 			// categories + Select All + Clean + Back
 			maxIndex = len(m.categories) + 2
-		} else if m.mode == ModeConfirm {
-			maxIndex = 1 // Cancel and Confirm
 		}
 		
 		if m.menuIndex < maxIndex {
 			m.menuIndex++
 		}
+	case "left":
+		// Use left/right for confirmation buttons
+		if m.mode == ModeConfirm {
+			if m.menuIndex > 0 {
+				m.menuIndex--
+			}
+		}
+	case "right":
+		// Use left/right for confirmation buttons
+		if m.mode == ModeConfirm {
+			if m.menuIndex < 1 {
+				m.menuIndex++
+			}
+		}
 	case "enter", " ":
+		fmt.Fprintf(os.Stderr, "DEBUG: Enter pressed, mode=%s, menuIndex=%d\n", m.mode, m.menuIndex)
 		// Handle complete mode specially
 		if m.mode == ModeComplete {
 			return m.handleCompleteKey()
 		}
-		return m.handleMenuSelect()
+		newModel, cmd := m.handleMenuSelect()
+		fmt.Fprintf(os.Stderr, "DEBUG: After handleMenuSelect, mode=%s\n", newModel.(Model).mode)
+		return newModel, cmd
 	case "esc":
 		if m.mode == ModeComplete {
 			return m.handleCompleteKey()
@@ -231,12 +254,17 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case ModeConfirm:
+		fmt.Fprintf(os.Stderr, "DEBUG: ModeConfirm handler, menuIndex=%d\n", m.menuIndex)
 		if m.menuIndex == 0 { // Cancel
+			fmt.Fprintf(os.Stderr, "DEBUG: Cancel selected\n")
 			m.mode = ModeSelect
 			m.menuIndex = 0
 			return m, nil
 		} else { // Confirm (menuIndex == 1)
-			return m.executeClean()
+			fmt.Fprintf(os.Stderr, "DEBUG: Confirm selected, calling executeClean\n")
+			newModel, cmd := m.executeClean()
+			fmt.Fprintf(os.Stderr, "DEBUG: After executeClean, mode=%s\n", newModel.(Model).mode)
+			return newModel, cmd
 		}
 	case ModeSelect:
 		totalOptions := len(m.categories) + 3 // categories + Select All + Clean + Back
