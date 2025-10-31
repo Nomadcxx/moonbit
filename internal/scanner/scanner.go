@@ -226,8 +226,11 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 			return nil // Skip files we can't access
 		}
 
-		// Skip if matches ignore patterns
+		// Skip if matches ignore patterns (FIXED: was inverted)
 		if s.filter.MatchString(path) {
+			if info.IsDir() {
+				return filepath.SkipDir // Skip entire directory if it matches ignore pattern
+			}
 			return nil
 		}
 
@@ -272,19 +275,23 @@ func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, filters []str
 		return false
 	}
 
-	// Apply category-specific filters
+	// Apply category-specific filters (FIXED: OR logic, not AND)
 	if len(filters) > 0 {
+		// File must match at least one filter to be included
 		for _, filter := range filters {
 			matched, err := regexp.MatchString(filter, filepath.Base(path))
 			if err != nil {
 				continue // Skip invalid patterns
 			}
-			if !matched {
-				return false // File doesn't match category filter
+			if matched {
+				return true // File matches this filter, include it
 			}
 		}
+		// No filters matched, exclude file
+		return false
 	}
 
+	// No filters specified, include all files
 	return true
 }
 

@@ -329,7 +329,15 @@ func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(cleanCmd)
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
-	cleanCmd.Flags().BoolVarP(&dryRun, "force", "f", false, "Actually delete files (disable dry-run)")
+	
+	// Force flag should set dryRun to false
+	var forceFlag bool
+	cleanCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Actually delete files (disable dry-run)")
+	cleanCmd.PreRun = func(cmd *cobra.Command, args []string) {
+		if forceFlag {
+			dryRun = false
+		}
+	}
 }
 
 func Execute() {

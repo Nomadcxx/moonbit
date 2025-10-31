@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/scanner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -208,27 +210,87 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.currentPhase = "Starting scan..."
 	m.scanOutput.Reset()
 
-	return m, func() tea.Msg {
-		return runScanCmd()
-	}
+	return m, runScanCmd(m.cfg)
 }
 
-// runScanCmd executes the scan
-func runScanCmd() tea.Msg {
-	cmd := exec.Command("moonbit", "scan")
-	output, err := cmd.CombinedOutput()
+// runScanCmd executes the scan using the scanner package directly
+func runScanCmd(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		s := scanner.NewScanner(cfg)
 
-	if err != nil {
-		return scanCompleteMsg{
-			Success: false,
-			Error:   err.Error(),
-			Output:  string(output),
+		var scannedCategories []config.Category
+		var totalSize uint64
+		var totalFiles int
+
+		// Scan each category
+		for _, category := range cfg.Categories {
+			if !category.Selected {
+				continue
+			}
+
+			// Check if category paths exist
+			exists := false
+			for _, path := range category.Paths {
+				if _, err := os.Stat(path); err == nil {
+					exists = true
+					break
+				}
+			}
+
+			if !exists {
+				continue
+			}
+
+			progressCh := make(chan scanner.ScanMsg, 10)
+			go s.ScanCategory(ctx, &category, progressCh)
+
+			// Collect results for this category
+			for msg := range progressCh {
+				if msg.Complete != nil {
+					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
+					totalSize += msg.Complete.Stats.Size
+					totalFiles += msg.Complete.Stats.FileCount
+					break
+				}
+				if msg.Error != nil {
+					return scanCompleteMsg{
+						Success: false,
+						Error:   msg.Error.Error(),
+					}
+				}
+			}
 		}
-	}
 
-	return scanCompleteMsg{
-		Success: true,
-		Output:  string(output),
+		// Save to cache
+		cache := &SessionCache{
+			ScanResults: &config.Category{
+				Name:  "Total Cleanable",
+				Files: []config.FileInfo{},
+			},
+			TotalSize:  totalSize,
+			TotalFiles: totalFiles,
+			ScannedAt:  time.Now(),
+		}
+
+		// Aggregate all files
+		for _, cat := range scannedCategories {
+			cache.ScanResults.Files = append(cache.ScanResults.Files, cat.Files...)
+		}
+
+		if err := saveSessionCache(cache); err != nil {
+			return scanCompleteMsg{
+				Success: false,
+				Error:   fmt.Sprintf("failed to save cache: %v", err),
+			}
+		}
+
+		return scanCompleteMsg{
+			Success:    true,
+			Categories: scannedCategories,
+			TotalSize:  totalSize,
+			TotalFiles: totalFiles,
+		}
 	}
 }
 
@@ -245,7 +307,7 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	if cache, err := m.loadSessionCache(); err == nil {
 		m.scanResults = cache
 		m.mode = ModeResults
-		m.parseScanResults(cache)
+		m.parseScanResults(cache, msg.Categories)
 	} else {
 		m.currentPhase = "Failed to load scan results"
 	}
@@ -258,7 +320,7 @@ func (m Model) showResults() (tea.Model, tea.Cmd) {
 	// Try to load existing scan results
 	if cache, err := m.loadSessionCache(); err == nil {
 		m.scanResults = cache
-		m.parseScanResults(cache)
+		m.parseScanResults(cache, nil)
 		m.mode = ModeResults
 	} else {
 		m.currentPhase = "No scan results found. Run a scan first."
@@ -267,23 +329,78 @@ func (m Model) showResults() (tea.Model, tea.Cmd) {
 }
 
 // parseScanResults converts cache to UI categories
-func (m Model) parseScanResults(cache *SessionCache) {
-	m.categories = []CategoryInfo{
-		{Name: "Pacman Cache", Files: 364, Size: "690.6 MB", Enabled: true},
-		{Name: "Yay Cache", Files: 13, Size: "171.4 MB", Enabled: true},
-		{Name: "Paru Cache", Files: 20, Size: "14.1 MB", Enabled: true},
-		{Name: "Thumbnails", Files: 910, Size: "19.4 MB", Enabled: true},
-		{Name: "Browser Cache", Files: 19191, Size: "897.0 MB", Enabled: true},
-	}
+func (m *Model) parseScanResults(cache *SessionCache, categories []config.Category) {
+	m.categories = []CategoryInfo{}
 
-	// Filter to only show categories with files
-	var filtered []CategoryInfo
-	for _, cat := range m.categories {
-		if cat.Files > 0 {
-			filtered = append(filtered, cat)
+	// If we have fresh categories from scan, use those
+	if len(categories) > 0 {
+		for _, cat := range categories {
+			if cat.FileCount > 0 {
+				m.categories = append(m.categories, CategoryInfo{
+					Name:    cat.Name,
+					Files:   cat.FileCount,
+					Size:    humanizeBytes(cat.Size),
+					Enabled: true,
+				})
+			}
+		}
+	} else if cache != nil && cache.TotalFiles > 0 {
+		// Otherwise, try to reconstruct from cache
+		// Group files by category name from config
+		categoryMap := make(map[string]*CategoryInfo)
+		
+		for _, cat := range m.cfg.Categories {
+			if cat.Selected {
+				categoryMap[cat.Name] = &CategoryInfo{
+					Name:    cat.Name,
+					Files:   0,
+					Size:    "0 B",
+					Enabled: true,
+				}
+			}
+		}
+
+		// Aggregate cache data
+		if cache.ScanResults != nil {
+			for _, file := range cache.ScanResults.Files {
+				// Try to match file to category by path
+				matched := false
+				for _, cat := range m.cfg.Categories {
+					for _, path := range cat.Paths {
+						if strings.HasPrefix(file.Path, path) {
+							if info, exists := categoryMap[cat.Name]; exists {
+								info.Files++
+								// Parse existing size and add
+								matched = true
+								break
+							}
+						}
+					}
+					if matched {
+						break
+					}
+				}
+			}
+		}
+
+		// Convert map to slice, only include non-zero categories
+		for _, info := range categoryMap {
+			if info.Files > 0 {
+				m.categories = append(m.categories, *info)
+			}
+		}
+
+		// If we couldn't reconstruct, show aggregate
+		if len(m.categories) == 0 && cache.TotalFiles > 0 {
+			m.categories = append(m.categories, CategoryInfo{
+				Name:    "Cleanable Files",
+				Files:   cache.TotalFiles,
+				Size:    humanizeBytes(cache.TotalSize),
+				Enabled: true,
+			})
 		}
 	}
-	m.categories = filtered
+
 	m.updateSelectedCount()
 }
 
@@ -373,6 +490,24 @@ func (m Model) loadSessionCache() (*SessionCache, error) {
 	}
 
 	return &cache, nil
+}
+
+// saveSessionCache saves scan results to cache
+func saveSessionCache(cache *SessionCache) error {
+	homeDir, _ := os.UserHomeDir()
+	cacheDir := filepath.Join(homeDir, ".cache", "moonbit")
+	cachePath := filepath.Join(cacheDir, "scan_results.json")
+
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(cachePath, data, 0600)
 }
 
 // View renders the UI
@@ -673,14 +808,20 @@ func humanizeBytes(bytes uint64) string {
 
 // Message types for async operations
 type scanProgressMsg struct {
-	Progress float64
-	Phase    string
+	Progress     float64
+	Phase        string
+	FilesScanned int
+	BytesScanned uint64
+	CurrentPath  string
 }
 
 type scanCompleteMsg struct {
-	Success bool
-	Error   string
-	Output  string
+	Success    bool
+	Error      string
+	Output     string
+	Categories []config.Category
+	TotalSize  uint64
+	TotalFiles int
 }
 
 type cleanCompleteMsg struct {
