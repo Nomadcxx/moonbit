@@ -234,7 +234,8 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		if m.menuIndex == 0 { // Cancel
 			m.mode = ModeSelect
 			m.menuIndex = 0
-		} else { // Confirm
+			return m, nil
+		} else { // Confirm (menuIndex == 1)
 			return m.executeClean()
 		}
 	case ModeSelect:
