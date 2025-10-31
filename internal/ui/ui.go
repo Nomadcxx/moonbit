@@ -930,20 +930,23 @@ func (m Model) renderConfirm() string {
 	content.WriteString(warningStyle.Render(warning))
 	content.WriteString("\n\n")
 
-	// Confirmation buttons
+	// Confirmation buttons - focused button is RED, unfocused is normal
 	if m.menuIndex == 0 {
-		content.WriteString(buttonSelectedStyle.Render("  Cancel  "))
+		// Cancel is focused - RED
+		content.WriteString(buttonDangerSelectedStyle.Render("  Cancel  "))
 	} else {
+		// Cancel is not focused - normal
 		content.WriteString(buttonStyle.Render("  Cancel  "))
 	}
 
-	content.WriteString("  ")
+	content.WriteString("    ")
 
-	// Confirm & Clean button in red (danger)
 	if m.menuIndex == 1 {
+		// Confirm & Clean is focused - RED
 		content.WriteString(buttonDangerSelectedStyle.Render("  Confirm & Clean  "))
 	} else {
-		content.WriteString(buttonDangerStyle.Render("  Confirm & Clean  "))
+		// Confirm & Clean is not focused - normal
+		content.WriteString(buttonStyle.Render("  Confirm & Clean  "))
 	}
 
 	return content.String()
