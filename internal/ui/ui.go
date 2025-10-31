@@ -75,9 +75,11 @@ type Model struct {
 	scanError    string
 
 	// Clean state
-	cleanActive  bool
-	cleanStarted time.Time
-	cleanError   string
+	cleanActive      bool
+	cleanStarted     time.Time
+	cleanError       string
+	cleanFilesDeleted int
+	cleanBytesFreed  uint64
 
 	// Categories for selection
 	categories    []CategoryInfo
@@ -156,6 +158,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleCompleteKey handles keypresses in complete mode
+func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
+	m.mode = ModeWelcome
+	m.menuIndex = 0
+	// Clear clean results
+	m.cleanFilesDeleted = 0
+	m.cleanBytesFreed = 0
+	return m, nil
+}
+
 // handleKey processes keyboard input
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -179,8 +191,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.menuIndex++
 		}
 	case "enter", " ":
+		// Handle complete mode specially
+		if m.mode == ModeComplete {
+			return m.handleCompleteKey()
+		}
 		return m.handleMenuSelect()
 	case "esc":
+		if m.mode == ModeComplete {
+			return m.handleCompleteKey()
+		}
 		if m.mode != ModeWelcome {
 			m.mode = ModeWelcome
 			m.menuIndex = 0
@@ -526,7 +545,7 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	m.cleanStarted = time.Now()
 	m.currentPhase = "Cleaning in progress..."
 
-	return m, runCleanCmd(m.cfg, m.scanResults)
+	return m, tea.Batch(runCleanCmd(m.cfg, m.scanResults), tick())
 }
 
 // runCleanCmd executes cleaning using the cleaner package
@@ -587,6 +606,8 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 	if msg.Success {
 		m.mode = ModeComplete
 		m.cleanError = ""
+		m.cleanFilesDeleted = msg.FilesDeleted
+		m.cleanBytesFreed = msg.BytesFreed
 		if msg.Error != "" {
 			m.currentPhase = fmt.Sprintf("Cleaned %d files (%s) with some errors: %s",
 				msg.FilesDeleted, humanizeBytes(msg.BytesFreed), msg.Error)
@@ -934,11 +955,20 @@ func (m Model) renderClean() string {
 	content.WriteString("\n\n")
 
 	// Current phase
-	content.WriteString(phaseStyle.Render(m.currentPhase))
+	phaseText := m.currentPhase
+	if m.cleanActive {
+		elapsed := time.Since(m.cleanStarted)
+		phaseText = fmt.Sprintf("%s (%.1fs elapsed)", m.currentPhase, elapsed.Seconds())
+	}
+	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress indicator
-	content.WriteString(progressStyle.Render("Cleaning files..."))
+	// Progress indicator (animated)
+	if m.cleanActive {
+		animFrame := int(time.Since(m.cleanStarted).Milliseconds()/100) % 50
+		progressBar := strings.Repeat("░", animFrame) + "█" + strings.Repeat("░", 49-animFrame)
+		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] Cleaning...", progressBar)))
+	}
 
 	return content.String()
 }
@@ -948,17 +978,22 @@ func (m Model) renderComplete() string {
 	var content strings.Builder
 
 	// Success header
-	content.WriteString(successHeaderStyle.Render("CLEANING COMPLETE!"))
+	content.WriteString(successHeaderStyle.Render("✓ CLEANING COMPLETE!"))
 	content.WriteString("\n\n")
 
-	// Success message
-	success := "Your system has been optimized!\n\n"
-	success += "Cache files and temporary data have been successfully removed."
-	content.WriteString(successStyle.Render(success))
+	// Success stats
+	stats := fmt.Sprintf("Files Deleted: %d\nSpace Freed: %s",
+		m.cleanFilesDeleted, humanizeBytes(m.cleanBytesFreed))
+	content.WriteString(successStyle.Render(stats))
 	content.WriteString("\n\n")
 
-	// Next action
-	content.WriteString(nextActionStyle.Render("Press Enter to return to main menu"))
+	// Additional message
+	if m.cleanError != "" {
+		content.WriteString(warningStyle.Render("Some files could not be deleted"))
+		content.WriteString("\n\n")
+	}
+	
+	content.WriteString(nextActionStyle.Render("Press any key to return to main menu"))
 
 	return content.String()
 }
