@@ -251,3 +251,64 @@ func TestSaveSessionCacheCreatesDirectory(t *testing.T) {
 		assert.NoError(t, statErr)
 	}
 }
+
+func TestTickMsg(t *testing.T) {
+	// Test that tick message can be created
+	now := time.Now()
+	msg := tickMsg(now)
+	
+	assert.Equal(t, time.Time(msg), now)
+}
+
+func TestProgressState(t *testing.T) {
+	// Test progress state structure
+	state := progressState{
+		filesScanned: 100,
+		bytesScanned: 1024000,
+		currentFile:  "/tmp/test.txt",
+		totalFiles:   500,
+	}
+
+	assert.Equal(t, 100, state.filesScanned)
+	assert.Equal(t, uint64(1024000), state.bytesScanned)
+	assert.Equal(t, "/tmp/test.txt", state.currentFile)
+	assert.Equal(t, 500, state.totalFiles)
+}
+
+func TestUpdateWithTick(t *testing.T) {
+	model := NewModel()
+	model.scanActive = true
+	model.scanStarted = time.Now()
+	
+	// Simulate progress state
+	currentProgress = progressState{
+		filesScanned: 50,
+		bytesScanned: 512000,
+		currentFile:  "/tmp/test.txt",
+		totalFiles:   100,
+	}
+
+	// Send tick message
+	msg := tickMsg(time.Now())
+	newModel, cmd := model.Update(msg)
+
+	assert.NotNil(t, newModel)
+	assert.NotNil(t, cmd) // Should return another tick while scanning
+	
+	// Check progress was updated
+	m := newModel.(Model)
+	assert.Equal(t, 0.5, m.scanProgress)
+	assert.Contains(t, m.currentPhase, "test.txt")
+}
+
+func TestUpdateWithTickInactive(t *testing.T) {
+	model := NewModel()
+	model.scanActive = false
+	
+	// Send tick message when not scanning
+	msg := tickMsg(time.Now())
+	newModel, cmd := model.Update(msg)
+
+	assert.NotNil(t, newModel)
+	assert.Nil(t, cmd) // Should not return another tick when inactive
+}

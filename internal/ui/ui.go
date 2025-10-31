@@ -129,6 +129,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case tickMsg:
+		// Update progress from shared state if scanning
+		if m.scanActive && currentProgress.totalFiles > 0 {
+			progress := float64(currentProgress.filesScanned) / float64(currentProgress.totalFiles)
+			m.scanProgress = progress
+			if currentProgress.currentFile != "" {
+				m.currentPhase = fmt.Sprintf("Scanning: %s", filepath.Base(currentProgress.currentFile))
+			}
+		}
+		// Continue ticking while scan is active
+		if m.scanActive || m.cleanActive {
+			return m, tick()
+		}
+		return m, nil
 	case scanProgressMsg:
 		m.scanProgress = msg.Progress
 		m.currentPhase = msg.Phase
@@ -207,6 +221,13 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// tick creates a ticker command for progress updates
+func tick() tea.Cmd {
+	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
 // startScan initiates scanning
 func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.mode = ModeScanProgress
@@ -215,8 +236,11 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.scanProgress = 0
 	m.currentPhase = "Starting scan..."
 	m.scanOutput.Reset()
+	
+	// Reset progress state
+	currentProgress = progressState{}
 
-	return m, runScanCmd(m.cfg)
+	return m, tea.Batch(runScanCmd(m.cfg), tick())
 }
 
 // runScanCmd executes the scan using the scanner package directly
@@ -228,6 +252,15 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var scannedCategories []config.Category
 		var totalSize uint64
 		var totalFiles int
+
+		// Calculate total expected files for progress tracking
+		expectedFiles := 0
+		for _, category := range cfg.Categories {
+			if category.Selected {
+				expectedFiles += 1000 // Estimate, will be updated during scan
+			}
+		}
+		currentProgress.totalFiles = expectedFiles
 
 		// Scan each category
 		for _, category := range cfg.Categories {
@@ -253,17 +286,19 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 
 			// Collect results for this category
 			for msg := range progressCh {
-				// Note: Progress updates could be sent here but would need
-				// a different message type to avoid blocking the scan
 				if msg.Progress != nil {
-					// Progress update - could send intermediate message
-					// For now, we just track internally
+					// Update shared progress state for ticker to read
+					currentProgress.filesScanned = msg.Progress.FilesScanned
+					currentProgress.bytesScanned = msg.Progress.Bytes
+					currentProgress.currentFile = msg.Progress.Path
 				}
 				
 				if msg.Complete != nil {
 					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
 					totalSize += msg.Complete.Stats.Size
 					totalFiles += msg.Complete.Stats.FileCount
+					// Update total files with actual count
+					currentProgress.totalFiles = totalFiles
 					break
 				}
 				if msg.Error != nil {
@@ -639,27 +674,51 @@ func (m Model) renderScanProgress() string {
 	content.WriteString(progressHeaderStyle.Render("SCANNING SYSTEM"))
 	content.WriteString("\n\n")
 
-	// Current phase
+	// Current phase with stats
 	phaseText := m.currentPhase
 	if m.scanActive {
 		elapsed := time.Since(m.scanStarted)
-		phaseText = fmt.Sprintf("%s (%.1fs elapsed)", m.currentPhase, elapsed.Seconds())
+		if currentProgress.filesScanned > 0 {
+			phaseText = fmt.Sprintf("%s - %d files (%s) - %.1fs",
+				m.currentPhase,
+				currentProgress.filesScanned,
+				humanizeBytes(currentProgress.bytesScanned),
+				elapsed.Seconds())
+		} else {
+			phaseText = fmt.Sprintf("%s (%.1fs elapsed)", m.currentPhase, elapsed.Seconds())
+		}
 	}
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress bar (shows activity even without real-time updates)
+	// Progress bar with real-time updates
 	progress := int(m.scanProgress * 50)
-	if progress == 0 && m.scanActive {
-		// Show animated bar while scanning
-		animFrame := int(time.Since(m.scanStarted).Seconds()) % 50
-		progressBar := strings.Repeat("░", animFrame) + "█" + strings.Repeat("░", 49-animFrame)
-		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] Scanning...", progressBar)))
+	if m.scanActive {
+		if m.scanProgress > 0 && m.scanProgress < 1 {
+			// Show real progress
+			progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
+			content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
+		} else {
+			// Show indeterminate progress animation
+			animFrame := int(time.Since(m.scanStarted).Milliseconds()/100) % 50
+			progressBar := strings.Repeat("░", animFrame) + "█" + strings.Repeat("░", 49-animFrame)
+			content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] Scanning...", progressBar)))
+		}
 	} else {
 		progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
 		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
 	}
 	content.WriteString("\n\n")
+
+	// Show current file being scanned
+	if m.scanActive && currentProgress.currentFile != "" {
+		currentFile := currentProgress.currentFile
+		if len(currentFile) > 60 {
+			currentFile = "..." + currentFile[len(currentFile)-57:]
+		}
+		content.WriteString(statusStyle.Render(fmt.Sprintf("Current: %s", currentFile)))
+		content.WriteString("\n")
+	}
 
 	return content.String()
 }
@@ -913,6 +972,18 @@ type cleanCompleteMsg struct {
 	FilesDeleted int
 	BytesFreed   uint64
 }
+
+type tickMsg time.Time
+
+// progressState holds shared progress information
+type progressState struct {
+	filesScanned int
+	bytesScanned uint64
+	currentFile  string
+	totalFiles   int
+}
+
+var currentProgress progressState
 
 // Style definitions based on sysc-greet patterns
 var (
