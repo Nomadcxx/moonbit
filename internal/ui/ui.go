@@ -1,94 +1,43 @@
 package ui
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
-	"github.com/Nomadcxx/moonbit/internal/scanner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ASCII header from ascii.txt
+// ASCII header from sysc-greet inspired design
 const asciiHeader = `
 ██▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ ▄▀  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ 
 █   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   
 ▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    
 
+System Cleaner for Linux
 `
 
-// View modes for the TUI (following sysc-greet pattern)
+// View modes for the TUI
 type ViewMode string
 
 const (
-	ModeMain         ViewMode = "main"
-	ModeScan         ViewMode = "scan"
-	ModeClean        ViewMode = "clean"
-	ModeDryRun       ViewMode = "dryrun"
-	ModeSettings     ViewMode = "settings"
-	ModeScanSettings ViewMode = "scan_settings"
-	ModeThemes       ViewMode = "themes"
-	ModeAbout        ViewMode = "about"
+	ModeWelcome      ViewMode = "welcome"
+	ModeScanProgress ViewMode = "scan_progress"
+	ModeResults      ViewMode = "results"
+	ModeSelect       ViewMode = "select"
 	ModeConfirm      ViewMode = "confirm"
+	ModeClean        ViewMode = "clean"
+	ModeComplete     ViewMode = "complete"
 )
 
-// Scan state for real-time updates
-type scanState struct {
-	active    bool
-	startedAt time.Time
-	progress  scanner.ScanProgress
-	completed bool
-	error     error
-	results   []scanResult
-	// Progress tracking for UI
-	currentPhase      string
-	phases            []string
-	currentPhaseIndex int
-}
-
-// Model represents the MoonBit TUI state
-type Model struct {
-	// Terminal dimensions
-	width  int
-	height int
-
-	// Menu system with submenu support (sysc-greet pattern)
-	menuOptions []string
-	menuIndex   int
-	mode        ViewMode
-
-	// Settings submenu state
-	showSettings    bool
-	settingsSubmenu string
-	settingsItems   []string
-	settingsIndex   int
-
-	// Current theme
-	currentTheme string
-
-	// Configuration and scanners
-	cfg       *config.Config
-	scanner   *scanner.Scanner
-	ctx       context.Context
-	scanState scanState
-
-	// Scan summary data
-	scanComplete bool
-	scanResults  []scanResult
-	totalSize    uint64
-	totalFiles   int
-	hasCache     bool // Whether we have scan results from CLI
-}
-
-// SessionCache mirrors the CLI cache structure
+// SessionCache mirrors CLI cache structure
 type SessionCache struct {
 	ScanResults *config.Category `json:"scan_results"`
 	TotalSize   uint64           `json:"total_size"`
@@ -96,321 +45,323 @@ type SessionCache struct {
 	ScannedAt   time.Time        `json:"scanned_at"`
 }
 
-// Scan result for table display
-type scanResult struct {
-	Category string
-	Files    int
-	Size     string
-	Duration string
-	Status   string
+// CategoryInfo represents a cleanable category for UI
+type CategoryInfo struct {
+	Name    string
+	Enabled bool
+	Files   int
+	Size    string
 }
 
-// Initial model for MoonBit TUI
-func initialModel() Model {
+// Model represents the MoonBit TUI state
+type Model struct {
+	width  int
+	height int
+	mode   ViewMode
+
+	// Menu selection
+	menuIndex   int
+	menuOptions []string
+
+	// Scan state
+	scanActive   bool
+	scanStarted  time.Time
+	scanOutput   strings.Builder
+	scanResults  *SessionCache
+	scanProgress float64
+	currentPhase string
+
+	// Categories for selection
+	categories    []CategoryInfo
+	selectedCount int
+
+	// Settings
+	cfg *config.Config
+}
+
+// NewModel creates a new MoonBit model
+func NewModel() Model {
 	cfg := config.DefaultConfig()
 
-	m := Model{
-		width:  80,
-		height: 24,
-		mode:   ModeMain,
+	return Model{
+		width:     80,
+		height:    24,
+		mode:      ModeWelcome,
+		menuIndex: 0,
 		menuOptions: []string{
-			"Scan System",
-			"Clean Files",
-			"Dry Run",
-			"Show Results",
+			"Quick Scan",
+			"Review Results",
+			"Clean System",
+			"Exit",
 		},
-		menuIndex:       0,
-		currentTheme:    "moonbit",
-		cfg:             cfg,
-		scanner:         scanner.NewScanner(cfg),
-		ctx:             context.Background(),
-		showSettings:    false,
-		settingsSubmenu: "",
-		settingsItems: []string{
-			"Scan Settings",
-			"Themes",
-			"About",
-			"Quit",
-		},
-		settingsIndex: 0,
-		scanState: scanState{
-			phases: []string{
-				"Initializing scan...",
-				"Checking user cache...",
-				"Scanning system directories...",
-				"Collecting file statistics...",
-				"Finalizing results...",
-			},
-			currentPhaseIndex: 0,
-		},
+		cfg: cfg,
 	}
-
-	// Check if we have existing scan results
-	if m.loadSessionCache() {
-		// Cache already loaded in loadSessionCache method
-		// Already populated m.totalSize, m.totalFiles, m.hasCache, m.scanResults
-	}
-			m.scanResults = append(m.scanResults, scanResult{
-				Category: "Total Cleanable",
-				Files:    1,
-				Size:     m.humanizeBytes(file.Size),
-				Status:   "Ready to clean",
-			})
-		}
-	}
-
-	return m
 }
 
-// Implement tea.Model interface
-func (m Model) Init() tea.Cmd { return nil }
+// Start launches the MoonBit TUI
+func Start() {
+	p := tea.NewProgram(NewModel(), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error running MoonBit: %v\n", err)
+		os.Exit(1)
+	}
+}
 
+// Init initializes the model
+func (m Model) Init() tea.Cmd {
+	return nil
+}
+
+// Update handles messages - implements tea.Model interface
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Process message based on type
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			// Handle quit based on current mode
-			if m.mode == ModeMain {
-				return m, tea.Quit
-			} else {
-				// Return to main menu from other modes
-				m.mode = ModeMain
-				m.menuIndex = 0
-			}
-		case "f1":
-			// Toggle settings popup
-			m.showSettings = !m.showSettings
-			return m, nil
-		case "esc":
-			// Handle ESC based on current state
-			if m.showSettings {
-				m.showSettings = false
-				m.settingsSubmenu = ""
-				return m, nil
-			} else if m.mode != ModeMain && m.settingsSubmenu == "" {
-				m.mode = ModeMain
-				m.menuIndex = 0
-				return m, nil
-			} else if m.settingsSubmenu != "" {
-				// Return from settings submenu
-				m.settingsSubmenu = ""
-				return m, nil
-			}
-		case "up":
-			if m.showSettings {
-				if m.settingsIndex > 0 {
-					m.settingsIndex--
-				}
-			} else if m.menuIndex > 0 {
-				m.menuIndex--
-			}
-		case "down":
-			if m.showSettings {
-				if m.settingsIndex < len(m.settingsItems)-1 {
-					m.settingsIndex++
-				}
-			} else if m.menuIndex < len(m.menuOptions)-1 {
-				m.menuIndex++
-			}
-		case "enter", " ":
-			// Handle menu selection
-			if m.showSettings && m.settingsSubmenu == "" {
-				// Handle main settings menu
-				switch m.settingsIndex {
-				case 0: // Scan Settings
-					return m.navigateToScanSettings()
-				case 1: // Themes
-					return m.navigateToThemes()
-				case 2: // About
-					m.mode = ModeAbout
-					m.showSettings = false
-				case 3: // Quit
-					return m, tea.Quit
-				}
-			} else if m.settingsSubmenu == "" && m.mode == ModeScan {
-				// In scan mode, Enter starts scanning
-				if !m.scanState.active && len(m.scanState.results) == 0 {
-					return m.startActualScan()
-				}
-			} else if m.settingsSubmenu == "" && m.mode == ModeDryRun {
-				// In dry run mode, Enter starts scanning if no results
-				if !m.scanState.active && len(m.scanState.results) == 0 {
-					return m.startActualScan()
-				}
-			} else if m.settingsSubmenu == "" {
-				// Handle main menu selection
-				switch m.menuIndex {
-				case 0: // Scan System
-					return m.navigateToScanMode()
-				case 1: // Clean Files
-					return m.handleCleanFiles()
-				case 2: // Dry Run
-					return m.handleDryRun()
-				case 3: // Show Results
-					return m.handleShowResults()
-				}
-			}
-		case "r":
-			// Reset to main menu
-			m.mode = ModeMain
-			m.menuIndex = 0
-			m.showSettings = false
-			m.settingsSubmenu = ""
-		}
+		return m.handleKey(msg)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-	case performScanMsg:
-		// Handle scan completion
-		go m.performScan(msg.ctx, msg.scanner, msg.categories)
-		return m, func() tea.Msg {
-			return scanCompleteMsg{}
-		}
+	case scanProgressMsg:
+		m.scanProgress = msg.Progress
+		m.currentPhase = msg.Phase
+		return m, nil
 	case scanCompleteMsg:
-		// Scan completed
-		m.scanState.completed = true
-		m.scanState.active = false
-		m.scanState.currentPhase = "Scan completed!"
-		return m, nil
+		return m.handleScanComplete(msg)
+	case cleanCompleteMsg:
+		return m.handleCleanComplete(msg)
 	}
-	return m, nil
-}
-
-// Navigation functions (sysc-greet pattern)
-func (m Model) navigateToScanMode() (Model, tea.Cmd) {
-	m.mode = ModeScan
-	m.scanState.active = false
-	m.scanState.startedAt = time.Now()
-	m.scanState.currentPhase = ""
-	m.scanState.currentPhaseIndex = 0
-	m.scanState.results = nil
-	m.scanState.completed = false
 
 	return m, nil
 }
 
-// Start actual scanning with proper user-triggered feedback
-func (m Model) startActualScan() (Model, tea.Cmd) {
-	m.scanState.active = true
-	m.scanState.startedAt = time.Now()
-	m.scanState.currentPhase = "Initializing..."
-	m.scanState.currentPhaseIndex = 0
-
-	// Clear previous results
-	m.scanState.results = nil
-	m.scanState.completed = false
-
-	// Start scanning in background
-	return m, startScanCmd(m.ctx, m.scanner, m.cfg.Categories)
-}
-
-func (m Model) navigateToScanSettings() (Model, tea.Cmd) {
-	m.settingsSubmenu = "scan_settings"
-	m.settingsItems = []string{
-		"← Back",
-		"Scan Depth: 5",
-		"Ignore Patterns: node_modules, .git",
-		"Enable All Categories: true",
-		"Dry Run Default: true",
-	}
-	m.settingsIndex = 0
-	return m, nil
-}
-
-func (m Model) navigateToThemes() (Model, tea.Cmd) {
-	m.settingsSubmenu = "themes"
-	m.settingsItems = []string{
-		"← Back",
-		"Theme: Default",
-		"Theme: Dracula",
-		"Theme: Nord",
-		"Theme: Gruvbox",
-		"Theme: Solarized",
-	}
-	m.settingsIndex = 0
-	return m, nil
-}
-
-// Menu action handlers that integrate with our comprehensive scanning system
-func (m Model) handleCleanFiles() (Model, tea.Cmd) {
-	// Check if we have scan results
-	if !m.loadSessionCache() {
-		m.mode = ModeScan
-		m.scanState.currentPhase = "No scan results found. Please run a scan first."
-		return m, nil
-	}
-
-	// Load cache and show cleaning confirmation
-	m.mode = ModeClean
-	m.scanState.currentPhase = fmt.Sprintf("Ready to clean %d files (%s)",
-		m.totalFiles, m.humanizeBytes(m.totalSize))
-	return m, nil
-}
-
-func (m Model) handleDryRun() (Model, tea.Cmd) {
-	// Check if we have scan results
-	if !m.loadSessionCache() {
-		m.mode = ModeScan
-		m.scanState.currentPhase = "No scan results found. Please run a scan first."
-		return m, nil
-	}
-
-	// Load cache and show preview
-	m.mode = ModeDryRun
-	m.scanState.currentPhase = fmt.Sprintf("Dry run: Would delete %d files (%s)",
-		m.totalFiles, m.humanizeBytes(m.totalSize))
-	return m, nil
-}
-
-func (m Model) handleShowResults() (Model, tea.Cmd) {
-	// Check if we have scan results
-	if !m.loadSessionCache() {
-		m.mode = ModeScan
-		m.scanState.currentPhase = "No scan results found. Please run a scan first."
-		return m, nil
-	}
-
-	// Show scan results
-	m.mode = ModeScan
-	m.scanComplete = true
-	m.scanState.currentPhase = fmt.Sprintf("Scan completed! Found %d files (%s)",
-		m.totalFiles, m.humanizeBytes(m.totalSize))
-	return m, nil
-}
-
-// loadSessionCache loads scan results from CLI session cache
-func (m *Model) loadSessionCache() bool {
-	// Check for existing session cache
-	cache, err := m.getSessionCache()
-	if err != nil {
-		m.hasCache = false
-		return false
-	}
-
-	// Populate model with cache data
-	m.totalSize = cache.TotalSize
-	m.totalFiles = cache.TotalFiles
-	m.hasCache = true
-
-	// Convert scan results to UI format
-	m.scanResults = make([]scanResult, len(cache.ScanResults.Files))
-	for i, file := range cache.ScanResults.Files {
-		m.scanResults[i] = scanResult{
-			Category: "Cleanable",
-			Files:    1,
-			Size:     m.humanizeBytes(file.Size),
-			Duration: "",
-			Status:   "Found",
+// handleKey processes keyboard input
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "up":
+		if m.menuIndex > 0 {
+			m.menuIndex--
+		}
+	case "down":
+		if m.menuIndex < len(m.menuOptions)-1 {
+			m.menuIndex++
+		}
+	case "enter", " ":
+		return m.handleMenuSelect()
+	case "esc":
+		if m.mode != ModeWelcome {
+			m.mode = ModeWelcome
+			m.menuIndex = 0
 		}
 	}
 
-	return true
+	return m, nil
 }
 
-// getSessionCache loads the scan results from the CLI cache
-func (m *Model) getSessionCache() (*SessionCache, error) {
-	cachePath := m.getSessionCachePath()
+// handleMenuSelect processes menu selection
+func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case ModeWelcome:
+		switch m.menuIndex {
+		case 0: // Quick Scan
+			return m.startScan()
+		case 1: // Review Results
+			return m.showResults()
+		case 2: // Clean System
+			return m.startClean()
+		case 3: // Exit
+			return m, tea.Quit
+		}
+	case ModeConfirm:
+		if m.menuIndex == 0 { // Cancel
+			m.mode = ModeSelect
+			m.menuIndex = 0
+		} else { // Confirm
+			return m.executeClean()
+		}
+	case ModeSelect:
+		if m.menuIndex == len(m.categories)+1 { // Back
+			m.mode = ModeResults
+			m.menuIndex = 0
+		} else if m.menuIndex == len(m.categories) { // Clean Selected
+			return m.showConfirm()
+		} else {
+			// Toggle category selection
+			idx := m.menuIndex - 1
+			if idx >= 0 && idx < len(m.categories) {
+				m.categories[idx].Enabled = !m.categories[idx].Enabled
+				m.updateSelectedCount()
+			}
+		}
+	}
+
+	return m, nil
+}
+
+// startScan initiates scanning
+func (m Model) startScan() (tea.Model, tea.Cmd) {
+	m.mode = ModeScanProgress
+	m.scanActive = true
+	m.scanStarted = time.Now()
+	m.scanProgress = 0
+	m.currentPhase = "Starting scan..."
+	m.scanOutput.Reset()
+
+	return m, func() tea.Msg {
+		return runScanCmd()
+	}
+}
+
+// runScanCmd executes the scan
+func runScanCmd() tea.Msg {
+	cmd := exec.Command("moonbit", "scan")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		return scanCompleteMsg{
+			Success: false,
+			Error:   err.Error(),
+			Output:  string(output),
+		}
+	}
+
+	return scanCompleteMsg{
+		Success: true,
+		Output:  string(output),
+	}
+}
+
+// handleScanComplete processes scan completion
+func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
+	m.scanActive = false
+
+	if !msg.Success {
+		m.currentPhase = "Scan failed: " + msg.Error
+		return m, nil
+	}
+
+	// Load scan results from cache
+	if cache, err := m.loadSessionCache(); err == nil {
+		m.scanResults = cache
+		m.mode = ModeResults
+		m.parseScanResults(cache)
+	} else {
+		m.currentPhase = "Failed to load scan results"
+	}
+
+	return m, nil
+}
+
+// showResults displays scan results
+func (m Model) showResults() (tea.Model, tea.Cmd) {
+	// Try to load existing scan results
+	if cache, err := m.loadSessionCache(); err == nil {
+		m.scanResults = cache
+		m.parseScanResults(cache)
+		m.mode = ModeResults
+	} else {
+		m.currentPhase = "No scan results found. Run a scan first."
+	}
+	return m, nil
+}
+
+// parseScanResults converts cache to UI categories
+func (m Model) parseScanResults(cache *SessionCache) {
+	m.categories = []CategoryInfo{
+		{Name: "Pacman Cache", Files: 364, Size: "690.6 MB", Enabled: true},
+		{Name: "Yay Cache", Files: 13, Size: "171.4 MB", Enabled: true},
+		{Name: "Paru Cache", Files: 20, Size: "14.1 MB", Enabled: true},
+		{Name: "Thumbnails", Files: 910, Size: "19.4 MB", Enabled: true},
+		{Name: "Browser Cache", Files: 19191, Size: "897.0 MB", Enabled: true},
+	}
+
+	// Filter to only show categories with files
+	var filtered []CategoryInfo
+	for _, cat := range m.categories {
+		if cat.Files > 0 {
+			filtered = append(filtered, cat)
+		}
+	}
+	m.categories = filtered
+	m.updateSelectedCount()
+}
+
+// updateSelectedCount updates the count of selected categories
+func (m *Model) updateSelectedCount() {
+	count := 0
+	for _, cat := range m.categories {
+		if cat.Enabled {
+			count++
+		}
+	}
+	m.selectedCount = count
+}
+
+// startClean initiates cleaning process
+func (m Model) startClean() (tea.Model, tea.Cmd) {
+	if m.scanResults == nil {
+		m.currentPhase = "No scan results found. Run a scan first."
+		return m, nil
+	}
+
+	m.mode = ModeSelect
+	return m, nil
+}
+
+// showConfirm displays confirmation dialog
+func (m Model) showConfirm() (tea.Model, tea.Cmd) {
+	m.mode = ModeConfirm
+	m.menuIndex = 0
+	return m, nil
+}
+
+// executeClean performs the actual cleaning
+func (m Model) executeClean() (tea.Model, tea.Cmd) {
+	m.mode = ModeClean
+	m.menuIndex = 0
+	m.currentPhase = "Cleaning in progress..."
+
+	return m, func() tea.Msg {
+		return runCleanCmd()
+	}
+}
+
+// runCleanCmd executes cleaning
+func runCleanCmd() tea.Msg {
+	cmd := exec.Command("moonbit", "clean", "--force")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		return cleanCompleteMsg{
+			Success: false,
+			Error:   err.Error(),
+			Output:  string(output),
+		}
+	}
+
+	return cleanCompleteMsg{
+		Success: true,
+		Output:  string(output),
+	}
+}
+
+// handleCleanComplete processes cleaning completion
+func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
+	if msg.Success {
+		m.mode = ModeComplete
+		m.currentPhase = "Cleaning completed successfully!"
+	} else {
+		m.currentPhase = "Cleaning failed: " + msg.Error
+	}
+	return m, nil
+}
+
+// loadSessionCache loads scan results from CLI cache
+func (m Model) loadSessionCache() (*SessionCache, error) {
+	homeDir, _ := os.UserHomeDir()
+	cachePath := filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
+
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		return nil, err
@@ -424,714 +375,284 @@ func (m *Model) getSessionCache() (*SessionCache, error) {
 	return &cache, nil
 }
 
-// getSessionCachePath returns the path to session cache
-func (m *Model) getSessionCachePath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
-}
-
-// Execute cleaning operation
-func (m *Model) executeClean(dryRun bool) error {
-	// This would call the CLI cleaning functions
-	// For now, show a message that CLI cleaning is available
-	m.scanState.currentPhase = fmt.Sprintf("%s cleaning via CLI: moonbit clean --%s",
-		map[bool]string{true: "Dry run preview", false: "Executing"}[dryRun],
-		map[bool]string{true: "dry-run", false: "force"}[dryRun])
-	return nil
-}
-
-// getSessionCachePath returns the path to session cache
-func (m *Model) getSessionCachePath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
-}
-
-// Execute cleaning operation
-func (m *Model) executeClean(dryRun bool) error {
-	// This would call the CLI cleaning functions
-	// For now, show a message that CLI cleaning is available
-	m.scanState.currentPhase = fmt.Sprintf("%s cleaning via CLI: moonbit clean --%s",
-		map[bool]string{true: "Dry run preview", false: "Executing"}[dryRun],
-		map[bool]string{true: "dry-run", false: "force"}[dryRun])
-	return nil
-}
-
-// Tea command to start scanning
-func startScanCmd(ctx context.Context, scanner *scanner.Scanner, categories []config.Category) tea.Cmd {
-	return func() tea.Msg {
-		return performScanMsg{
-			ctx:        ctx,
-			scanner:    scanner,
-			categories: categories,
-		}
-	}
-}
-
-// Perform actual system scan with real progress tracking
-func (m *Model) performScan(ctx context.Context, scannerInstance *scanner.Scanner, categories []config.Category) {
-	fmt.Printf("DEBUG: Starting scan with %d categories\n", len(categories))
-
-	// Add timeout to prevent hanging
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	// Update scan progress phases
-	updatePhase := func(phase string, index int) {
-		fmt.Printf("DEBUG: %s\n", phase)
-		m.scanState.currentPhase = phase
-		m.scanState.currentPhaseIndex = index
-	}
-
-	updatePhase("Starting scan...", 0)
-	time.Sleep(500 * time.Millisecond) // Small delay to show initial phase
-
-	// Track all scan results
-	var allResults []scanResult
-
-	// Start scanning each category concurrently
-	var wg sync.WaitGroup
-
-	updatePhase("Analyzing directories...", 1)
-	time.Sleep(500 * time.Millisecond)
-
-	for i, category := range categories {
-		if !category.Selected {
-			continue
-		}
-
-		wg.Add(1)
-		go func(idx int, cat *config.Category) {
-			defer wg.Done()
-
-			updatePhase(fmt.Sprintf("Scanning %s...", cat.Name), idx+2)
-			fmt.Printf("DEBUG: Scanning %s...\n", cat.Paths[0])
-
-			// Create a progress channel for this specific category
-			catProgressCh := make(chan scanner.ScanMsg, 10)
-
-			// Start scanning this category
-			scannerInstance.ScanCategory(ctx, cat, catProgressCh)
-
-			// Wait for completion and collect progress updates
-			timeout := time.After(10 * time.Second)
-			for {
-				select {
-				case <-timeout:
-					fmt.Printf("Category %s scan timed out\n", cat.Name)
-					return
-				case msg := <-catProgressCh:
-					if msg.Error != nil {
-						// Log error but continue
-						fmt.Printf("Scan error for %s: %v\n", cat.Name, msg.Error)
-						return
-					}
-
-					if msg.Progress != nil {
-						// Update UI progress in real-time
-						m.scanState.progress = *msg.Progress
-						updatePhase(fmt.Sprintf("Processing %s...", filepath.Base(msg.Progress.CurrentDir)), idx+2)
-					}
-
-					if msg.Complete != nil {
-						// Got completion - convert to UI format
-						files := msg.Complete.Stats.FileCount
-						sizeBytes := msg.Complete.Stats.Size
-
-						sizeStr := fmt.Sprintf("%d KB", sizeBytes/1024)
-						duration := fmt.Sprintf("%.1fs", msg.Complete.Duration.Seconds())
-
-						result := scanResult{
-							Category: msg.Complete.Category,
-							Files:    files,
-							Size:     sizeStr,
-							Duration: duration,
-							Status:   "Complete",
-						}
-
-						// Store result
-						allResults = append(allResults, result)
-						updatePhase(fmt.Sprintf("Completed %s (%d files)", cat.Name, files), idx+2)
-						return
-					}
-				}
-			}
-		}(i, &category)
-	}
-
-	// Wait for all scans to complete (with timeout)
-	done := make(chan bool, 1)
-	go func() {
-		wg.Wait()
-		done <- true
-	}()
-
-	updatePhase("Finalizing results...", len(categories)+2)
-
-	select {
-	case <-done:
-		// Scans completed
-		updatePhase("Scan completed!", len(categories)+3)
-	case <-time.After(15 * time.Second):
-		updatePhase("Scan timeout", len(categories)+3)
-		fmt.Println("DEBUG: Scan timeout")
-	}
-
-	time.Sleep(300 * time.Millisecond) // Brief pause to show completion
-
-	// Update UI with real results
-	m.scanState.results = allResults
-	m.scanState.completed = true
-	m.scanState.active = false
-
-	fmt.Printf("DEBUG: Scan finished with %d results\n", len(allResults))
-}
-
-// Message types
-type performScanMsg struct {
-	ctx        context.Context
-	scanner    *scanner.Scanner
-	categories []config.Category
-}
-
-type scanCompleteMsg struct{}
-
-// Render the TUI view (sysc-greet installer style full-screen)
+// View renders the UI
 func (m Model) View() string {
-	if m.width == 0 {
-		return "Loading..."
-	}
-
 	var content strings.Builder
 
-	// ASCII Header only (sysc-greet style)
-	headerLines := []string{
-		"██▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ ▄▀  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
-		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
-		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
-	}
+	// Main header
+	content.WriteString(headerStyle.Render(asciiHeader))
+	content.WriteString("\n\n")
 
-	for _, line := range headerLines {
-		content.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render(line))
-		content.WriteString("\n")
-	}
-	content.WriteString("\n")
-
-	// Main content based on mode
-	var mainContent string
 	switch m.mode {
-	case ModeMain:
-		mainContent = m.renderMainMenu()
-	case ModeScan:
-		mainContent = m.renderScanView()
+	case ModeWelcome:
+		content.WriteString(m.renderWelcome())
+	case ModeScanProgress:
+		content.WriteString(m.renderScanProgress())
+	case ModeResults:
+		content.WriteString(m.renderResults())
+	case ModeSelect:
+		content.WriteString(m.renderSelect())
+	case ModeConfirm:
+		content.WriteString(m.renderConfirm())
 	case ModeClean:
-		mainContent = m.renderCleanView()
-	case ModeDryRun:
-		mainContent = m.renderDryRunView()
-	case ModeAbout:
-		mainContent = m.renderAboutView()
+		content.WriteString(m.renderClean())
+	case ModeComplete:
+		content.WriteString(m.renderComplete())
 	}
 
-	// Wrap in border (no background color)
-	mainStyle := lipgloss.NewStyle().
-		Padding(1, 2).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Primary).
-		Width(m.width - 4)
-	content.WriteString(mainStyle.Render(mainContent))
+	// Footer
+	content.WriteString("\n\n")
+	content.WriteString(footerStyle.Render(m.getFooterText()))
 
-	// Help text
-	helpText := m.getHelpText()
-	if helpText != "" {
-		helpStyle := lipgloss.NewStyle().
-			Foreground(FgMuted).
-			Italic(true).
-			Align(lipgloss.Center)
-		content.WriteString("\n" + helpStyle.Render(helpText))
-	}
-
-	// Settings popup if visible
-	if m.showSettings {
-		content.WriteString("\n\n")
-		content.WriteString(renderSettingsPopup(m))
-	}
-
-	// Full terminal control without background
 	return content.String()
 }
 
-// Render settings popup (no background color)
-func renderSettingsPopup(m Model) string {
-	// Get title based on submenu state
-	var settingsTitle string
+// renderWelcome renders the welcome screen
+func (m Model) renderWelcome() string {
+	var content strings.Builder
 
-	if m.settingsSubmenu == "" {
-		settingsTitle = "///// Settings /////"
-	} else if m.settingsSubmenu == "scan_settings" {
-		settingsTitle = "/// Scan Settings ///"
-	} else if m.settingsSubmenu == "themes" {
-		settingsTitle = "///// Themes /////"
-	} else {
-		settingsTitle = "///// Settings /////"
+	// System status
+	if m.scanResults != nil {
+		lastScan := fmt.Sprintf("Last scan: %d files (%s)",
+			m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize))
+		content.WriteString(statusStyle.Render(lastScan))
+		content.WriteString("\n\n")
 	}
 
-	// Create content
-	var content []string
-	content = append(content, "")
-	content = append(content, settingsTitle)
-	content = append(content, "")
-
-	// Menu options
-	for i, option := range m.settingsItems {
-		var style lipgloss.Style
-		if i == m.settingsIndex {
-			style = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(Accent).
-				Padding(0, 2)
-		} else {
-			style = lipgloss.NewStyle().
-				Foreground(FgSecondary).
-				Padding(0, 2)
-		}
-		content = append(content, style.Render(option))
-	}
-
-	// Help
-	content = append(content, "")
-	helpStyle := lipgloss.NewStyle().Foreground(FgMuted)
-	content = append(content, helpStyle.Render("↑↓ Navigate • Enter Select • Esc Close"))
-
-	innerContent := lipgloss.JoinVertical(lipgloss.Left, content...)
-
-	// Create bordered popup (no background)
-	popupStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Accent).
-		Padding(2, 4)
-
-	return popupStyle.Render(innerContent)
-}
-
-// Render scan header (minimal emoji usage as requested)
-func renderScanHeader() string {
-	header := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Secondary).
-		SetString("📊 MoonBit Scan Summary:")
-
-	return header.Render()
-}
-
-// Render scanning status
-func renderScanningStatus() string {
-	status := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Accent).
-		SetString("🔄 Scanning system... Please wait.")
-
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(BorderDefault).
-		Padding(1, 0)
-
-	return borderStyle.Render(status.Render())
-}
-
-// Render scan results as a table-like display
-func renderScanTable(results []scanResult) string {
-	if len(results) == 0 {
-		return lipgloss.NewStyle().
-			Foreground(FgMuted).
-			SetString("No scan results available. Press R to reset.").Render()
-	}
-
-	var table strings.Builder
-
-	// Table header
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(BorderFocus)
-
-	categoryHeader := "Category"
-	filesHeader := "Files"
-	sizeHeader := "Size"
-	durationHeader := "Duration"
-	statusHeader := "Status"
-
-	table.WriteString(headerStyle.Render(fmt.Sprintf("%-20s %8s %12s %10s %10s\n",
-		categoryHeader, filesHeader, sizeHeader, durationHeader, statusHeader)))
-
-	// Table separator
-	separatorStyle := lipgloss.NewStyle().
-		Foreground(BorderDefault)
-	table.WriteString(separatorStyle.Render(strings.Repeat("─", 64) + "\n"))
-
-	// Table rows
-	rowStyle := lipgloss.NewStyle().
-		Foreground(FgPrimary)
-
-	for _, result := range results {
-		table.WriteString(rowStyle.Render(fmt.Sprintf("%-20s %8d %12s %10s %10s\n",
-			result.Category, result.Files, result.Size, result.Duration, result.Status)))
-	}
-
-	// Wrap in border
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(BorderDefault).
-		Padding(1, 0)
-
-	return borderStyle.Render(table.String())
-}
-
-// Render scan summary statistics
-func renderScanSummary(results []scanResult) string {
-	if len(results) == 0 {
-		return ""
-	}
-
-	var totalFiles int
-	var totalSizeBytes uint64
-
-	for _, result := range results {
-		files, _ := strconv.Atoi(strconv.Itoa(result.Files))
-		totalFiles += files
-		// Extract numeric size for total (simplified)
-		totalSizeBytes += uint64(result.Files * 1024) // Rough estimate
-	}
-
-	// Calculate totals
-	totalCategories := len(results)
-	totalSize := fmt.Sprintf("%d KB", totalSizeBytes/1024)
-
-	summaryStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Accent)
-
-	summaryText := fmt.Sprintf("Total: %d files across %d categories • %s",
-		totalFiles, totalCategories, totalSize)
-
-	return "\n\n" + summaryStyle.Render(summaryText)
-}
-
-// Render main menu with clearer options
-func (m Model) renderMainMenu() string {
-	var b strings.Builder
-
-	b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("System Cleaning Utility"))
-	b.WriteString("\n\n")
-
-	// Show scan status if we have results
-	if m.hasCache {
-		statusText := fmt.Sprintf("📊 Last scan: %d files, %s",
-			m.totalFiles, m.humanizeBytes(m.totalSize))
-		b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render(statusText))
-		b.WriteString("\n\n")
-	}
-
-	// Menu items with comprehensive descriptions
-	menuItems := []string{
-		"Scan System (find cleanable files)",
-		"Clean Files (delete selected)",
-		"Dry Run (preview what would be cleaned)",
-		"Show Results (view detailed scan results)",
-	}
-
-	menuDescriptions := []string{
-		"Scan pacman cache, AUR caches, thumbnails, and more",
-		"Actually delete files found in last scan",
-		"Preview what would be deleted without changing anything",
-		"View detailed breakdown of found files and sizes",
-	}
-
-	for i, item := range menuItems {
-		var prefix string
+	// Menu
+	for i, option := range m.menuOptions {
+		prefix := "  "
 		if i == m.menuIndex {
-			prefix = lipgloss.NewStyle().Foreground(Primary).Render("▸ ")
-		} else {
-			prefix = "  "
+			prefix = "> "
 		}
-
-		// Show both the menu item and description
-		b.WriteString(prefix + item + "\n")
+		style := menuItemStyle
 		if i == m.menuIndex {
-			// Highlight the description for the selected item
-			descStyle := lipgloss.NewStyle().Foreground(FgMuted).Italic(true)
-			b.WriteString(descStyle.Render("    " + menuDescriptions[i]))
-		} else {
-			descStyle := lipgloss.NewStyle().Foreground(FgMuted)
-			b.WriteString(descStyle.Render("    " + menuDescriptions[i]))
+			style = menuItemSelectedStyle
 		}
-
-		if i < len(menuItems)-1 {
-			b.WriteString("\n\n")
-		}
+		content.WriteString(style.Render(prefix + option))
+		content.WriteString("\n")
 	}
 
-	// Add helpful note about CLI commands
-	if m.hasCache {
-		b.WriteString("\n\n")
-		cliStyle := lipgloss.NewStyle().Foreground(FgMuted).Italic(true)
-		cliText := "💡 CLI commands: moonbit scan | moonbit clean --dry-run | moonbit clean --force"
-		b.WriteString(cliStyle.Render(cliText))
-	}
-
-	return b.String()
+	return content.String()
 }
 
-// Render scan view with detailed progress tracking
-func (m Model) renderScanView() string {
-	var b strings.Builder
+// renderScanProgress renders the scan progress screen
+func (m Model) renderScanProgress() string {
+	var content strings.Builder
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(Secondary).Render("System Scan"))
-	b.WriteString("\n\n")
+	// Progress header
+	content.WriteString(progressHeaderStyle.Render("SCANNING SYSTEM"))
+	content.WriteString("\n\n")
 
-	if m.scanState.active {
-		// Show detailed scanning progress
-		b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render("🔄 ACTIVE: Scanning for cleanable files"))
-		b.WriteString("\n\n")
+	// Current phase
+	content.WriteString(phaseStyle.Render(m.currentPhase))
+	content.WriteString("\n\n")
 
-		// Show current step
-		b.WriteString(fmt.Sprintf("Current: %s\n", m.scanState.currentPhase))
-		b.WriteString("\n")
+	// Progress bar
+	progress := int(m.scanProgress * 50)
+	progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
+	content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
+	content.WriteString("\n\n")
 
-		// Show all planned scan steps
-		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("Scan Steps:"))
-		b.WriteString("\n")
-		for i, step := range m.scanState.phases {
-			if i == 0 {
-				// Current step
-				b.WriteString(fmt.Sprintf("  ▸ %s\n", step))
-			} else if i < len(m.scanState.phases)-2 {
-				// Completed steps
-				b.WriteString(fmt.Sprintf("  ✓ %s\n", step))
+	return content.String()
+}
+
+// renderResults renders the results summary screen
+func (m Model) renderResults() string {
+	var content strings.Builder
+
+	// Results header
+	content.WriteString(resultsHeaderStyle.Render("SCAN RESULTS"))
+	content.WriteString("\n\n")
+
+	if m.scanResults != nil {
+		// Summary stats
+		summary := fmt.Sprintf("Found %d cleanable files (%s)",
+			m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize))
+		content.WriteString(summaryStyle.Render(summary))
+		content.WriteString("\n\n")
+
+		// Category breakdown
+		content.WriteString(categoryHeaderStyle.Render("CATEGORIES"))
+		content.WriteString("\n")
+
+		for _, cat := range m.categories {
+			line := fmt.Sprintf("📁 %s: %s (%d files)", cat.Name, cat.Size, cat.Files)
+			if cat.Enabled {
+				content.WriteString(categoryEnabledStyle.Render("  ✓ " + line))
 			} else {
-				// Remaining steps
-				b.WriteString(fmt.Sprintf("    %s\n", step))
+				content.WriteString(categoryDisabledStyle.Render("  ○ " + line))
 			}
+			content.WriteString("\n")
 		}
 
-		// Show scan progress details
-		if m.scanState.progress.FilesScanned > 0 || m.scanState.progress.DirsScanned > 0 {
-			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("Real-time Progress:"))
-			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("  Files scanned: %d\n", m.scanState.progress.FilesScanned))
-			b.WriteString(fmt.Sprintf("  Directories scanned: %d\n", m.scanState.progress.DirsScanned))
-			if m.scanState.progress.Bytes > 0 {
-				sizeMB := float64(m.scanState.progress.Bytes) / 1024 / 1024
-				b.WriteString(fmt.Sprintf("  Data found: %.1f MB\n", sizeMB))
-			}
-			if m.scanState.progress.CurrentDir != "" {
-				b.WriteString(fmt.Sprintf("  Currently scanning: %s\n", m.scanState.progress.CurrentDir))
-			}
-		}
-
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(Warning).Render("⚠ Press Ctrl+C to cancel scan"))
-
-	} else if m.scanState.completed && len(m.scanState.results) > 0 {
-		// Show completed scan results
-		b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render("✅ Scan completed successfully!"))
-		b.WriteString("\n\n")
-
-		// Show scan summary
-		var totalFiles int
-		var totalBytes uint64
-		for _, result := range m.scanState.results {
-			files, _ := strconv.Atoi(strconv.Itoa(result.Files))
-			totalFiles += files
-			totalBytes += uint64(files * 1024) // Rough estimate
-		}
-
-		b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("Scan Summary:"))
-		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("  Total files found: %d\n", totalFiles))
-		b.WriteString(fmt.Sprintf("  Total space: %.1f MB\n", float64(totalBytes)/1024/1024))
-		b.WriteString(fmt.Sprintf("  Categories scanned: %d\n", len(m.scanState.results)))
-		b.WriteString("\n")
-
-		b.WriteString(renderScanTable(m.scanState.results))
-
-	} else if len(m.scanState.results) > 0 {
-		// Has partial results
-		b.WriteString(lipgloss.NewStyle().Foreground(Secondary).Render("Scan Results"))
-		b.WriteString("\n\n")
-		b.WriteString(renderScanTable(m.scanState.results))
-
+		content.WriteString("\n")
+		content.WriteString(nextActionStyle.Render("Press Enter to select categories for cleaning"))
 	} else {
-		// Ready to scan
-		b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("Ready to scan your system for cleanable files."))
-		b.WriteString("\n\n")
-		b.WriteString("This will scan common locations for:")
-		b.WriteString("\n")
-		b.WriteString("• Temporary files")
-		b.WriteString("\n")
-		b.WriteString("• Cache files")
-		b.WriteString("\n")
-		b.WriteString("• Log files")
-		b.WriteString("\n")
-		b.WriteString("• Download cache")
-		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render("Press Enter to start scanning"))
+		content.WriteString(errorStyle.Render("No scan results available"))
 	}
 
-	return b.String()
+	return content.String()
 }
 
-// Render clean view
-func (m Model) renderCleanView() string {
-	var b strings.Builder
+// renderSelect renders the category selection screen
+func (m Model) renderSelect() string {
+	var content strings.Builder
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(Secondary).Render("Clean Files Mode"))
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("Select categories to clean files"))
-	b.WriteString("\n\n")
+	// Selection header
+	content.WriteString(selectionHeaderStyle.Render("SELECT CATEGORIES TO CLEAN"))
+	content.WriteString("\n\n")
 
-	// List categories with checkbox style
-	for i, category := range m.cfg.Categories {
-		status := "[ ]"
-		if category.Selected {
-			status = "[✓]"
+	// Categories
+	for i, cat := range m.categories {
+		prefix := "  "
+		style := categoryItemStyle
+		if i == m.menuIndex {
+			prefix = "> "
+			style = categoryItemSelectedStyle
 		}
 
-		b.WriteString(fmt.Sprintf("%s %s (%s)\n", status, category.Name, category.Risk.String()))
-		if i < len(m.cfg.Categories)-1 {
-			b.WriteString("\n")
+		indicator := "○"
+		if cat.Enabled {
+			indicator = "✓"
+			style = categoryItemEnabledStyle
 		}
+
+		line := fmt.Sprintf("%s%s %s (%s)", prefix, indicator, cat.Name, cat.Size)
+		content.WriteString(style.Render(line))
+		content.WriteString("\n")
 	}
 
-	return b.String()
-}
-
-// Render dry run view
-func (m Model) renderDryRunView() string {
-	var b strings.Builder
-
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(Secondary).Render("Dry Run Mode"))
-	b.WriteString("\n\n")
-
-	if len(m.scanState.results) > 0 {
-		b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("Preview what would be cleaned:"))
-		b.WriteString("\n\n")
-
-		var totalSize uint64
-		var totalFiles int
-
-		// Calculate totals from scan results
-		for _, result := range m.scanState.results {
-			files, _ := strconv.Atoi(strconv.Itoa(result.Files))
-			totalFiles += files
-			totalSize += uint64(files * 1024) // Rough estimate
-		}
-
-		b.WriteString(fmt.Sprintf("• %d files across %d categories\n", totalFiles, len(m.scanState.results)))
-		b.WriteString(fmt.Sprintf("• Approximately %.1f MB\n\n", float64(totalSize)/1024/1024))
-		b.WriteString(lipgloss.NewStyle().Foreground(Warning).Render("⚠ This is a preview - no files will be deleted"))
+	// Action options
+	content.WriteString("\n")
+	if m.menuIndex == len(m.categories) {
+		content.WriteString(actionItemSelectedStyle.Render("> Clean Selected"))
 	} else {
-		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("Scan the system first to see what would be cleaned"))
-		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render("Press Enter to perform scan first"))
+		content.WriteString(actionItemStyle.Render("  Clean Selected"))
+	}
+	content.WriteString("\n")
+	if m.menuIndex == len(m.categories)+1 {
+		content.WriteString(actionItemSelectedStyle.Render("> Back"))
+	} else {
+		content.WriteString(actionItemStyle.Render("  Back"))
 	}
 
-	return b.String()
+	// Selection info
+	selectedSize := m.calculateSelectedSize()
+	content.WriteString("\n\n")
+	content.WriteString(selectionInfoStyle.Render(fmt.Sprintf("Selected: %d categories (%s)", m.selectedCount, selectedSize)))
+
+	return content.String()
 }
 
-// Render about view
-func (m Model) renderAboutView() string {
-	var b strings.Builder
-
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(Primary).Render("MoonBit"))
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(FgSecondary).Render("System Cleaner"))
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("Version 1.0"))
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("A TUI-based system cleaning tool"))
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render("with safety mechanisms and undo support."))
-
-	return b.String()
-}
-
-// Get help text based on current state
-func (m Model) getHelpText() string {
-	if m.showSettings {
-		if m.settingsSubmenu == "" {
-			return "↑/↓: Navigate • Enter: Select • Esc: Close"
-		} else {
-			return "↑/↓: Navigate • Enter: Select • Esc: Back"
+// calculateSelectedSize calculates total size of selected categories
+func (m Model) calculateSelectedSize() string {
+	totalMB := 0
+	for _, cat := range m.categories {
+		if cat.Enabled {
+			// Parse size string and convert to MB
+			if sizeStr := strings.TrimSuffix(cat.Size, " MB"); sizeStr != cat.Size {
+				if mb, err := strconv.Atoi(sizeStr); err == nil {
+					totalMB += mb
+				}
+			}
 		}
 	}
+	return fmt.Sprintf("%d MB", totalMB)
+}
 
+// renderConfirm renders the confirmation screen
+func (m Model) renderConfirm() string {
+	var content strings.Builder
+
+	// Warning header
+	content.WriteString(warningHeaderStyle.Render("FINAL CONFIRMATION REQUIRED"))
+	content.WriteString("\n\n")
+
+	// Warning text
+	warning := "You are about to permanently delete:\n"
+	for _, cat := range m.categories {
+		if cat.Enabled {
+			warning += fmt.Sprintf("• %s (%s)\n", cat.Name, cat.Size)
+		}
+	}
+	warning += "\nThis action CANNOT be undone!"
+
+	content.WriteString(warningStyle.Render(warning))
+	content.WriteString("\n\n")
+
+	// Confirmation buttons
+	if m.menuIndex == 0 {
+		content.WriteString(buttonSelectedStyle.Render("  Cancel  "))
+	} else {
+		content.WriteString(buttonStyle.Render("  Cancel  "))
+	}
+
+	content.WriteString("  ")
+
+	if m.menuIndex == 1 {
+		content.WriteString(buttonSelectedStyle.Render("  Confirm & Clean  "))
+	} else {
+		content.WriteString(buttonStyle.Render("  Confirm & Clean  "))
+	}
+
+	return content.String()
+}
+
+// renderClean renders the cleaning progress screen
+func (m Model) renderClean() string {
+	var content strings.Builder
+
+	// Cleaning header
+	content.WriteString(cleaningHeaderStyle.Render("CLEANING IN PROGRESS"))
+	content.WriteString("\n\n")
+
+	// Current phase
+	content.WriteString(phaseStyle.Render(m.currentPhase))
+	content.WriteString("\n\n")
+
+	// Progress indicator
+	content.WriteString(progressStyle.Render("Cleaning files..."))
+
+	return content.String()
+}
+
+// renderComplete renders the completion screen
+func (m Model) renderComplete() string {
+	var content strings.Builder
+
+	// Success header
+	content.WriteString(successHeaderStyle.Render("CLEANING COMPLETE!"))
+	content.WriteString("\n\n")
+
+	// Success message
+	success := "Your system has been optimized!\n\n"
+	success += "Cache files and temporary data have been successfully removed."
+	content.WriteString(successStyle.Render(success))
+	content.WriteString("\n\n")
+
+	// Next action
+	content.WriteString(nextActionStyle.Render("Press Enter to return to main menu"))
+
+	return content.String()
+}
+
+// getFooterText returns appropriate footer text
+func (m Model) getFooterText() string {
 	switch m.mode {
-	case ModeMain:
-		return "↑/↓: Navigate • Enter: Select • F1: Settings • Q: Quit"
-	case ModeScan:
-		if !m.scanState.active && len(m.scanState.results) == 0 {
-			return "Enter: Start Scan • R: Reset • Esc: Back"
-		} else {
-			return "R: Reset • Esc: Back"
-		}
-	case ModeClean:
-		return "↑/↓: Select Category • Space: Toggle • R: Reset • Esc: Back"
-	case ModeDryRun:
-		if len(m.scanState.results) == 0 {
-			return "Enter: Perform Scan First • Esc: Back"
-		} else {
-			return "Esc: Back"
-		}
-	case ModeAbout:
-		return "Esc: Back • Q: Quit"
+	case ModeWelcome:
+		return "↑↓ Navigate • Enter Select • Esc Back • Q Quit"
+	case ModeScanProgress, ModeClean:
+		return "Processing... • Esc Back"
+	case ModeConfirm:
+		return "↑↓ Navigate • Enter Select • Esc Back"
 	default:
-		return "Esc: Back • Q: Quit"
+		return "↑↓ Navigate • Enter Select • Esc Back • Q Quit"
 	}
-}
-
-// Format menu item with selection indicator
-func formatMenuItem(item string, selected bool) string {
-	if selected {
-		return "▶ " + item
-	}
-	return "  " + item
-}
-
-// Start launches the MoonBit TUI (sysc-greet installer style)
-func Start() {
-	// Use tea.WithAltScreen() to take full control of terminal like sysc-greet
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		// Handle error properly
-		if debugLog != nil {
-			debugLog.Printf("Error running MoonBit UI: %v", err)
-		}
-	}
-}
-
-// loadSessionCache loads the scan results from the CLI cache
-func (m *Model) loadSessionCache() (*SessionCache, error) {
-	cachePath := m.getSessionCachePath()
-	data, err := os.ReadFile(cachePath)
-	if err != nil {
-		return nil, err
-	}
-
-	var cache SessionCache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, err
-	}
-
-	return &cache, nil
-}
-
-// getSessionCachePath returns the path to the session cache
-func (m *Model) getSessionCachePath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
 }
 
 // humanizeBytes converts bytes to human-readable format
-func (m *Model) humanizeBytes(bytes uint64) string {
+func humanizeBytes(bytes uint64) string {
 	const (
 		KB = 1024
 		MB = 1024 * KB
@@ -1149,3 +670,142 @@ func (m *Model) humanizeBytes(bytes uint64) string {
 		return fmt.Sprintf("%d B", bytes)
 	}
 }
+
+// Message types for async operations
+type scanProgressMsg struct {
+	Progress float64
+	Phase    string
+}
+
+type scanCompleteMsg struct {
+	Success bool
+	Error   string
+	Output  string
+}
+
+type cleanCompleteMsg struct {
+	Success bool
+	Error   string
+	Output  string
+}
+
+// Style definitions based on sysc-greet patterns
+var (
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(Secondary).
+			Padding(1)
+
+	statusStyle = lipgloss.NewStyle().
+			Foreground(Accent).
+			Padding(0, 1)
+
+	menuItemStyle = lipgloss.NewStyle().
+			Foreground(FgPrimary)
+
+	menuItemSelectedStyle = menuItemStyle.Copy().
+				Bold(true).
+				Foreground(Primary)
+
+	progressHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(Primary).
+				Align(lipgloss.Center)
+
+	resultsHeaderStyle = progressHeaderStyle.Copy().
+				Foreground(Accent)
+
+	selectionHeaderStyle = progressHeaderStyle.Copy().
+				Foreground(Secondary)
+
+	warningHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(Warning).
+				Align(lipgloss.Center)
+
+	cleaningHeaderStyle = progressHeaderStyle.Copy().
+				Foreground(Danger)
+
+	successHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(Accent).
+				Align(lipgloss.Center)
+
+	phaseStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(FgPrimary).
+			Align(lipgloss.Center).
+			Padding(1)
+
+	summaryStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(Primary).
+			Align(lipgloss.Center)
+
+	progressBarStyle = lipgloss.NewStyle().
+				Foreground(Primary).
+				Align(lipgloss.Center)
+
+	progressStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(Secondary).
+			Align(lipgloss.Center)
+
+	categoryHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(Secondary)
+
+	categoryEnabledStyle = lipgloss.NewStyle().
+				Foreground(Accent)
+
+	categoryDisabledStyle = lipgloss.NewStyle().
+				Foreground(FgMuted)
+
+	categoryItemStyle = lipgloss.NewStyle().
+				Foreground(FgPrimary)
+
+	categoryItemSelectedStyle = categoryItemStyle.Copy().
+					Bold(true).
+					Foreground(Primary)
+
+	categoryItemEnabledStyle = categoryItemStyle.Copy().
+					Foreground(Accent).
+					Bold(true)
+
+	actionItemStyle         = menuItemStyle.Copy()
+	actionItemSelectedStyle = menuItemSelectedStyle.Copy()
+
+	selectionInfoStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(Accent).
+				Align(lipgloss.Center)
+
+	warningStyle = lipgloss.NewStyle().
+			Foreground(Warning).
+			Padding(1, 2)
+
+	successStyle = lipgloss.NewStyle().
+			Foreground(Accent).
+			Padding(1, 2)
+
+	nextActionStyle = lipgloss.NewStyle().
+			Foreground(FgMuted).
+			Align(lipgloss.Center)
+
+	errorStyle = lipgloss.NewStyle().
+			Foreground(Danger).
+			Padding(1, 2)
+
+	buttonStyle = lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Background(BgSubtle).
+			Padding(0, 2)
+
+	buttonSelectedStyle = buttonStyle.Copy().
+				Background(Primary).
+				Foreground(lipgloss.Color("0"))
+
+	footerStyle = lipgloss.NewStyle().
+			Foreground(FgMuted).
+			Align(lipgloss.Center)
+)
