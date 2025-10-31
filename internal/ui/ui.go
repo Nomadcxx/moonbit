@@ -231,11 +231,14 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case ModeConfirm:
+		fmt.Fprintf(os.Stderr, "DEBUG: ModeConfirm - menuIndex=%d\n", m.menuIndex)
 		if m.menuIndex == 0 { // Cancel
+			fmt.Fprintf(os.Stderr, "DEBUG: Cancel selected\n")
 			m.mode = ModeSelect
 			m.menuIndex = 0
 			return m, nil
 		} else { // Confirm (menuIndex == 1)
+			fmt.Fprintf(os.Stderr, "DEBUG: Confirm selected, calling executeClean\n")
 			return m.executeClean()
 		}
 	case ModeSelect:
@@ -540,11 +543,15 @@ func (m Model) showConfirm() (tea.Model, tea.Cmd) {
 
 // executeClean performs the actual cleaning
 func (m Model) executeClean() (tea.Model, tea.Cmd) {
+	fmt.Fprintf(os.Stderr, "DEBUG: executeClean called, mode=%s\n", m.mode)
 	m.mode = ModeClean
 	m.menuIndex = 0
 	m.cleanActive = true
 	m.cleanStarted = time.Now()
 	m.currentPhase = "Cleaning in progress..."
+	
+	fmt.Fprintf(os.Stderr, "DEBUG: executeClean setting mode to ModeClean\n")
+	fmt.Fprintf(os.Stderr, "DEBUG: scanResults nil? %v\n", m.scanResults == nil)
 
 	return m, tea.Batch(runCleanCmd(m.cfg, m.scanResults), tick())
 }
@@ -552,13 +559,17 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 // runCleanCmd executes cleaning using the cleaner package
 func runCleanCmd(cfg *config.Config, cache *SessionCache) tea.Cmd {
 	return func() tea.Msg {
+		fmt.Fprintf(os.Stderr, "DEBUG: runCleanCmd executing\n")
 		if cache == nil || cache.ScanResults == nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: No scan results - cache nil? %v, ScanResults nil? %v\n", 
+				cache == nil, cache == nil || cache.ScanResults == nil)
 			return cleanCompleteMsg{
 				Success: false,
 				Error:   "No scan results available",
 			}
 		}
 
+		fmt.Fprintf(os.Stderr, "DEBUG: Creating cleaner, files to clean: %d\n", len(cache.ScanResults.Files))
 		ctx := context.Background()
 		c := cleaner.NewCleaner(cfg)
 
@@ -662,6 +673,7 @@ func saveSessionCache(cache *SessionCache) error {
 
 // View renders the UI
 func (m Model) View() string {
+	fmt.Fprintf(os.Stderr, "DEBUG: View() called, mode=%s\n", m.mode)
 	var content strings.Builder
 
 	// Main header
