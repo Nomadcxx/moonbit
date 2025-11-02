@@ -1,7 +1,8 @@
-.PHONY: all build test clean install uninstall run dev help
+.PHONY: all build test clean install uninstall run dev help install-systemd uninstall-systemd
 
 BINARY_NAME=moonbit
 INSTALL_PATH=/usr/local/bin
+SYSTEMD_PATH=/etc/systemd/system
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
@@ -54,6 +55,30 @@ uninstall:
 	@echo "Uninstalling $(BINARY_NAME)..."
 	sudo rm -f $(INSTALL_PATH)/$(BINARY_NAME)
 	@echo "Uninstalled"
+
+# Install systemd service and timer files
+install-systemd:
+	@echo "Installing systemd service files..."
+	sudo cp systemd/moonbit-scan.service $(SYSTEMD_PATH)/
+	sudo cp systemd/moonbit-scan.timer $(SYSTEMD_PATH)/
+	sudo cp systemd/moonbit-clean.service $(SYSTEMD_PATH)/
+	sudo cp systemd/moonbit-clean.timer $(SYSTEMD_PATH)/
+	sudo systemctl daemon-reload
+	@echo "Systemd files installed. Enable with:"
+	@echo "  sudo systemctl enable --now moonbit-scan.timer"
+	@echo "  sudo systemctl enable --now moonbit-clean.timer"
+
+# Uninstall systemd service and timer files
+uninstall-systemd:
+	@echo "Uninstalling systemd service files..."
+	sudo systemctl disable --now moonbit-scan.timer 2>/dev/null || true
+	sudo systemctl disable --now moonbit-clean.timer 2>/dev/null || true
+	sudo rm -f $(SYSTEMD_PATH)/moonbit-scan.service
+	sudo rm -f $(SYSTEMD_PATH)/moonbit-scan.timer
+	sudo rm -f $(SYSTEMD_PATH)/moonbit-clean.service
+	sudo rm -f $(SYSTEMD_PATH)/moonbit-clean.timer
+	sudo systemctl daemon-reload
+	@echo "Systemd files uninstalled"
 
 # Run the application (interactive TUI mode)
 run: build
@@ -109,6 +134,8 @@ help:
 	@echo "  clean          Remove build artifacts"
 	@echo "  install        Install binary to $(INSTALL_PATH)"
 	@echo "  uninstall      Remove binary from $(INSTALL_PATH)"
+	@echo "  install-systemd   Install systemd service/timer files"
+	@echo "  uninstall-systemd Remove systemd service/timer files"
 	@echo "  run            Build and run in TUI mode"
 	@echo "  dev            Build and run with sudo (for system paths)"
 	@echo "  fmt            Format code with go fmt"

@@ -1,0 +1,12 @@
+[Unit]
+Description=MoonBit Weekly Cleanup Timer
+Documentation=https://github.com/Nomadcxx/moonbit
+
+[Timer]
+# Run weekly on Sunday at 3 AM
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

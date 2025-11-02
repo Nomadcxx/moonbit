@@ -57,6 +57,29 @@ moonbit backup list
 moonbit backup restore <name>
 ```
 
+## Automated Cleaning (Systemd)
+
+Set up automated scans and cleaning with systemd timers:
+
+```bash
+# Install MoonBit
+make install
+
+# Install and enable systemd timers
+make install-systemd
+sudo systemctl enable --now moonbit-scan.timer
+sudo systemctl enable --now moonbit-clean.timer
+
+# Check status
+systemctl list-timers moonbit-*
+```
+
+Default schedule:
+- **Scan**: Daily at 2 AM
+- **Clean**: Weekly on Sunday at 3 AM
+
+See `systemd/README.md` for customization.
+
 ## Current Status
 
 Working:
