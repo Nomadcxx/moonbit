@@ -172,6 +172,82 @@ func DefaultConfig() *Config {
 				Selected:     false,
 				ShredEnabled: false,
 			},
+			// Development Tools Caches
+			{
+				Name:         "pip Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/pip"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "npm Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.npm", os.Getenv("HOME") + "/.cache/npm"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Cargo Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cargo/registry/cache"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Gradle Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.gradle/caches"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Maven Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.m2/repository"},
+				Risk:         Medium,
+				Selected:     false,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Go Build Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/go-build"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			// Docker (NOTE: Better to use 'docker system prune' commands)
+			{
+				Name:         "Docker Temp Files",
+				Paths:        []string{"/var/lib/docker/tmp"},
+				Risk:         Low,
+				Selected:     false,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Docker Container Logs",
+				Paths:        []string{"/var/lib/docker/containers"},
+				Risk:         Medium,
+				Selected:     false,
+				ShredEnabled: false,
+				Filters:      []string{`\.log$`},
+			},
+			// System caches
+			{
+				Name:         "Flatpak Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.var/app"},
+				Risk:         Medium,
+				Selected:     false,
+				ShredEnabled: false,
+				Filters:      []string{`/cache/`, `/\.cache/`},
+			},
+			{
+				Name:         "Systemd Journal",
+				Paths:        []string{"/var/log/journal"},
+				Risk:         Medium,
+				Selected:     false,
+				ShredEnabled: false,
+				Filters:      []string{`\.journal$`},
+			},
 		},
 	}
 	return cfg

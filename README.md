@@ -14,7 +14,9 @@ sudo ./moonbit
 ## What It Does
 
 - Scans package manager caches (Pacman, Yay, Paru, Pamac)
-- Finds temporary files and user caches
+- Development tool caches (pip, npm, cargo, gradle, maven, go)
+- Docker cleanup (images, containers, volumes)
+- System caches and logs
 - Interactive TUI for selecting what to clean
 - Backup before deletion
 
@@ -28,6 +30,10 @@ moonbit
 moonbit scan
 moonbit clean --force
 
+# Docker cleanup (uses docker CLI)
+moonbit docker images    # Remove unused images
+moonbit docker all       # Remove all unused resources
+
 # Manage backups
 moonbit backup list
 moonbit backup restore <name>
@@ -40,12 +46,14 @@ Working:
 - [x] Interactive category selection
 - [x] Backup/restore functionality
 - [x] Safety checks (protected paths, size limits)
+- [x] Development tool caches (pip, npm, cargo, gradle, maven, go)
+- [x] Docker cleanup commands
 
 Todo:
-- [ ] More cleanup targets (Docker, pip, cargo, npm, flatpak)
 - [ ] Quick vs Deep clean modes
 - [ ] Multi-distro support (apt, dnf, zypper)
 - [ ] Better TUI with file preview
+- [ ] Additional cleanup targets (VSCode extensions, browser data)
 
 ## Development
 

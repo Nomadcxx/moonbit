@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -413,13 +414,99 @@ var backupRestoreCmd = &cobra.Command{
 	},
 }
 
+var dockerCmd = &cobra.Command{
+	Use:   "docker",
+	Short: "Clean Docker resources",
+	Long:  "Clean unused Docker images, containers, volumes, and build cache using Docker CLI",
+}
+
+var dockerImagesCmd = &cobra.Command{
+	Use:   "images",
+	Short: "Remove unused Docker images",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("🐳 Cleaning unused Docker images...")
+
+		// Check if docker is available
+		checkCmd := exec.Command("docker", "version")
+		if err := checkCmd.Run(); err != nil {
+			fmt.Println("❌ Docker is not installed or not running")
+			return
+		}
+
+		// Show current usage
+		dfCmd := exec.Command("docker", "system", "df")
+		dfCmd.Stdout = os.Stdout
+		dfCmd.Stderr = os.Stderr
+		dfCmd.Run()
+
+		fmt.Println("\n🗑️  Running: docker image prune -a")
+
+		pruneCmd := exec.Command("docker", "image", "prune", "-a", "-f")
+		pruneCmd.Stdout = os.Stdout
+		pruneCmd.Stderr = os.Stderr
+
+		if err := pruneCmd.Run(); err != nil {
+			fmt.Printf("❌ Failed to prune images: %v\n", err)
+			return
+		}
+
+		fmt.Println("✅ Docker images cleaned successfully!")
+	},
+}
+
+var dockerAllCmd = &cobra.Command{
+	Use:   "all",
+	Short: "Remove all unused Docker resources",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("🐳 Cleaning all unused Docker resources...")
+
+		// Check if docker is available
+		checkCmd := exec.Command("docker", "version")
+		if err := checkCmd.Run(); err != nil {
+			fmt.Println("❌ Docker is not installed or not running")
+			return
+		}
+
+		// Show current usage
+		fmt.Println("\n📊 Current Docker disk usage:")
+		dfCmd := exec.Command("docker", "system", "df")
+		dfCmd.Stdout = os.Stdout
+		dfCmd.Stderr = os.Stderr
+		dfCmd.Run()
+
+		fmt.Println("\n🗑️  Running: docker system prune -a --volumes")
+
+		pruneCmd := exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
+		pruneCmd.Stdout = os.Stdout
+		pruneCmd.Stderr = os.Stderr
+
+		if err := pruneCmd.Run(); err != nil {
+			fmt.Printf("❌ Failed to prune Docker resources: %v\n", err)
+			return
+		}
+
+		// Show new usage
+		fmt.Println("\n📊 Updated Docker disk usage:")
+		dfCmd2 := exec.Command("docker", "system", "df")
+		dfCmd2.Stdout = os.Stdout
+		dfCmd2.Stderr = os.Stderr
+		dfCmd2.Run()
+
+		fmt.Println("\n✅ Docker cleanup complete!")
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(dockerCmd)
 
 	backupCmd.AddCommand(backupListCmd)
 	backupCmd.AddCommand(backupRestoreCmd)
+
+	dockerCmd.AddCommand(dockerImagesCmd)
+	dockerCmd.AddCommand(dockerAllCmd)
 
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
 
