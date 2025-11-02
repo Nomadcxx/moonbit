@@ -11,6 +11,7 @@ import (
 
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/duplicates"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/ui"
 	"github.com/spf13/cobra"
@@ -496,17 +497,124 @@ var dockerAllCmd = &cobra.Command{
 	},
 }
 
+var duplicatesCmd = &cobra.Command{
+	Use:   "duplicates",
+	Short: "Find and remove duplicate files",
+	Long:  "Scan for duplicate files based on content hashing and optionally remove them",
+}
+
+var duplicatesFindCmd = &cobra.Command{
+	Use:   "find [paths...]",
+	Short: "Find duplicate files",
+	Long:  "Scan specified paths (or home directory) for duplicate files",
+	Run: func(cmd *cobra.Command, args []string) {
+		paths := args
+		if len(paths) == 0 {
+			homeDir, _ := os.UserHomeDir()
+			paths = []string{homeDir}
+		}
+
+		minSize, _ := cmd.Flags().GetInt64("min-size")
+
+		fmt.Println("🔍 Scanning for duplicate files...")
+		fmt.Printf("📁 Paths: %v\n", paths)
+		fmt.Printf("📏 Minimum size: %s\n\n", humanizeBytes(uint64(minSize)))
+
+		opts := duplicates.ScanOptions{
+			Paths:   paths,
+			MinSize: minSize,
+		}
+
+		scanner := duplicates.NewScanner(opts)
+		progressCh := make(chan duplicates.ScanProgress, 10)
+
+		// Show progress
+		go func() {
+			for progress := range progressCh {
+				if progress.Phase != "" {
+					fmt.Printf("\r%s - %d files scanned (%s)",
+						progress.Phase,
+						progress.FilesScanned,
+						humanizeBytes(uint64(progress.BytesScanned)))
+				}
+			}
+		}()
+
+		result, err := scanner.Scan(progressCh)
+		if err != nil {
+			fmt.Printf("\n❌ Error: %v\n", err)
+			return
+		}
+
+		fmt.Printf("\n\n📊 Scan Results\n")
+		fmt.Println("================")
+		fmt.Printf("Files scanned: %d\n", result.FilesScanned)
+		fmt.Printf("Duplicate groups: %d\n", len(result.Groups))
+		fmt.Printf("Duplicate files: %d\n", result.TotalDupes)
+		fmt.Printf("Wasted space: %s\n\n", humanizeBytes(uint64(result.WastedSpace)))
+
+		if len(result.Groups) == 0 {
+			fmt.Println("✅ No duplicate files found!")
+			return
+		}
+
+		// Show top 10 groups
+		limit := 10
+		if len(result.Groups) < limit {
+			limit = len(result.Groups)
+		}
+
+		fmt.Printf("📋 Top %d Duplicate Groups (by wasted space):\n", limit)
+		for i, group := range result.Groups[:limit] {
+			fmt.Printf("\n%d. %d duplicates × %s = %s wasted\n",
+				i+1,
+				len(group.Files),
+				humanizeBytes(uint64(group.Size)),
+				humanizeBytes(uint64(group.TotalSize)))
+
+			for j, file := range group.Files {
+				marker := "  "
+				if j == 0 {
+					marker = "✓ " // Keep oldest
+				} else {
+					marker = "✗ " // Duplicate
+				}
+				fmt.Printf("  %s %s\n", marker, file.Path)
+			}
+		}
+
+		fmt.Printf("\n💡 Use 'moonbit duplicates clean' to interactively remove duplicates\n")
+	},
+}
+
+var duplicatesCleanCmd = &cobra.Command{
+	Use:   "clean",
+	Short: "Remove duplicate files (interactive)",
+	Long:  "Interactively select and remove duplicate files found in the last scan",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("🚧 Interactive duplicate removal not yet implemented")
+		fmt.Println("💡 For now, use 'moonbit duplicates find' to see duplicates")
+		fmt.Println("   Manual removal recommended until interactive UI is complete")
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(dockerCmd)
+	rootCmd.AddCommand(duplicatesCmd)
 
 	backupCmd.AddCommand(backupListCmd)
 	backupCmd.AddCommand(backupRestoreCmd)
 
 	dockerCmd.AddCommand(dockerImagesCmd)
 	dockerCmd.AddCommand(dockerAllCmd)
+
+	duplicatesCmd.AddCommand(duplicatesFindCmd)
+	duplicatesCmd.AddCommand(duplicatesCleanCmd)
+
+	duplicatesFindCmd.Flags().Int64("min-size", 1024, "Minimum file size to consider (bytes)")
 
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
 

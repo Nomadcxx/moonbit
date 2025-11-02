@@ -35,6 +35,7 @@ sudo ./moonbit
 **Other:**
 - Docker cleanup (images, containers, volumes)
 - Crash reports, system logs, trash
+- Duplicate file detection with SHA256 hashing
 - Interactive TUI for selective cleaning
 - Automatic backup before deletion
 
@@ -47,6 +48,11 @@ moonbit
 # CLI mode
 moonbit scan
 moonbit clean --force
+
+# Find and remove duplicate files
+moonbit duplicates find [paths...]          # Find duplicates (default: home directory)
+moonbit duplicates find --min-size 10240    # Find duplicates >= 10KB
+moonbit duplicates clean                    # Interactive removal (coming soon)
 
 # Docker cleanup (uses docker CLI)
 moonbit docker images    # Remove unused images
