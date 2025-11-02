@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -74,6 +75,14 @@ type Config struct {
 		DryRunDefault  bool     `toml:"dry_run_default"`
 	} `toml:"scan"`
 	Categories []Category `toml:"categories"`
+}
+
+// SessionCache stores scan results for the current session
+type SessionCache struct {
+	ScanResults *Category `json:"scan_results"`
+	TotalSize   uint64    `json:"total_size"`
+	TotalFiles  int       `json:"total_files"`
+	ScannedAt   time.Time `json:"scanned_at"`
 }
 
 // DefaultConfig returns a comprehensive configuration with real cleaning targets

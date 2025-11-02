@@ -3,9 +3,13 @@ package cleaner
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
@@ -83,6 +87,8 @@ func NewCleaner(cfg *config.Config) *Cleaner {
 
 // CleanCategory cleans files from a specific category
 func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, dryRun bool, progressCh chan<- CleanMsg) error {
+	defer close(progressCh)
+
 	start := time.Now()
 
 	// Safety checks
@@ -279,35 +285,197 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 // Create backup before cleaning
 func (c *Cleaner) createBackup(category *config.Category) string {
 	timestamp := time.Now().Format("20060102_150405")
-	backupDir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "moonbit", "backups")
+
+	// Get XDG_DATA_HOME with fallback to ~/.local/share
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dataHome = filepath.Join(homeDir, ".local", "share")
+	}
+
+	backupDir := filepath.Join(dataHome, "moonbit", "backups")
 
 	// Create backup directory
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return ""
 	}
 
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s.tar.gz", category.Name, timestamp))
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s.backup",
+		sanitizeName(category.Name), timestamp))
 
-	// For now, just create a simple manifest file
-	// TODO: Implement actual tar backup creation
-	manifestPath := backupPath + ".manifest"
-	manifest, err := os.Create(manifestPath)
-	if err != nil {
+	// Create backup info file with metadata
+	if err := c.createBackupMetadata(backupPath, category, timestamp); err != nil {
 		return ""
 	}
-	defer manifest.Close()
 
-	// Write manifest
-	manifest.WriteString(fmt.Sprintf("Backup created: %s\n", time.Now().Format(time.RFC3339)))
-	manifest.WriteString(fmt.Sprintf("Category: %s\n", category.Name))
-	manifest.WriteString(fmt.Sprintf("Files: %d\n", len(category.Files)))
-	manifest.WriteString(fmt.Sprintf("Total Size: %d bytes\n", category.Size))
+	// Copy files to backup directory
+	backupFilesDir := backupPath + ".files"
+	if err := os.MkdirAll(backupFilesDir, 0755); err != nil {
+		return ""
+	}
 
+	// Copy each file to backup, preserving relative structure
 	for _, file := range category.Files {
-		manifest.WriteString(file.Path + "\n")
+		if err := c.backupFile(file.Path, backupFilesDir); err != nil {
+			// Log error but continue with other files
+			continue
+		}
 	}
 
 	return backupPath
+}
+
+// sanitizeName removes special characters from names for safe filenames
+func sanitizeName(name string) string {
+	// Replace spaces and special chars with underscores
+	name = strings.ReplaceAll(name, " ", "_")
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+	return name
+}
+
+// createBackupMetadata creates a JSON metadata file for the backup
+func (c *Cleaner) createBackupMetadata(backupPath string, category *config.Category, timestamp string) error {
+	metadata := map[string]interface{}{
+		"created_at": time.Now().Format(time.RFC3339),
+		"timestamp":  timestamp,
+		"category":   category.Name,
+		"file_count": len(category.Files),
+		"total_size": category.Size,
+		"files":      category.Files,
+	}
+
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	metaPath := backupPath + ".json"
+	return os.WriteFile(metaPath, data, 0644)
+}
+
+// backupFile copies a single file to backup directory
+func (c *Cleaner) backupFile(srcPath, backupDir string) error {
+	// Check if source file exists
+	srcInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return err
+	}
+
+	// Skip if it's a directory (we only backup files)
+	if srcInfo.IsDir() {
+		return nil
+	}
+
+	// Create safe filename (hash of original path to avoid collisions)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(srcPath)))
+	dstPath := filepath.Join(backupDir, hash[:16])
+
+	// Copy file
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, src)
+	return err
+}
+
+// RestoreBackup restores files from a backup
+func RestoreBackup(backupPath string) error {
+	// Read metadata
+	metaPath := backupPath + ".json"
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return fmt.Errorf("failed to read backup metadata: %w", err)
+	}
+
+	var metadata struct {
+		Files []config.FileInfo `json:"files"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return fmt.Errorf("failed to parse backup metadata: %w", err)
+	}
+
+	backupFilesDir := backupPath + ".files"
+
+	// Restore each file
+	for _, file := range metadata.Files {
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(file.Path)))
+		srcPath := filepath.Join(backupFilesDir, hash[:16])
+
+		// Check if backup file exists
+		if _, err := os.Stat(srcPath); err != nil {
+			continue // Skip missing backup files
+		}
+
+		// Ensure target directory exists
+		targetDir := filepath.Dir(file.Path)
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			continue
+		}
+
+		// Copy file back
+		src, err := os.Open(srcPath)
+		if err != nil {
+			continue
+		}
+
+		dst, err := os.Create(file.Path)
+		if err != nil {
+			src.Close()
+			continue
+		}
+
+		io.Copy(dst, src)
+		src.Close()
+		dst.Close()
+	}
+
+	return nil
+}
+
+// ListBackups returns a list of available backups
+func ListBackups() ([]string, error) {
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		dataHome = filepath.Join(homeDir, ".local", "share")
+	}
+
+	backupDir := filepath.Join(dataHome, "moonbit", "backups")
+
+	// Check if backup directory exists
+	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
+		return []string{}, nil
+	}
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var backups []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".backup") {
+			backups = append(backups, entry.Name())
+		}
+	}
+
+	return backups, nil
 }
 
 // GetDefaultSafetyConfig returns default safety configuration

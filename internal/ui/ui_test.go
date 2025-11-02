@@ -39,7 +39,7 @@ func TestViewModes(t *testing.T) {
 
 func TestSessionCacheStructure(t *testing.T) {
 	// Test SessionCache can be created
-	cache := &SessionCache{
+	cache := &config.SessionCache{
 		ScanResults: &config.Category{
 			Name:      "Test",
 			FileCount: 10,
@@ -107,9 +107,9 @@ func TestParseScanResultsWithCategories(t *testing.T) {
 
 func TestParseScanResultsWithCache(t *testing.T) {
 	model := NewModel()
-	
+
 	// Create cache with aggregated data
-	cache := &SessionCache{
+	cache := &config.SessionCache{
 		ScanResults: &config.Category{
 			Name: "Total",
 			Files: []config.FileInfo{
@@ -233,7 +233,7 @@ func TestLoadSessionCache(t *testing.T) {
 
 func TestSaveSessionCacheCreatesDirectory(t *testing.T) {
 	// Create test cache
-	cache := &SessionCache{
+	cache := &config.SessionCache{
 		TotalSize:  1024,
 		TotalFiles: 10,
 		ScannedAt:  time.Now(),
@@ -260,33 +260,16 @@ func TestTickMsg(t *testing.T) {
 	assert.Equal(t, time.Time(msg), now)
 }
 
-func TestProgressState(t *testing.T) {
-	// Test progress state structure
-	state := progressState{
-		filesScanned: 100,
-		bytesScanned: 1024000,
-		currentFile:  "/tmp/test.txt",
-		totalFiles:   500,
-	}
-
-	assert.Equal(t, 100, state.filesScanned)
-	assert.Equal(t, uint64(1024000), state.bytesScanned)
-	assert.Equal(t, "/tmp/test.txt", state.currentFile)
-	assert.Equal(t, 500, state.totalFiles)
-}
-
 func TestUpdateWithTick(t *testing.T) {
 	model := NewModel()
 	model.scanActive = true
 	model.scanStarted = time.Now()
-	
+
 	// Simulate progress state
-	currentProgress = progressState{
-		filesScanned: 50,
-		bytesScanned: 512000,
-		currentFile:  "/tmp/test.txt",
-		totalFiles:   100,
-	}
+	model.filesScanned = 50
+	model.bytesScanned = 512000
+	model.currentFile = "/tmp/test.txt"
+	model.totalFilesGuess = 100
 
 	// Send tick message
 	msg := tickMsg(time.Now())

@@ -39,14 +39,6 @@ const (
 	ModeComplete     ViewMode = "complete"
 )
 
-// SessionCache mirrors CLI cache structure
-type SessionCache struct {
-	ScanResults *config.Category `json:"scan_results"`
-	TotalSize   uint64           `json:"total_size"`
-	TotalFiles  int              `json:"total_files"`
-	ScannedAt   time.Time        `json:"scanned_at"`
-}
-
 // CategoryInfo represents a cleanable category for UI
 type CategoryInfo struct {
 	Name    string
@@ -66,13 +58,17 @@ type Model struct {
 	menuOptions []string
 
 	// Scan state
-	scanActive   bool
-	scanStarted  time.Time
-	scanOutput   strings.Builder
-	scanResults  *SessionCache
-	scanProgress float64
-	currentPhase string
-	scanError    string
+	scanActive      bool
+	scanStarted     time.Time
+	scanOutput      strings.Builder
+	scanResults     *config.SessionCache
+	scanProgress    float64
+	currentPhase    string
+	scanError       string
+	filesScanned    int
+	bytesScanned    uint64
+	currentFile     string
+	totalFilesGuess int
 
 	// Clean state
 	cleanActive      bool
@@ -132,12 +128,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tickMsg:
-		// Update progress from shared state if scanning
-		if m.scanActive && currentProgress.totalFiles > 0 {
-			progress := float64(currentProgress.filesScanned) / float64(currentProgress.totalFiles)
+		// Update progress display if scanning
+		if m.scanActive && m.totalFilesGuess > 0 {
+			progress := float64(m.filesScanned) / float64(m.totalFilesGuess)
 			m.scanProgress = progress
-			if currentProgress.currentFile != "" {
-				m.currentPhase = fmt.Sprintf("Scanning: %s", filepath.Base(currentProgress.currentFile))
+			if m.currentFile != "" {
+				m.currentPhase = fmt.Sprintf("Scanning: %s", filepath.Base(m.currentFile))
 			}
 		}
 		// Continue ticking while scan is active
@@ -148,14 +144,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanProgressMsg:
 		m.scanProgress = msg.Progress
 		m.currentPhase = msg.Phase
+		m.filesScanned = msg.FilesScanned
+		m.bytesScanned = msg.BytesScanned
+		m.currentFile = msg.CurrentPath
 		return m, nil
 	case scanCompleteMsg:
 		return m.handleScanComplete(msg)
 	case cleanCompleteMsg:
-		fmt.Fprintf(os.Stderr, "DEBUG: cleanCompleteMsg received, success=%v, error=%s\n", msg.Success, msg.Error)
-		newModel, cmd := m.handleCleanComplete(msg)
-		fmt.Fprintf(os.Stderr, "DEBUG: After handleCleanComplete, mode=%s\n", newModel.(Model).mode)
-		return newModel, cmd
+		return m.handleCleanComplete(msg)
 	}
 
 	return m, nil
@@ -214,14 +210,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "enter", " ":
-		fmt.Fprintf(os.Stderr, "DEBUG: Enter pressed, mode=%s, menuIndex=%d\n", m.mode, m.menuIndex)
 		// Handle complete mode specially
 		if m.mode == ModeComplete {
 			return m.handleCompleteKey()
 		}
-		newModel, cmd := m.handleMenuSelect()
-		fmt.Fprintf(os.Stderr, "DEBUG: After handleMenuSelect, mode=%s\n", newModel.(Model).mode)
-		return newModel, cmd
+		return m.handleMenuSelect()
 	case "esc":
 		if m.mode == ModeComplete {
 			return m.handleCompleteKey()
@@ -257,17 +250,12 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case ModeConfirm:
-		fmt.Fprintf(os.Stderr, "DEBUG: ModeConfirm handler, menuIndex=%d\n", m.menuIndex)
 		if m.menuIndex == 0 { // Cancel
-			fmt.Fprintf(os.Stderr, "DEBUG: Cancel selected\n")
 			m.mode = ModeSelect
 			m.menuIndex = 0
 			return m, nil
 		} else { // Confirm (menuIndex == 1)
-			fmt.Fprintf(os.Stderr, "DEBUG: Confirm selected, calling executeClean\n")
-			newModel, cmd := m.executeClean()
-			fmt.Fprintf(os.Stderr, "DEBUG: After executeClean, mode=%s\n", newModel.(Model).mode)
-			return newModel, cmd
+			return m.executeClean()
 		}
 	case ModeSelect:
 		totalOptions := len(m.categories) + 3 // categories + Select All + Clean + Back
@@ -316,9 +304,12 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.scanProgress = 0
 	m.currentPhase = "Starting scan..."
 	m.scanOutput.Reset()
-	
+
 	// Reset progress state
-	currentProgress = progressState{}
+	m.filesScanned = 0
+	m.bytesScanned = 0
+	m.currentFile = ""
+	m.totalFilesGuess = 0
 
 	return m, tea.Batch(runScanCmd(m.cfg), tick())
 }
@@ -332,15 +323,6 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var scannedCategories []config.Category
 		var totalSize uint64
 		var totalFiles int
-
-		// Calculate total expected files for progress tracking
-		expectedFiles := 0
-		for _, category := range cfg.Categories {
-			if category.Selected {
-				expectedFiles += 1000 // Estimate, will be updated during scan
-			}
-		}
-		currentProgress.totalFiles = expectedFiles
 
 		// Scan each category
 		for _, category := range cfg.Categories {
@@ -366,19 +348,10 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 
 			// Collect results for this category
 			for msg := range progressCh {
-				if msg.Progress != nil {
-					// Update shared progress state for ticker to read
-					currentProgress.filesScanned = msg.Progress.FilesScanned
-					currentProgress.bytesScanned = msg.Progress.Bytes
-					currentProgress.currentFile = msg.Progress.Path
-				}
-				
 				if msg.Complete != nil {
 					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
 					totalSize += msg.Complete.Stats.Size
 					totalFiles += msg.Complete.Stats.FileCount
-					// Update total files with actual count
-					currentProgress.totalFiles = totalFiles
 					break
 				}
 				if msg.Error != nil {
@@ -391,7 +364,7 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		}
 
 		// Save to cache
-		cache := &SessionCache{
+		cache := &config.SessionCache{
 			ScanResults: &config.Category{
 				Name:  "Total Cleanable",
 				Files: []config.FileInfo{},
@@ -465,7 +438,7 @@ func (m Model) showResults() (tea.Model, tea.Cmd) {
 }
 
 // parseScanResults converts cache to UI categories
-func (m *Model) parseScanResults(cache *SessionCache, categories []config.Category) {
+func (m *Model) parseScanResults(cache *config.SessionCache, categories []config.Category) {
 	m.categories = []CategoryInfo{}
 
 	// If we have fresh categories from scan, use those
@@ -576,13 +549,65 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	m.cleanActive = true
 	m.cleanStarted = time.Now()
 	m.currentPhase = "Cleaning in progress..."
-	
 
-	return m, tea.Batch(runCleanCmd(m.cfg, m.scanResults), tick())
+	// Build a filtered category with only files from enabled categories
+	filteredCache := m.buildFilteredCache()
+
+	return m, tea.Batch(runCleanCmd(m.cfg, filteredCache), tick())
+}
+
+// buildFilteredCache creates a cache with only files from enabled categories
+func (m Model) buildFilteredCache() *config.SessionCache {
+	if m.scanResults == nil || m.scanResults.ScanResults == nil {
+		return nil
+	}
+
+	// Get names of enabled categories
+	enabledNames := make(map[string]bool)
+	for _, cat := range m.categories {
+		if cat.Enabled {
+			enabledNames[cat.Name] = true
+		}
+	}
+
+	// Filter files based on enabled categories
+	var filteredFiles []config.FileInfo
+	for _, file := range m.scanResults.ScanResults.Files {
+		// Match file to category by checking if path starts with category path
+		for _, configCat := range m.cfg.Categories {
+			if !enabledNames[configCat.Name] {
+				continue
+			}
+			for _, catPath := range configCat.Paths {
+				if strings.HasPrefix(file.Path, catPath) {
+					filteredFiles = append(filteredFiles, file)
+					break
+				}
+			}
+		}
+	}
+
+	// Calculate total size
+	var totalSize uint64
+	for _, file := range filteredFiles {
+		totalSize += file.Size
+	}
+
+	return &config.SessionCache{
+		ScanResults: &config.Category{
+			Name:      "Selected Categories",
+			Files:     filteredFiles,
+			FileCount: len(filteredFiles),
+			Size:      totalSize,
+		},
+		TotalSize:  totalSize,
+		TotalFiles: len(filteredFiles),
+		ScannedAt:  m.scanResults.ScannedAt,
+	}
 }
 
 // runCleanCmd executes cleaning using the cleaner package
-func runCleanCmd(cfg *config.Config, cache *SessionCache) tea.Cmd {
+func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 	return func() tea.Msg {
 		if cache == nil || cache.ScanResults == nil {
 			return cleanCompleteMsg{
@@ -634,11 +659,9 @@ func runCleanCmd(cfg *config.Config, cache *SessionCache) tea.Cmd {
 
 // handleCleanComplete processes cleaning completion
 func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
-	fmt.Fprintf(os.Stderr, "DEBUG: handleCleanComplete called, success=%v\n", msg.Success)
 	m.cleanActive = false
 
 	if msg.Success {
-		fmt.Fprintf(os.Stderr, "DEBUG: Clean successful, setting mode to ModeComplete\n")
 		m.mode = ModeComplete
 		m.cleanError = ""
 		m.cleanFilesDeleted = msg.FilesDeleted
@@ -659,7 +682,7 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 }
 
 // loadSessionCache loads scan results from CLI cache
-func (m Model) loadSessionCache() (*SessionCache, error) {
+func (m Model) loadSessionCache() (*config.SessionCache, error) {
 	homeDir, _ := os.UserHomeDir()
 	cachePath := filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
 
@@ -668,7 +691,7 @@ func (m Model) loadSessionCache() (*SessionCache, error) {
 		return nil, err
 	}
 
-	var cache SessionCache
+	var cache config.SessionCache
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return nil, err
 	}
@@ -677,7 +700,7 @@ func (m Model) loadSessionCache() (*SessionCache, error) {
 }
 
 // saveSessionCache saves scan results to cache
-func saveSessionCache(cache *SessionCache) error {
+func saveSessionCache(cache *config.SessionCache) error {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "moonbit")
 	cachePath := filepath.Join(cacheDir, "scan_results.json")
@@ -767,11 +790,11 @@ func (m Model) renderScanProgress() string {
 	phaseText := m.currentPhase
 	if m.scanActive {
 		elapsed := time.Since(m.scanStarted)
-		if currentProgress.filesScanned > 0 {
+		if m.filesScanned > 0 {
 			phaseText = fmt.Sprintf("%s - %d files (%s) - %.1fs",
 				m.currentPhase,
-				currentProgress.filesScanned,
-				humanizeBytes(currentProgress.bytesScanned),
+				m.filesScanned,
+				humanizeBytes(m.bytesScanned),
 				elapsed.Seconds())
 		} else {
 			phaseText = fmt.Sprintf("%s (%.1fs elapsed)", m.currentPhase, elapsed.Seconds())
@@ -800,8 +823,8 @@ func (m Model) renderScanProgress() string {
 	content.WriteString("\n\n")
 
 	// Show current file being scanned
-	if m.scanActive && currentProgress.currentFile != "" {
-		currentFile := currentProgress.currentFile
+	if m.scanActive && m.currentFile != "" {
+		currentFile := m.currentFile
 		if len(currentFile) > 60 {
 			currentFile = "..." + currentFile[len(currentFile)-57:]
 		}
@@ -1098,16 +1121,6 @@ type cleanCompleteMsg struct {
 }
 
 type tickMsg time.Time
-
-// progressState holds shared progress information
-type progressState struct {
-	filesScanned int
-	bytesScanned uint64
-	currentFile  string
-	totalFiles   int
-}
-
-var currentProgress progressState
 
 // Style definitions based on sysc-greet patterns
 var (

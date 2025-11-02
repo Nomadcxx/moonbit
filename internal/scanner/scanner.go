@@ -152,6 +152,8 @@ func NewScannerWithFs(cfg *config.Config, fs FileSystem) *Scanner {
 
 // ScanCategory scans a specific category
 func (s *Scanner) ScanCategory(ctx context.Context, category *config.Category, progressCh chan<- ScanMsg) {
+	defer close(progressCh)
+
 	start := time.Now()
 
 	stats := *category

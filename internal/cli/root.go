@@ -19,14 +19,6 @@ var (
 	dryRun bool
 )
 
-// SessionCache stores scan results for the current session
-type SessionCache struct {
-	ScanResults *config.Category `json:"scan_results"`
-	TotalSize   uint64           `json:"total_size"`
-	TotalFiles  int              `json:"total_files"`
-	ScannedAt   time.Time        `json:"scanned_at"`
-}
-
 var rootCmd = &cobra.Command{
 	Use:   "moonbit",
 	Short: "MoonBit – system cleaner TUI",
@@ -170,7 +162,7 @@ func ScanAndSave() error {
 	}
 
 	// Create session cache
-	cache := &SessionCache{
+	cache := &config.SessionCache{
 		ScanResults: &scanResults,
 		TotalSize:   totalSize,
 		TotalFiles:  totalFiles,
@@ -287,7 +279,10 @@ func CleanSession(dryRun bool) error {
 	fmt.Printf("   ⚡ Scan data cleared\n")
 
 	// Clear session cache
-	os.Remove(getSessionCachePath())
+	if err := os.Remove(getSessionCachePath()); err != nil && !os.IsNotExist(err) {
+		// Log warning but don't fail - cleaning succeeded even if cache clear failed
+		fmt.Printf("   ⚠️  Warning: Could not clear cache file: %v\n", err)
+	}
 
 	return nil
 }
@@ -315,7 +310,7 @@ func getSessionCachePath() string {
 	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
 }
 
-func saveSessionCache(cache *SessionCache) error {
+func saveSessionCache(cache *config.SessionCache) error {
 	cacheDir := filepath.Dir(getSessionCachePath())
 	if err := os.MkdirAll(cacheDir, 0700); err != nil {
 		return err
@@ -329,13 +324,13 @@ func saveSessionCache(cache *SessionCache) error {
 	return os.WriteFile(getSessionCachePath(), data, 0600)
 }
 
-func loadSessionCache() (*SessionCache, error) {
+func loadSessionCache() (*config.SessionCache, error) {
 	data, err := os.ReadFile(getSessionCachePath())
 	if err != nil {
 		return nil, err
 	}
 
-	var cache SessionCache
+	var cache config.SessionCache
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return nil, err
 	}
@@ -363,11 +358,71 @@ func humanizeBytes(bytes uint64) string {
 	}
 }
 
+var backupCmd = &cobra.Command{
+	Use:   "backup",
+	Short: "Manage backups",
+	Long:  "List and restore backups created before cleaning operations",
+}
+
+var backupListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available backups",
+	Run: func(cmd *cobra.Command, args []string) {
+		backups, err := cleaner.ListBackups()
+		if err != nil {
+			fmt.Printf("❌ Failed to list backups: %v\n", err)
+			return
+		}
+
+		if len(backups) == 0 {
+			fmt.Println("No backups found")
+			return
+		}
+
+		fmt.Println("📦 Available Backups:")
+		fmt.Println("===================")
+		for i, backup := range backups {
+			fmt.Printf("%d. %s\n", i+1, backup)
+		}
+	},
+}
+
+var backupRestoreCmd = &cobra.Command{
+	Use:   "restore [backup-name]",
+	Short: "Restore files from a backup",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		backupName := args[0]
+
+		// Get full backup path
+		dataHome := os.Getenv("XDG_DATA_HOME")
+		if dataHome == "" {
+			homeDir, _ := os.UserHomeDir()
+			dataHome = filepath.Join(homeDir, ".local", "share")
+		}
+		backupPath := filepath.Join(dataHome, "moonbit", "backups", backupName)
+
+		fmt.Printf("🔄 Restoring backup: %s\n", backupName)
+
+		if err := cleaner.RestoreBackup(backupPath); err != nil {
+			fmt.Printf("❌ Failed to restore backup: %v\n", err)
+			return
+		}
+
+		fmt.Println("✅ Backup restored successfully!")
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(cleanCmd)
+	rootCmd.AddCommand(backupCmd)
+
+	backupCmd.AddCommand(backupListCmd)
+	backupCmd.AddCommand(backupRestoreCmd)
+
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
-	
+
 	// Force flag should set dryRun to false
 	var forceFlag bool
 	cleanCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Actually delete files (disable dry-run)")
