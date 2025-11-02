@@ -242,7 +242,7 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		}
 
 		// Process file based on category filters
-		if s.shouldIncludeFile(path, info, stats.Filters) {
+		if s.shouldIncludeFile(path, info, stats) {
 			fileEntry := config.FileInfo{
 				Path:    path,
 				Size:    uint64(info.Size()),
@@ -271,16 +271,25 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 }
 
 // ShouldIncludeFile determines if a file should be included based on filters
-func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, filters []string) bool {
+func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, category *config.Category) bool {
 	// Skip directories for now (focus on files)
 	if info.IsDir() {
 		return false
 	}
 
+	// Check age-based filtering (if MinAgeDays is set)
+	if category.MinAgeDays > 0 {
+		fileAge := time.Since(info.ModTime())
+		minAge := time.Duration(category.MinAgeDays) * 24 * time.Hour
+		if fileAge < minAge {
+			return false // File is too new, skip it
+		}
+	}
+
 	// Apply category-specific filters (FIXED: OR logic, not AND)
-	if len(filters) > 0 {
+	if len(category.Filters) > 0 {
 		// File must match at least one filter to be included
-		for _, filter := range filters {
+		for _, filter := range category.Filters {
 			matched, err := regexp.MatchString(filter, filepath.Base(path))
 			if err != nil {
 				continue // Skip invalid patterns

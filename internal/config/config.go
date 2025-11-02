@@ -64,6 +64,7 @@ type Category struct {
 	Files        []FileInfo `toml:"files,omitempty"`
 	Selected     bool       `toml:"selected,omitempty"`
 	ShredEnabled bool       `toml:"shred,omitempty"`
+	MinAgeDays   int        `toml:"min_age_days,omitempty"` // Only clean files older than this many days
 }
 
 // Config represents the main configuration
@@ -149,6 +150,7 @@ func DefaultConfig() *Config {
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
+				MinAgeDays:   30, // Only delete thumbnails older than 30 days
 			},
 			{
 				Name:         "Browser Cache (Safe)",
@@ -170,6 +172,97 @@ func DefaultConfig() *Config {
 				Paths:        []string{os.Getenv("HOME") + "/.recently-used.xbel"},
 				Risk:         Medium,
 				Selected:     false,
+				ShredEnabled: false,
+			},
+			// Cross-distro Package Managers
+			{
+				Name:         "APT Cache (Debian/Ubuntu)",
+				Paths:        []string{"/var/cache/apt/archives"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+				Filters:      []string{`\.deb$`},
+			},
+			{
+				Name:         "DNF Cache (Fedora/RHEL)",
+				Paths:        []string{"/var/cache/dnf"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Zypper Cache (openSUSE)",
+				Paths:        []string{"/var/cache/zypp"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			// Additional User Caches
+			{
+				Name:         "Font Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/fontconfig"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Mesa Shader Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/mesa_shader_cache"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "WebKit Cache",
+				Paths:        []string{os.Getenv("HOME") + "/.cache/webkit", os.Getenv("HOME") + "/.cache/webkitgtk"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			// .local/share cleanup
+			{
+				Name:         "Trash",
+				Paths:        []string{os.Getenv("HOME") + "/.local/share/Trash"},
+				Risk:         Low,
+				Selected:     false,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Application Logs",
+				Paths:        []string{os.Getenv("HOME") + "/.local/share/xorg"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+				Filters:      []string{`\.log$`, `\.old$`},
+			},
+			// Media Server Cleanup
+			{
+				Name:         "Plex Transcode",
+				Paths:        []string{"/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Cache/Transcode"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Jellyfin Transcode",
+				Paths:        []string{"/var/lib/jellyfin/transcodes"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			{
+				Name:         "Jellyfin Cache",
+				Paths:        []string{"/var/lib/jellyfin/cache"},
+				Risk:         Low,
+				Selected:     true,
+				ShredEnabled: false,
+			},
+			// System Cleanup
+			{
+				Name:         "Crash Reports",
+				Paths:        []string{"/var/crash", os.Getenv("HOME") + "/.local/share/apport/coredump"},
+				Risk:         Low,
+				Selected:     true,
 				ShredEnabled: false,
 			},
 			// Development Tools Caches

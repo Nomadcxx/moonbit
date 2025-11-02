@@ -146,43 +146,58 @@ func TestShouldIncludeFile(t *testing.T) {
 	dirInfo := &mockFileInfo{name: "testdir", isDir: true}
 
 	// Test 1: Directories should always be excluded
-	assert.False(t, s.shouldIncludeFile("/tmp/testdir", dirInfo, nil))
+	emptyCategory := &config.Category{}
+	assert.False(t, s.shouldIncludeFile("/tmp/testdir", dirInfo, emptyCategory))
 
 	// Test 2: Files with no filters should be included
-	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, nil))
+	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, emptyCategory))
 
 	// Test 3: Files matching at least one filter should be included (OR logic)
-	filters := []string{`\.log$`, `\.tmp$`}
-	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, filters))
-	
+	categoryWithFilters := &config.Category{Filters: []string{`\.log$`, `\.tmp$`}}
+	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, categoryWithFilters))
+
 	fileInfo2 := &mockFileInfo{name: "test.tmp", isDir: false}
-	assert.True(t, s.shouldIncludeFile("/tmp/test.tmp", fileInfo2, filters))
+	assert.True(t, s.shouldIncludeFile("/tmp/test.tmp", fileInfo2, categoryWithFilters))
 
 	// Test 4: Files not matching any filter should be excluded
 	fileInfo3 := &mockFileInfo{name: "test.txt", isDir: false}
-	assert.False(t, s.shouldIncludeFile("/tmp/test.txt", fileInfo3, filters))
+	assert.False(t, s.shouldIncludeFile("/tmp/test.txt", fileInfo3, categoryWithFilters))
 
 	// Test 5: Multiple filters with OR logic
-	filters2 := []string{`\.log$`, `\.txt$`, `\.bak$`}
-	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, filters2))
-	assert.True(t, s.shouldIncludeFile("/tmp/test.txt", fileInfo3, filters2))
-	
+	categoryWithFilters2 := &config.Category{Filters: []string{`\.log$`, `\.txt$`, `\.bak$`}}
+	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, categoryWithFilters2))
+	assert.True(t, s.shouldIncludeFile("/tmp/test.txt", fileInfo3, categoryWithFilters2))
+
 	fileInfo4 := &mockFileInfo{name: "test.bak", isDir: false}
-	assert.True(t, s.shouldIncludeFile("/tmp/test.bak", fileInfo4, filters2))
-	
+	assert.True(t, s.shouldIncludeFile("/tmp/test.bak", fileInfo4, categoryWithFilters2))
+
 	fileInfo5 := &mockFileInfo{name: "test.dat", isDir: false}
-	assert.False(t, s.shouldIncludeFile("/tmp/test.dat", fileInfo5, filters2))
+	assert.False(t, s.shouldIncludeFile("/tmp/test.dat", fileInfo5, categoryWithFilters2))
+
+	// Test 6: Age-based filtering
+	oldFile := &mockFileInfo{name: "old.txt", isDir: false, modTime: time.Now().Add(-60 * 24 * time.Hour)} // 60 days old
+	newFile := &mockFileInfo{name: "new.txt", isDir: false, modTime: time.Now().Add(-15 * 24 * time.Hour)} // 15 days old
+
+	categoryWithAge := &config.Category{MinAgeDays: 30} // Only files older than 30 days
+	assert.True(t, s.shouldIncludeFile("/tmp/old.txt", oldFile, categoryWithAge))
+	assert.False(t, s.shouldIncludeFile("/tmp/new.txt", newFile, categoryWithAge))
 }
 
 // mockFileInfo implements os.FileInfo for testing
 type mockFileInfo struct {
-	name  string
-	isDir bool
+	name    string
+	isDir   bool
+	modTime time.Time
 }
 
 func (m *mockFileInfo) Name() string       { return m.name }
 func (m *mockFileInfo) Size() int64        { return 1024 }
 func (m *mockFileInfo) Mode() os.FileMode  { return 0644 }
-func (m *mockFileInfo) ModTime() time.Time { return time.Now() }
-func (m *mockFileInfo) IsDir() bool        { return m.isDir }
-func (m *mockFileInfo) Sys() interface{}   { return nil }
+func (m *mockFileInfo) ModTime() time.Time {
+	if m.modTime.IsZero() {
+		return time.Now()
+	}
+	return m.modTime
+}
+func (m *mockFileInfo) IsDir() bool      { return m.isDir }
+func (m *mockFileInfo) Sys() interface{} { return nil }

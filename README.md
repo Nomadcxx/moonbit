@@ -13,12 +13,30 @@ sudo ./moonbit
 
 ## What It Does
 
-- Scans package manager caches (Pacman, Yay, Paru, Pamac)
-- Development tool caches (pip, npm, cargo, gradle, maven, go)
+**Cross-Distro Package Managers:**
+- Arch: Pacman, Yay, Paru, Pamac
+- Debian/Ubuntu: APT cache
+- Fedora/RHEL: DNF cache
+- openSUSE: Zypper cache
+
+**Development Tools:**
+- Python (pip), Node.js (npm), Rust (cargo)
+- Java (gradle, maven), Go (build cache)
+
+**System & User Caches:**
+- Font cache, Mesa shader cache, WebKit cache
+- Thumbnails (age-based filtering: >30 days old)
+- Browser caches, application caches
+
+**Media Servers:**
+- Plex: transcoding temp files
+- Jellyfin: transcodes and cache
+
+**Other:**
 - Docker cleanup (images, containers, volumes)
-- System caches and logs
-- Interactive TUI for selecting what to clean
-- Backup before deletion
+- Crash reports, system logs, trash
+- Interactive TUI for selective cleaning
+- Automatic backup before deletion
 
 ## Commands
 
