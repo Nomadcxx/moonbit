@@ -18,14 +18,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ASCII header from sysc-greet inspired design
-const asciiHeader = `
-██▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ ▄▀  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ 
-█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   
-▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    
+// loadASCIIArt loads the ASCII art from ascii.txt file
+func loadASCIIArt() string {
+	// Try to load from ascii.txt in the current directory or project root
+	possiblePaths := []string{
+		"ascii.txt",
+		"../ascii.txt",
+		"../../ascii.txt",
+		"/usr/share/moonbit/ascii.txt",
+	}
 
-System Cleaner for Linux
+	for _, path := range possiblePaths {
+		if data, err := os.ReadFile(path); err == nil {
+			return string(data)
+		}
+	}
+
+	// Fallback ASCII if file not found
+	return `
+█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀
+█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀
+▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀
 `
+}
+
+// ASCII header loaded from ascii.txt
+var asciiHeader = loadASCIIArt()
 
 // View modes for the TUI
 type ViewMode string
@@ -767,78 +785,146 @@ func saveSessionCache(cache *config.SessionCache) error {
 	return os.WriteFile(cachePath, data, 0600)
 }
 
-// borderedPanel wraps content in a bordered panel
-func borderedPanel(title, content string, borderColor lipgloss.Color) string {
+// borderedPanel wraps content in a bordered panel (sysc-greet style)
+func borderedPanel(content string, borderColor lipgloss.Color, width int) string {
 	border := lipgloss.RoundedBorder()
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		Padding(1, 2)
+		Padding(1, 2).
+		Width(width - 4).
+		Align(lipgloss.Left)
 
-	if title != "" {
-		titleStyle := lipgloss.NewStyle().
-			Bold(true).
-			Foreground(borderColor)
-		return style.Render(titleStyle.Render(title) + "\n\n" + content)
-	}
 	return style.Render(content)
 }
 
-// View renders the UI
+// View renders the UI (sysc-greet inspired layout)
 func (m Model) View() string {
+	if m.width == 0 {
+		return "Loading..."
+	}
+
 	var content strings.Builder
 
-	// Main header
-	content.WriteString(headerStyle.Render(asciiHeader))
+	// ASCII Header - centered
+	for _, line := range strings.Split(asciiHeader, "\n") {
+		centered := lipgloss.NewStyle().
+			Foreground(Primary).
+			Bold(true).
+			Width(m.width).
+			Align(lipgloss.Center).
+			Render(line)
+		content.WriteString(centered)
+		content.WriteString("\n")
+	}
+
+	// Subtitle - centered
+	subtitle := lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Italic(true).
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render("System Cleaner for Linux")
+	content.WriteString(subtitle)
 	content.WriteString("\n\n")
+
+	// Main content area with borders
+	var mainContent string
+	var borderColor lipgloss.Color
 
 	switch m.mode {
 	case ModeWelcome:
-		content.WriteString(m.renderWelcome())
+		mainContent = m.renderWelcome()
+		borderColor = Primary
 	case ModeScanProgress:
-		content.WriteString(borderedPanel("", m.renderScanProgress(), Primary))
+		mainContent = m.renderScanProgress()
+		borderColor = Primary
 	case ModeResults:
-		content.WriteString(borderedPanel("", m.renderResults(), Accent))
+		mainContent = m.renderResults()
+		borderColor = Accent
 	case ModeSelect:
-		content.WriteString(borderedPanel("", m.renderSelect(), Secondary))
+		mainContent = m.renderSelect()
+		borderColor = Secondary
 	case ModeConfirm:
-		content.WriteString(borderedPanel("", m.renderConfirm(), Warning))
+		mainContent = m.renderConfirm()
+		borderColor = Warning
 	case ModeClean:
-		content.WriteString(borderedPanel("", m.renderClean(), Danger))
+		mainContent = m.renderClean()
+		borderColor = Danger
 	case ModeComplete:
-		content.WriteString(borderedPanel("", m.renderComplete(), Accent))
+		mainContent = m.renderComplete()
+		borderColor = Accent
 	}
 
-	// Footer
+	// Center the bordered panel
+	panel := borderedPanel(mainContent, borderColor, m.width)
+	centeredPanel := lipgloss.NewStyle().
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(panel)
+	content.WriteString(centeredPanel)
+
+	// Footer - centered
 	content.WriteString("\n\n")
-	content.WriteString(footerStyle.Render(m.getFooterText()))
+	footer := lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Italic(true).
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(m.getFooterText())
+	content.WriteString(footer)
 
 	return content.String()
 }
 
-// renderWelcome renders the welcome screen
+// renderWelcome renders the welcome screen (sysc-greet style)
 func (m Model) renderWelcome() string {
 	var content strings.Builder
 
-	// System status
+	// System status with status marker
 	if m.scanResults != nil {
-		lastScan := fmt.Sprintf("Last scan: %d files (%s)",
-			m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize))
-		content.WriteString(statusStyle.Render(lastScan))
+		statusMarker := lipgloss.NewStyle().
+			Foreground(Accent).
+			Render("[OK]")
+
+		lastScan := fmt.Sprintf("%s Last scan: %d files (%s)",
+			statusMarker,
+			m.scanResults.TotalFiles,
+			humanizeBytes(m.scanResults.TotalSize))
+
+		content.WriteString(lastScan)
+		content.WriteString("\n\n")
+	} else {
+		infoMarker := lipgloss.NewStyle().
+			Foreground(FgMuted).
+			Render("[INFO]")
+
+		content.WriteString(fmt.Sprintf("%s No previous scan found", infoMarker))
 		content.WriteString("\n\n")
 	}
 
-	// Menu
+	// Menu - simple "> Option" style like sysc-greet
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Bold(true).
+		Render("Select an option:"))
+	content.WriteString("\n\n")
+
 	for i, option := range m.menuOptions {
-		prefix := "  "
+		var line string
 		if i == m.menuIndex {
-			prefix = "> "
+			// Selected item - bold and with arrow
+			line = lipgloss.NewStyle().
+				Foreground(Primary).
+				Bold(true).
+				Render(fmt.Sprintf("> %s", option))
+		} else {
+			// Unselected item
+			line = lipgloss.NewStyle().
+				Foreground(FgPrimary).
+				Render(fmt.Sprintf("  %s", option))
 		}
-		style := menuItemStyle
-		if i == m.menuIndex {
-			style = menuItemSelectedStyle
-		}
-		content.WriteString(style.Render(prefix + option))
+		content.WriteString(line)
 		content.WriteString("\n")
 	}
 
@@ -958,64 +1044,100 @@ func (m Model) renderResults() string {
 		nextActionStyle.Render("Press Esc to return to main menu and run a scan")
 }
 
-// renderSelect renders the category selection screen
+// renderSelect renders the category selection screen (sysc-greet style)
 func (m Model) renderSelect() string {
 	var header strings.Builder
 	var viewportContent strings.Builder
 
-	// Selection header
-	header.WriteString(selectionHeaderStyle.Render("SELECT CATEGORIES TO CLEAN"))
+	// Selection header with clean styling
+	header.WriteString(lipgloss.NewStyle().
+		Foreground(Secondary).
+		Bold(true).
+		Render("SELECT CATEGORIES TO CLEAN"))
 	header.WriteString("\n\n")
 
-	// Build viewport content with categories
+	// Build viewport content with categories using clean checkboxes
 	for i, cat := range m.categories {
-		prefix := "  "
-		style := categoryItemStyle
-		if i == m.menuIndex {
-			prefix = "> "
-			style = categoryItemSelectedStyle
-		}
-
-		indicator := "[ ]"
+		var line string
+		checkbox := "[ ]"
 		if cat.Enabled {
-			indicator = "[X]"
+			checkbox = "[X]"
 		}
 
-		// Apply enabled style on top if checked
-		if cat.Enabled && i != m.menuIndex {
-			style = categoryItemEnabledStyle
+		// Format the line
+		catInfo := fmt.Sprintf("%s %s - %s (%d files)", checkbox, cat.Name, cat.Size, cat.Files)
+
+		if i == m.menuIndex {
+			// Selected item - bold with arrow
+			line = lipgloss.NewStyle().
+				Foreground(Primary).
+				Bold(true).
+				Render(fmt.Sprintf("> %s", catInfo))
+		} else if cat.Enabled {
+			// Enabled but not selected
+			line = lipgloss.NewStyle().
+				Foreground(Accent).
+				Render(fmt.Sprintf("  %s", catInfo))
+		} else {
+			// Not selected, not enabled
+			line = lipgloss.NewStyle().
+				Foreground(FgPrimary).
+				Render(fmt.Sprintf("  %s", catInfo))
 		}
 
-		line := fmt.Sprintf("%s%s %s - %s (%d files)", prefix, indicator, cat.Name, cat.Size, cat.Files)
-		viewportContent.WriteString(style.Render(line))
+		viewportContent.WriteString(line)
 		viewportContent.WriteString("\n")
 	}
 
-	// Select All option
+	// Action buttons with separator
 	viewportContent.WriteString("\n")
-	selectAllIdx := len(m.categories)
-	if m.menuIndex == selectAllIdx {
-		viewportContent.WriteString(actionItemSelectedStyle.Render("> [Select All / Deselect All]"))
-	} else {
-		viewportContent.WriteString(actionItemStyle.Render("  [Select All / Deselect All]"))
-	}
+	viewportContent.WriteString(lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Render("──────────────────────────────────"))
 	viewportContent.WriteString("\n\n")
+
+	// Select All option
+	selectAllIdx := len(m.categories)
+	selectAllText := "[Select All / Deselect All]"
+	if m.menuIndex == selectAllIdx {
+		viewportContent.WriteString(lipgloss.NewStyle().
+			Foreground(Primary).
+			Bold(true).
+			Render(fmt.Sprintf("> %s", selectAllText)))
+	} else {
+		viewportContent.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Render(fmt.Sprintf("  %s", selectAllText)))
+	}
+	viewportContent.WriteString("\n")
 
 	// Clean Selected button
 	cleanIdx := len(m.categories) + 1
+	cleanText := "▶ Clean Selected"
 	if m.menuIndex == cleanIdx {
-		viewportContent.WriteString(actionItemSelectedStyle.Render("> ▶ Clean Selected"))
+		viewportContent.WriteString(lipgloss.NewStyle().
+			Foreground(Accent).
+			Bold(true).
+			Render(fmt.Sprintf("> %s", cleanText)))
 	} else {
-		viewportContent.WriteString(actionItemStyle.Render("  ▶ Clean Selected"))
+		viewportContent.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Render(fmt.Sprintf("  %s", cleanText)))
 	}
 	viewportContent.WriteString("\n")
 
 	// Back button
 	backIdx := len(m.categories) + 2
+	backText := "← Back"
 	if m.menuIndex == backIdx {
-		viewportContent.WriteString(actionItemSelectedStyle.Render("> ← Back"))
+		viewportContent.WriteString(lipgloss.NewStyle().
+			Foreground(Primary).
+			Bold(true).
+			Render(fmt.Sprintf("> %s", backText)))
 	} else {
-		viewportContent.WriteString(actionItemStyle.Render("  ← Back"))
+		viewportContent.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Render(fmt.Sprintf("  %s", backText)))
 	}
 
 	// Update viewport content and ensure selected item is visible
@@ -1053,43 +1175,76 @@ func (m Model) calculateSelectedSize() string {
 	return fmt.Sprintf("%d MB", totalMB)
 }
 
-// renderConfirm renders the confirmation screen
+// renderConfirm renders the confirmation screen (sysc-greet style)
 func (m Model) renderConfirm() string {
 	var content strings.Builder
 
-	// Warning header
-	content.WriteString(warningHeaderStyle.Render("FINAL CONFIRMATION REQUIRED"))
+	// Warning marker and header
+	warnMarker := lipgloss.NewStyle().
+		Foreground(Warning).
+		Bold(true).
+		Render("[WARN]")
+
+	header := lipgloss.NewStyle().
+		Foreground(Warning).
+		Bold(true).
+		Render("FINAL CONFIRMATION REQUIRED")
+
+	content.WriteString(fmt.Sprintf("%s %s", warnMarker, header))
 	content.WriteString("\n\n")
 
-	// Warning text
-	warning := "You are about to permanently delete:\n"
+	// Warning text with clean formatting
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgPrimary).
+		Render("You are about to permanently delete:"))
+	content.WriteString("\n\n")
+
 	for _, cat := range m.categories {
 		if cat.Enabled {
-			warning += fmt.Sprintf("• %s (%s)\n", cat.Name, cat.Size)
+			item := lipgloss.NewStyle().
+				Foreground(FgSecondary).
+				Render(fmt.Sprintf("  • %s (%s)", cat.Name, cat.Size))
+			content.WriteString(item)
+			content.WriteString("\n")
 		}
 	}
-	warning += "\nThis action CANNOT be undone!"
 
-	content.WriteString(warningStyle.Render(warning))
+	content.WriteString("\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(Danger).
+		Bold(true).
+		Render("⚠ This action CANNOT be undone!"))
 	content.WriteString("\n\n")
 
-	// Confirmation buttons - focused button is RED, unfocused is normal
+	// Simple menu-style buttons
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Render("Select an option:"))
+	content.WriteString("\n\n")
+
+	// Cancel button
 	if m.menuIndex == 0 {
-		// Cancel is focused - RED
-		content.WriteString(buttonDangerSelectedStyle.Render("  Cancel  "))
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Primary).
+			Bold(true).
+			Render("> Cancel"))
 	} else {
-		// Cancel is not focused - normal
-		content.WriteString(buttonStyle.Render("  Cancel  "))
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Render("  Cancel"))
 	}
+	content.WriteString("\n")
 
-	content.WriteString("    ")
-
+	// Confirm & Clean button
 	if m.menuIndex == 1 {
-		// Confirm & Clean is focused - RED
-		content.WriteString(buttonDangerSelectedStyle.Render("  Confirm & Clean  "))
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Danger).
+			Bold(true).
+			Render("> Confirm & Clean"))
 	} else {
-		// Confirm & Clean is not focused - normal
-		content.WriteString(buttonStyle.Render("  Confirm & Clean  "))
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Render("  Confirm & Clean"))
 	}
 
 	return content.String()
@@ -1122,44 +1277,70 @@ func (m Model) renderClean() string {
 	return content.String()
 }
 
-// renderComplete renders the completion screen
+// renderComplete renders the completion screen (sysc-greet style)
 func (m Model) renderComplete() string {
 	var content strings.Builder
 
-	// Success header
-	content.WriteString(successHeaderStyle.Render("✓ CLEANING COMPLETE!"))
+	// Success marker and header
+	successMarker := lipgloss.NewStyle().
+		Foreground(Accent).
+		Bold(true).
+		Render("[OK]")
+
+	header := lipgloss.NewStyle().
+		Foreground(Accent).
+		Bold(true).
+		Render("CLEANING COMPLETE!")
+
+	content.WriteString(fmt.Sprintf("%s %s", successMarker, header))
 	content.WriteString("\n\n")
 
-	// Success stats
-	stats := fmt.Sprintf("Files Deleted: %d\nSpace Freed: %s",
-		m.cleanFilesDeleted, humanizeBytes(m.cleanBytesFreed))
-	content.WriteString(successStyle.Render(stats))
+	// Stats with clean formatting
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgPrimary).
+		Render(fmt.Sprintf("Files Deleted:  %d", m.cleanFilesDeleted)))
+	content.WriteString("\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgPrimary).
+		Render(fmt.Sprintf("Space Freed:    %s", humanizeBytes(m.cleanBytesFreed))))
 	content.WriteString("\n\n")
 
-	// Additional message
+	// Warning if there were errors
 	if m.cleanError != "" {
-		content.WriteString(warningStyle.Render("Some files could not be deleted"))
+		warnMarker := lipgloss.NewStyle().
+			Foreground(Warning).
+			Render("[WARN]")
+
+		content.WriteString(fmt.Sprintf("%s Some files could not be deleted", warnMarker))
 		content.WriteString("\n\n")
 	}
 
-	content.WriteString(nextActionStyle.Render("Press any key to return to main menu"))
+	// Next action
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Italic(true).
+		Render("Press any key to return to main menu"))
 
 	return content.String()
 }
 
-// getFooterText returns appropriate footer text
+// getFooterText returns appropriate footer text (sysc-greet style)
 func (m Model) getFooterText() string {
 	switch m.mode {
 	case ModeWelcome:
-		return "↑↓ Navigate • Enter Select • Esc Back • Q Quit"
+		return "↑/↓ Navigate  |  Enter Select  |  Q Quit"
 	case ModeScanProgress, ModeClean:
-		return "Processing... • Esc Back"
+		return "Scanning system... please wait"
 	case ModeConfirm:
-		return "←→ Navigate • Enter Select • Esc Back"
-	case ModeResults, ModeSelect:
-		return "↑↓ Navigate • PgUp/PgDn Scroll • Enter Select • Esc Back • Q Quit"
+		return "↑/↓ Navigate  |  Enter Select  |  Esc Cancel"
+	case ModeResults:
+		return "Enter Continue  |  Esc Back  |  Q Quit"
+	case ModeSelect:
+		return "↑/↓ Navigate  |  Space Toggle  |  Enter Select  |  Esc Back"
+	case ModeComplete:
+		return "Press any key to continue"
 	default:
-		return "↑↓ Navigate • Enter Select • Esc Back • Q Quit"
+		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	}
 }
 
