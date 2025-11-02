@@ -241,7 +241,7 @@ func TestSaveSessionCacheCreatesDirectory(t *testing.T) {
 
 	// Save should create directory if it doesn't exist
 	err := saveSessionCache(cache)
-	
+
 	// May fail if permissions don't allow, but shouldn't panic
 	if err == nil {
 		// Verify file was created
@@ -256,7 +256,7 @@ func TestTickMsg(t *testing.T) {
 	// Test that tick message can be created
 	now := time.Now()
 	msg := tickMsg(now)
-	
+
 	assert.Equal(t, time.Time(msg), now)
 }
 
@@ -277,7 +277,7 @@ func TestUpdateWithTick(t *testing.T) {
 
 	assert.NotNil(t, newModel)
 	assert.NotNil(t, cmd) // Should return another tick while scanning
-	
+
 	// Check progress was updated
 	m := newModel.(Model)
 	assert.Equal(t, 0.5, m.scanProgress)
@@ -287,7 +287,7 @@ func TestUpdateWithTick(t *testing.T) {
 func TestUpdateWithTickInactive(t *testing.T) {
 	model := NewModel()
 	model.scanActive = false
-	
+
 	// Send tick message when not scanning
 	msg := tickMsg(time.Now())
 	newModel, cmd := model.Update(msg)

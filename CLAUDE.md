@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MoonBit is a Go-based TUI (Terminal User Interface) application for system cleaning and privacy scrubbing on Linux (primarily Arch-based distributions). It provides an interactive interface for scanning, previewing, and selectively deleting temporary files, caches, logs, and application data.
+MoonBit is a cross-distro Go-based TUI (Terminal User Interface) application for system cleaning and privacy scrubbing on Linux. It supports all major distributions (Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE) and provides an interactive interface for scanning, previewing, and selectively deleting temporary files, caches, logs, and application data.
 
 The application is built using:
 - **Cobra** for CLI command structure
@@ -57,6 +57,14 @@ go test -run TestFunctionName ./internal/package
 # Actually delete files (requires --force)
 ./moonbit clean --force
 
+# Docker cleanup (uses docker CLI)
+./moonbit docker images    # Remove unused images
+./moonbit docker all       # Remove all unused resources
+
+# Backup management
+./moonbit backup list
+./moonbit backup restore <name>
+
 # For system-wide paths, use sudo
 sudo ./moonbit scan
 sudo ./moonbit clean --force
@@ -78,16 +86,19 @@ The codebase follows Go's standard project layout with clear separation of conce
 
 ### Core Data Flow
 
-1. **Configuration Loading** (internal/config/config.go:172-199)
+1. **Configuration Loading** (internal/config/config.go)
    - Loads from `~/.config/moonbit/config.toml` or creates default config
-   - Defines cleaning categories with paths, filters, and risk levels
-   - Each category has: Name, Paths, Filters (regex), Risk (Low/Medium/High), ShredEnabled
+   - Defines 30+ cleaning categories covering all major Linux distributions
+   - Each category has: Name, Paths, Filters (regex), Risk (Low/Medium/High), ShredEnabled, MinAgeDays
+   - Categories include: package managers (APT, DNF, Zypper, Pacman+), dev tools (pip, npm, cargo, gradle, maven, go), media servers (Plex, Jellyfin), system caches
+   - Auto-detection: only categories with existing paths are shown to users
 
 2. **Scanning Flow** (internal/scanner/scanner.go)
    - Scanner uses godirwalk for efficient directory traversal
    - Supports filesystem abstraction via FileSystem interface for testing
    - Scans run concurrently with progress updates via channels (ScanMsg)
    - Filters are OR-based: file matches if it matches ANY filter
+   - Age-based filtering: MinAgeDays setting only includes files older than threshold (e.g., thumbnails >30 days)
    - Ignore patterns (from config) are respected to skip directories like node_modules
    - Results stored as FileInfo structs with Path, Size, ModTime
 
@@ -133,11 +144,12 @@ The scanner uses a FileSystem interface (internal/scanner/scanner.go:16-20) that
 
 **Safety-First Deletion**
 The cleaner package (internal/cleaner/cleaner.go) implements multiple safety layers:
-- Protected paths list prevents deletion of critical system directories
-- Maximum deletion size limits (default 1GB)
+- Protected paths list prevents deletion of critical system directories (/bin, /usr/bin, /etc, /var/lib, /boot, /sys, /proc)
+- Maximum deletion size limits (default 50GB per operation)
 - Risk level checks (High-risk categories require confirmation)
 - Dry-run mode as default
-- Optional backup creation before deletion
+- Optional backup creation before deletion (file-based with SHA256 naming and JSON manifest)
+- Optional shredding (overwrites with random data before deletion)
 
 **Session-Based Workflow**
 CLI scan and clean commands are decoupled via session cache, allowing:
@@ -174,6 +186,41 @@ The application auto-generates a default config on first run (internal/config/co
 - Cleaner tests verify safety checks without actual file deletion
 - Config tests validate TOML parsing and default generation
 - UI tests verify state transitions and message handling
+- Age-based filtering tests verify ModTime threshold logic
+
+## Recent Features
+
+### Age-Based Filtering (MinAgeDays)
+Categories can specify `MinAgeDays` to only clean files older than a threshold. Example:
+- **Thumbnails**: MinAgeDays=30 (only delete thumbnails older than 30 days)
+- Prevents deletion of recently accessed files
+- Scanner checks `info.ModTime()` against `time.Now() - (MinAgeDays * 24h)`
+
+### Cross-Distribution Support
+MoonBit now supports all major Linux distributions:
+- **Arch/Manjaro**: Pacman, Yay, Paru, Pamac caches
+- **Debian/Ubuntu/Mint**: APT cache (`/var/cache/apt/archives/*.deb`)
+- **Fedora/RHEL/CentOS**: DNF cache (`/var/cache/dnf`)
+- **openSUSE**: Zypper cache (`/var/cache/zypp`)
+
+### Docker Integration
+Dedicated Docker cleanup commands using native Docker CLI:
+- `moonbit docker images`: Runs `docker image prune -a -f`
+- `moonbit docker all`: Runs `docker system prune -a --volumes -f`
+- Shows disk usage before/after with `docker system df`
+- Safer than direct file deletion in `/var/lib/docker`
+
+### Media Server Support
+Automatic cleanup of transcoding temp files:
+- **Plex**: `/var/lib/plexmediaserver/.../Cache/Transcode`
+- **Jellyfin**: `/var/lib/jellyfin/transcodes` and `/var/lib/jellyfin/cache`
+
+### Intelligent Cache Discovery
+The scanner auto-detects available cleanup targets:
+- Font cache, Mesa shader cache, WebKit cache
+- Crash reports (`/var/crash`, apport coredumps)
+- Application logs in `~/.local/share`
+- Only categories with existing paths are shown to users
 
 ## Common Gotchas
 
@@ -185,4 +232,8 @@ The application auto-generates a default config on first run (internal/config/co
 
 4. **Session Cache Persistence**: Scan results persist in `~/.cache/moonbit/` until overwritten or explicitly cleaned.
 
-5. **TUI vs CLI Modes**: Running `moonbit` without arguments launches TUI. Use subcommands (`scan`, `clean`) for CLI mode.
+5. **TUI vs CLI Modes**: Running `moonbit` without arguments launches TUI. Use subcommands (`scan`, `clean`, `docker`, `backup`) for CLI mode.
+
+6. **Age-Based Filtering**: When MinAgeDays is set, files younger than the threshold are automatically skipped. Check category config if files aren't being cleaned as expected.
+
+7. **Cross-Distro Auto-Detection**: Categories for non-existent package managers (e.g., APT on Arch) are automatically hidden. The scanner only shows categories with valid paths.

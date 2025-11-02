@@ -74,11 +74,11 @@ func TestSessionCachePath(t *testing.T) {
 func TestSaveAndLoadSessionCache(t *testing.T) {
 	// This test verifies cache path format and directory creation
 	// We test with the actual cache location since it's user-specific
-	
+
 	// Get the cache path
 	cachePath := getSessionCachePath()
 	assert.NotEmpty(t, cachePath)
-	
+
 	// Verify it's in the .cache directory
 	homeDir, _ := os.UserHomeDir()
 	assert.Contains(t, cachePath, filepath.Join(homeDir, ".cache", "moonbit"))
@@ -87,7 +87,7 @@ func TestSaveAndLoadSessionCache(t *testing.T) {
 func TestRequiresSudo(t *testing.T) {
 	// This test checks if requiresSudo correctly identifies system paths
 	result := requiresSudo()
-	
+
 	// The result depends on whether system paths exist
 	// We just verify it returns a boolean without panicking
 	assert.IsType(t, true, result)

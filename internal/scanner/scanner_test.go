@@ -190,9 +190,9 @@ type mockFileInfo struct {
 	modTime time.Time
 }
 
-func (m *mockFileInfo) Name() string       { return m.name }
-func (m *mockFileInfo) Size() int64        { return 1024 }
-func (m *mockFileInfo) Mode() os.FileMode  { return 0644 }
+func (m *mockFileInfo) Name() string      { return m.name }
+func (m *mockFileInfo) Size() int64       { return 1024 }
+func (m *mockFileInfo) Mode() os.FileMode { return 0644 }
 func (m *mockFileInfo) ModTime() time.Time {
 	if m.modTime.IsZero() {
 		return time.Now()

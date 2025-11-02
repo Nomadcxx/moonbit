@@ -71,11 +71,11 @@ type Model struct {
 	totalFilesGuess int
 
 	// Clean state
-	cleanActive      bool
-	cleanStarted     time.Time
-	cleanError       string
+	cleanActive       bool
+	cleanStarted      time.Time
+	cleanError        string
 	cleanFilesDeleted int
-	cleanBytesFreed  uint64
+	cleanBytesFreed   uint64
 
 	// Categories for selection
 	categories    []CategoryInfo
@@ -191,7 +191,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// categories + Select All + Clean + Back
 			maxIndex = len(m.categories) + 2
 		}
-		
+
 		if m.menuIndex < maxIndex {
 			m.menuIndex++
 		}
@@ -259,11 +259,11 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 	case ModeSelect:
 		totalOptions := len(m.categories) + 3 // categories + Select All + Clean + Back
-		
-		if m.menuIndex == totalOptions - 1 { // Back
+
+		if m.menuIndex == totalOptions-1 { // Back
 			m.mode = ModeResults
 			m.menuIndex = 0
-		} else if m.menuIndex == totalOptions - 2 { // Clean Selected
+		} else if m.menuIndex == totalOptions-2 { // Clean Selected
 			return m.showConfirm()
 		} else if m.menuIndex == len(m.categories) { // Select All
 			// Toggle select all
@@ -411,7 +411,7 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 		m.scanResults = cache
 		m.scanError = "" // Clear any previous errors
 		m.parseScanResults(cache, msg.Categories)
-		
+
 		// Go directly to category selection instead of results view
 		m.mode = ModeSelect
 		m.menuIndex = 0
@@ -457,7 +457,7 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 		// Otherwise, try to reconstruct from cache
 		// Group files by category name from config
 		categoryMap := make(map[string]*CategoryInfo)
-		
+
 		for _, cat := range m.cfg.Categories {
 			if cat.Selected {
 				categoryMap[cat.Name] = &CategoryInfo{
@@ -941,7 +941,7 @@ func (m Model) renderSelect() string {
 		content.WriteString(actionItemStyle.Render("  ▶ Clean Selected"))
 	}
 	content.WriteString("\n")
-	
+
 	// Back button
 	backIdx := len(m.categories) + 2
 	if m.menuIndex == backIdx {
@@ -1062,7 +1062,7 @@ func (m Model) renderComplete() string {
 		content.WriteString(warningStyle.Render("Some files could not be deleted"))
 		content.WriteString("\n\n")
 	}
-	
+
 	content.WriteString(nextActionStyle.Render("Press any key to return to main menu"))
 
 	return content.String()
