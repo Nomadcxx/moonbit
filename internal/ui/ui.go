@@ -13,6 +13,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -81,6 +82,11 @@ type Model struct {
 	categories    []CategoryInfo
 	selectedCount int
 
+	// Viewports for scrolling
+	categoryViewport viewport.Model
+	resultsViewport  viewport.Model
+	viewportReady    bool
+
 	// Settings
 	cfg *config.Config
 }
@@ -120,6 +126,9 @@ func (m Model) Init() tea.Cmd {
 
 // Update handles messages - implements tea.Model interface
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var cmds []tea.Cmd
+
 	// Process message based on type
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -127,6 +136,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+		// Initialize viewports with proper dimensions
+		if !m.viewportReady {
+			// Reserve space for header (8 lines), footer (3 lines), and padding
+			contentHeight := m.height - 15
+			if contentHeight < 10 {
+				contentHeight = 10
+			}
+
+			m.categoryViewport = viewport.New(m.width-4, contentHeight)
+			m.resultsViewport = viewport.New(m.width-4, contentHeight)
+			m.viewportReady = true
+		} else {
+			// Update viewport dimensions on window resize
+			contentHeight := m.height - 15
+			if contentHeight < 10 {
+				contentHeight = 10
+			}
+			m.categoryViewport.Width = m.width - 4
+			m.categoryViewport.Height = contentHeight
+			m.resultsViewport.Width = m.width - 4
+			m.resultsViewport.Height = contentHeight
+		}
 	case tickMsg:
 		// Update progress display if scanning
 		if m.scanActive && m.totalFilesGuess > 0 {
@@ -154,7 +186,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCleanComplete(msg)
 	}
 
-	return m, nil
+	// Update viewport if in relevant modes
+	if m.mode == ModeSelect {
+		m.categoryViewport, cmd = m.categoryViewport.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.mode == ModeResults {
+		m.resultsViewport, cmd = m.resultsViewport.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	return m, tea.Batch(cmds...)
 }
 
 // handleCompleteKey handles keypresses in complete mode
@@ -169,6 +210,15 @@ func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
 
 // handleKey processes keyboard input
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Allow viewport scrolling in certain modes
+	if m.mode == ModeSelect || m.mode == ModeResults {
+		switch msg.String() {
+		case "pgup", "pgdown", "home", "end":
+			// These keys will be handled by viewport update in Update()
+			return m, nil
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -717,6 +767,23 @@ func saveSessionCache(cache *config.SessionCache) error {
 	return os.WriteFile(cachePath, data, 0600)
 }
 
+// borderedPanel wraps content in a bordered panel
+func borderedPanel(title, content string, borderColor lipgloss.Color) string {
+	border := lipgloss.RoundedBorder()
+	style := lipgloss.NewStyle().
+		Border(border).
+		BorderForeground(borderColor).
+		Padding(1, 2)
+
+	if title != "" {
+		titleStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(borderColor)
+		return style.Render(titleStyle.Render(title) + "\n\n" + content)
+	}
+	return style.Render(content)
+}
+
 // View renders the UI
 func (m Model) View() string {
 	var content strings.Builder
@@ -729,17 +796,17 @@ func (m Model) View() string {
 	case ModeWelcome:
 		content.WriteString(m.renderWelcome())
 	case ModeScanProgress:
-		content.WriteString(m.renderScanProgress())
+		content.WriteString(borderedPanel("", m.renderScanProgress(), Primary))
 	case ModeResults:
-		content.WriteString(m.renderResults())
+		content.WriteString(borderedPanel("", m.renderResults(), Accent))
 	case ModeSelect:
-		content.WriteString(m.renderSelect())
+		content.WriteString(borderedPanel("", m.renderSelect(), Secondary))
 	case ModeConfirm:
-		content.WriteString(m.renderConfirm())
+		content.WriteString(borderedPanel("", m.renderConfirm(), Warning))
 	case ModeClean:
-		content.WriteString(m.renderClean())
+		content.WriteString(borderedPanel("", m.renderClean(), Danger))
 	case ModeComplete:
-		content.WriteString(m.renderComplete())
+		content.WriteString(borderedPanel("", m.renderComplete(), Accent))
 	}
 
 	// Footer
@@ -837,69 +904,70 @@ func (m Model) renderScanProgress() string {
 
 // renderResults renders the results summary screen
 func (m Model) renderResults() string {
-	var content strings.Builder
+	var header strings.Builder
+	var viewportContent strings.Builder
 
 	// Results header
-	content.WriteString(resultsHeaderStyle.Render("SCAN RESULTS"))
-	content.WriteString("\n\n")
+	header.WriteString(resultsHeaderStyle.Render("SCAN RESULTS"))
+	header.WriteString("\n\n")
 
 	// Show error if present
 	if m.scanError != "" {
-		content.WriteString(errorStyle.Render("⚠️  Error: " + m.scanError))
-		content.WriteString("\n\n")
-		content.WriteString(nextActionStyle.Render("Press Esc to return to main menu"))
-		return content.String()
+		return header.String() +
+			errorStyle.Render("⚠️  Error: "+m.scanError) + "\n\n" +
+			nextActionStyle.Render("Press Esc to return to main menu")
 	}
 
 	// Show cleaning error if present
 	if m.cleanError != "" {
-		content.WriteString(errorStyle.Render("⚠️  Cleaning failed: " + m.cleanError))
-		content.WriteString("\n\n")
-		content.WriteString(nextActionStyle.Render("Press Esc to return to main menu"))
-		return content.String()
+		return header.String() +
+			errorStyle.Render("⚠️  Cleaning failed: "+m.cleanError) + "\n\n" +
+			nextActionStyle.Render("Press Esc to return to main menu")
 	}
 
 	if m.scanResults != nil && len(m.categories) > 0 {
 		// Summary stats
 		summary := fmt.Sprintf("Found %d cleanable files (%s)",
 			m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize))
-		content.WriteString(summaryStyle.Render(summary))
-		content.WriteString("\n\n")
+		viewportContent.WriteString(summaryStyle.Render(summary))
+		viewportContent.WriteString("\n\n")
 
 		// Category breakdown
-		content.WriteString(categoryHeaderStyle.Render("CATEGORIES"))
-		content.WriteString("\n")
+		viewportContent.WriteString(categoryHeaderStyle.Render("CATEGORIES"))
+		viewportContent.WriteString("\n")
 
 		for _, cat := range m.categories {
 			line := fmt.Sprintf("📁 %s: %s (%d files)", cat.Name, cat.Size, cat.Files)
 			if cat.Enabled {
-				content.WriteString(categoryEnabledStyle.Render("  ✓ " + line))
+				viewportContent.WriteString(categoryEnabledStyle.Render("  ✓ " + line))
 			} else {
-				content.WriteString(categoryDisabledStyle.Render("  ○ " + line))
+				viewportContent.WriteString(categoryDisabledStyle.Render("  ○ " + line))
 			}
-			content.WriteString("\n")
+			viewportContent.WriteString("\n")
 		}
 
-		content.WriteString("\n")
-		content.WriteString(nextActionStyle.Render("Press Enter to select categories for cleaning"))
-	} else {
-		content.WriteString(errorStyle.Render("No scan results available"))
-		content.WriteString("\n\n")
-		content.WriteString(nextActionStyle.Render("Press Esc to return to main menu and run a scan"))
+		// Update viewport with content
+		m.resultsViewport.SetContent(viewportContent.String())
+
+		footer := nextActionStyle.Render("Press Enter to select categories for cleaning")
+		return header.String() + m.resultsViewport.View() + "\n\n" + footer
 	}
 
-	return content.String()
+	return header.String() +
+		errorStyle.Render("No scan results available") + "\n\n" +
+		nextActionStyle.Render("Press Esc to return to main menu and run a scan")
 }
 
 // renderSelect renders the category selection screen
 func (m Model) renderSelect() string {
-	var content strings.Builder
+	var header strings.Builder
+	var viewportContent strings.Builder
 
 	// Selection header
-	content.WriteString(selectionHeaderStyle.Render("SELECT CATEGORIES TO CLEAN"))
-	content.WriteString("\n\n")
+	header.WriteString(selectionHeaderStyle.Render("SELECT CATEGORIES TO CLEAN"))
+	header.WriteString("\n\n")
 
-	// Categories
+	// Build viewport content with categories
 	for i, cat := range m.categories {
 		prefix := "  "
 		style := categoryItemStyle
@@ -919,43 +987,54 @@ func (m Model) renderSelect() string {
 		}
 
 		line := fmt.Sprintf("%s%s %s - %s (%d files)", prefix, indicator, cat.Name, cat.Size, cat.Files)
-		content.WriteString(style.Render(line))
-		content.WriteString("\n")
+		viewportContent.WriteString(style.Render(line))
+		viewportContent.WriteString("\n")
 	}
 
 	// Select All option
-	content.WriteString("\n")
+	viewportContent.WriteString("\n")
 	selectAllIdx := len(m.categories)
 	if m.menuIndex == selectAllIdx {
-		content.WriteString(actionItemSelectedStyle.Render("> [Select All / Deselect All]"))
+		viewportContent.WriteString(actionItemSelectedStyle.Render("> [Select All / Deselect All]"))
 	} else {
-		content.WriteString(actionItemStyle.Render("  [Select All / Deselect All]"))
+		viewportContent.WriteString(actionItemStyle.Render("  [Select All / Deselect All]"))
 	}
-	content.WriteString("\n\n")
+	viewportContent.WriteString("\n\n")
 
 	// Clean Selected button
 	cleanIdx := len(m.categories) + 1
 	if m.menuIndex == cleanIdx {
-		content.WriteString(actionItemSelectedStyle.Render("> ▶ Clean Selected"))
+		viewportContent.WriteString(actionItemSelectedStyle.Render("> ▶ Clean Selected"))
 	} else {
-		content.WriteString(actionItemStyle.Render("  ▶ Clean Selected"))
+		viewportContent.WriteString(actionItemStyle.Render("  ▶ Clean Selected"))
 	}
-	content.WriteString("\n")
+	viewportContent.WriteString("\n")
 
 	// Back button
 	backIdx := len(m.categories) + 2
 	if m.menuIndex == backIdx {
-		content.WriteString(actionItemSelectedStyle.Render("> ← Back"))
+		viewportContent.WriteString(actionItemSelectedStyle.Render("> ← Back"))
 	} else {
-		content.WriteString(actionItemStyle.Render("  ← Back"))
+		viewportContent.WriteString(actionItemStyle.Render("  ← Back"))
+	}
+
+	// Update viewport content and ensure selected item is visible
+	m.categoryViewport.SetContent(viewportContent.String())
+
+	// Auto-scroll to keep selected item visible
+	// Each line is roughly 1 line height, ensure menuIndex line is visible
+	if m.menuIndex*2 < m.categoryViewport.YOffset {
+		m.categoryViewport.YOffset = m.menuIndex * 2
+	} else if m.menuIndex*2 >= m.categoryViewport.YOffset+m.categoryViewport.Height {
+		m.categoryViewport.YOffset = (m.menuIndex * 2) - m.categoryViewport.Height + 2
 	}
 
 	// Selection info
 	selectedSize := m.calculateSelectedSize()
-	content.WriteString("\n\n")
-	content.WriteString(selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize)))
+	footer := selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize))
 
-	return content.String()
+	// Combine header, viewport, and footer
+	return header.String() + m.categoryViewport.View() + "\n\n" + footer
 }
 
 // calculateSelectedSize calculates total size of selected categories
@@ -1076,7 +1155,9 @@ func (m Model) getFooterText() string {
 	case ModeScanProgress, ModeClean:
 		return "Processing... • Esc Back"
 	case ModeConfirm:
-		return "↑↓ Navigate • Enter Select • Esc Back"
+		return "←→ Navigate • Enter Select • Esc Back"
+	case ModeResults, ModeSelect:
+		return "↑↓ Navigate • PgUp/PgDn Scroll • Enter Select • Esc Back • Q Quit"
 	default:
 		return "↑↓ Navigate • Enter Select • Esc Back • Q Quit"
 	}
