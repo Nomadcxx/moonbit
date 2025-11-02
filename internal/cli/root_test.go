@@ -84,11 +84,11 @@ func TestSaveAndLoadSessionCache(t *testing.T) {
 	assert.Contains(t, cachePath, filepath.Join(homeDir, ".cache", "moonbit"))
 }
 
-func TestRequiresSudo(t *testing.T) {
-	// This test checks if requiresSudo correctly identifies system paths
-	result := requiresSudo()
+func TestIsRunningAsRoot(t *testing.T) {
+	// This test checks if isRunningAsRoot correctly checks privileges
+	result := isRunningAsRoot()
 
-	// The result depends on whether system paths exist
+	// The result depends on whether the test is run as root
 	// We just verify it returns a boolean without panicking
 	assert.IsType(t, true, result)
 }

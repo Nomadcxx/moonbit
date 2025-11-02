@@ -36,6 +36,20 @@ Features:
 • Multiple cleaning categories (Pacman cache, temporary files, browser cache, etc.)
 • JSON output for automation and launcher integration`,
 	Run: func(cmd *cobra.Command, args []string) {
+		// Check for root access
+		if !isRunningAsRoot() {
+			fmt.Println("❌ MoonBit requires root access for system-wide cleaning")
+			fmt.Println("")
+			fmt.Println("Please run with sudo:")
+			fmt.Println("  sudo moonbit")
+			fmt.Println("")
+			fmt.Println("This is required to access:")
+			fmt.Println("  • Package manager caches (/var/cache)")
+			fmt.Println("  • System logs (/var/log)")
+			fmt.Println("  • System temporary files (/var/tmp)")
+			os.Exit(1)
+		}
+
 		// Start Bubble Tea UI with MoonBit model
 		ui.Start()
 	},
@@ -46,12 +60,12 @@ var scanCmd = &cobra.Command{
 	Short: "Scan system for cleanable files",
 	Long:  "Scan the system for cleanable files and cache locations",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Check if we need sudo for system-wide scanning
-		if requiresSudo() {
-			fmt.Println("⚠️  WARNING: This scan requires sudo access for some locations.")
-			fmt.Println("   Run with: sudo moonbit scan")
-			fmt.Println("   Continuing with user-space scan only...")
-			fmt.Println()
+		if !isRunningAsRoot() {
+			fmt.Println("❌ Scan command requires root access for complete system scan")
+			fmt.Println("")
+			fmt.Println("Please run with sudo:")
+			fmt.Println("  sudo moonbit scan")
+			os.Exit(1)
 		}
 
 		ScanAndSave()
@@ -63,12 +77,15 @@ var cleanCmd = &cobra.Command{
 	Short: "Clean discovered files",
 	Long:  "Clean files discovered in the last scan",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Check if we need sudo for system-wide cleaning
-		if requiresSudo() && !dryRun {
-			fmt.Println("⚠️  WARNING: Cleaning system locations requires sudo.")
-			fmt.Println("   Run with: sudo moonbit clean --force")
-			fmt.Println("   Continuing with dry-run mode...")
-			dryRun = true
+		if !isRunningAsRoot() && !dryRun {
+			fmt.Println("❌ Clean command requires root access for system-wide cleaning")
+			fmt.Println("")
+			fmt.Println("Please run with sudo:")
+			fmt.Println("  sudo moonbit clean --force")
+			fmt.Println("")
+			fmt.Println("Or run in dry-run mode (no root required):")
+			fmt.Println("  moonbit clean")
+			os.Exit(1)
 		}
 
 		if err := CleanSession(dryRun); err != nil {
@@ -78,20 +95,9 @@ var cleanCmd = &cobra.Command{
 	},
 }
 
-// requiresSudo checks if any of the scan targets require root access
-func requiresSudo() bool {
-	systemPaths := []string{
-		"/var/cache/pacman/pkg",
-		"/var/tmp",
-		"/var/log",
-	}
-
-	for _, path := range systemPaths {
-		if _, err := os.Stat(path); err == nil {
-			return true // At least one system path exists
-		}
-	}
-	return false
+// isRunningAsRoot checks if the current process has root privileges
+func isRunningAsRoot() bool {
+	return os.Geteuid() == 0
 }
 
 // ScanAndSave runs a comprehensive scan and saves results to cache
@@ -611,6 +617,15 @@ var pkgOrphansCmd = &cobra.Command{
 	Long:  "Detect and remove packages that were installed as dependencies but are no longer needed",
 	Run: func(cmd *cobra.Command, args []string) {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		if !dryRun && !isRunningAsRoot() {
+			fmt.Println("❌ Removing orphaned packages requires root access")
+			fmt.Println("")
+			fmt.Println("Please run with sudo:")
+			fmt.Println("  sudo moonbit pkg orphans --force")
+			os.Exit(1)
+		}
+
 		removeOrphanedPackages(dryRun)
 	},
 }
@@ -621,6 +636,15 @@ var pkgKernelsCmd = &cobra.Command{
 	Long:  "Remove old kernel versions while keeping the current and one previous (Debian/Ubuntu only)",
 	Run: func(cmd *cobra.Command, args []string) {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		if !dryRun && !isRunningAsRoot() {
+			fmt.Println("❌ Removing old kernels requires root access")
+			fmt.Println("")
+			fmt.Println("Please run with sudo:")
+			fmt.Println("  sudo moonbit pkg kernels --force")
+			os.Exit(1)
+		}
+
 		removeOldKernels(dryRun)
 	},
 }
