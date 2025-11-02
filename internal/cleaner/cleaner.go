@@ -62,7 +62,7 @@ type Cleaner struct {
 func NewCleaner(cfg *config.Config) *Cleaner {
 	safetyCfg := &SafetyConfig{
 		RequireConfirmation: true,
-		MaxDeletionSize:     1024, // 1GB default
+		MaxDeletionSize:     51200, // 50GB default (in MB)
 		SafeMode:            true,
 		ShredPasses:         1,
 		ProtectedPaths: []string{
@@ -482,7 +482,7 @@ func ListBackups() ([]string, error) {
 func GetDefaultSafetyConfig() *SafetyConfig {
 	return &SafetyConfig{
 		RequireConfirmation: true,
-		MaxDeletionSize:     1024, // 1GB
+		MaxDeletionSize:     51200, // 50GB (in MB)
 		SafeMode:            true,
 		ShredPasses:         1,
 		ProtectedPaths: []string{

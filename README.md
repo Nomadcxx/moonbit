@@ -66,12 +66,3 @@ See [CLAUDE.md](CLAUDE.md) for architecture details.
 ## License
 
 MIT - see [LICENSE](LICENSE)
-
-## Issue Tracking
-
-Uses [bd (beads)](https://github.com/steveyegge/beads):
-
-```bash
-bd ready     # Show ready work
-bd list      # List all issues
-```

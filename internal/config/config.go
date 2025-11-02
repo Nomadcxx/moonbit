@@ -95,7 +95,7 @@ func DefaultConfig() *Config {
 			DryRunDefault  bool     `toml:"dry_run_default"`
 		}{
 			MaxDepth:       3, // Deeper scanning for comprehensive detection
-			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg", ".git", ".svn", ".hg"},
+			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
 			EnableAll:      true,
 			DryRunDefault:  true,
 		},

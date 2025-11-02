@@ -851,6 +851,14 @@ func (m Model) renderResults() string {
 		return content.String()
 	}
 
+	// Show cleaning error if present
+	if m.cleanError != "" {
+		content.WriteString(errorStyle.Render("⚠️  Cleaning failed: " + m.cleanError))
+		content.WriteString("\n\n")
+		content.WriteString(nextActionStyle.Render("Press Esc to return to main menu"))
+		return content.String()
+	}
+
 	if m.scanResults != nil && len(m.categories) > 0 {
 		// Summary stats
 		summary := fmt.Sprintf("Found %d cleanable files (%s)",
