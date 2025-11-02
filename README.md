@@ -8,8 +8,10 @@ A system cleaner TUI for Linux. Scan and clean temporary files, caches, and logs
 
 ```bash
 make build
-sudo ./moonbit
+sudo ./moonbit     # Requires sudo for system-wide cleaning
 ```
+
+**Note**: MoonBit requires root access to scan and clean system directories like `/var/cache`, `/var/log`, and package manager caches.
 
 ## What It Does
 
