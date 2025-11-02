@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
@@ -598,12 +599,179 @@ var duplicatesCleanCmd = &cobra.Command{
 	},
 }
 
+var pkgCmd = &cobra.Command{
+	Use:   "pkg",
+	Short: "Package manager cleanup operations",
+	Long:  "Remove old kernels, orphaned packages, and unused dependencies using native package managers",
+}
+
+var pkgOrphansCmd = &cobra.Command{
+	Use:   "orphans",
+	Short: "Find and remove orphaned packages",
+	Long:  "Detect and remove packages that were installed as dependencies but are no longer needed",
+	Run: func(cmd *cobra.Command, args []string) {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		removeOrphanedPackages(dryRun)
+	},
+}
+
+var pkgKernelsCmd = &cobra.Command{
+	Use:   "kernels",
+	Short: "Remove old kernel versions",
+	Long:  "Remove old kernel versions while keeping the current and one previous (Debian/Ubuntu only)",
+	Run: func(cmd *cobra.Command, args []string) {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		removeOldKernels(dryRun)
+	},
+}
+
+func removeOrphanedPackages(dryRun bool) {
+	fmt.Println("🧹 Searching for orphaned packages...")
+
+	// Detect package manager
+	var listCmd, removeCmd *exec.Cmd
+
+	if _, err := exec.LookPath("pacman"); err == nil {
+		// Arch Linux (Pacman)
+		fmt.Println("📦 Detected: Pacman (Arch/Manjaro)")
+		listCmd = exec.Command("pacman", "-Qtdq")
+		if !dryRun {
+			fmt.Println("\n🗑️  Running: sudo pacman -Rns $(pacman -Qtdq)")
+			removeCmd = exec.Command("sudo", "pacman", "-Rns", "$(pacman -Qtdq)")
+		}
+	} else if _, err := exec.LookPath("apt"); err == nil {
+		// Debian/Ubuntu (APT)
+		fmt.Println("📦 Detected: APT (Debian/Ubuntu)")
+		listCmd = exec.Command("apt-mark", "showauto")
+		if !dryRun {
+			fmt.Println("\n🗑️  Running: sudo apt autoremove")
+			removeCmd = exec.Command("sudo", "apt", "autoremove", "-y")
+		}
+	} else if _, err := exec.LookPath("dnf"); err == nil {
+		// Fedora/RHEL (DNF)
+		fmt.Println("📦 Detected: DNF (Fedora/RHEL)")
+		listCmd = exec.Command("dnf", "repoquery", "--extras")
+		if !dryRun {
+			fmt.Println("\n🗑️  Running: sudo dnf autoremove")
+			removeCmd = exec.Command("sudo", "dnf", "autoremove", "-y")
+		}
+	} else if _, err := exec.LookPath("zypper"); err == nil {
+		// openSUSE (Zypper)
+		fmt.Println("📦 Detected: Zypper (openSUSE)")
+		if !dryRun {
+			fmt.Println("\n🗑️  Running: sudo zypper packages --orphaned")
+			removeCmd = exec.Command("sudo", "zypper", "remove", "--clean-deps", "-y")
+		}
+	} else {
+		fmt.Println("❌ No supported package manager found")
+		fmt.Println("   Supported: pacman, apt, dnf, zypper")
+		return
+	}
+
+	// List orphans
+	if listCmd != nil {
+		fmt.Println("\n📋 Orphaned packages:")
+		listCmd.Stdout = os.Stdout
+		listCmd.Stderr = os.Stderr
+		if err := listCmd.Run(); err != nil {
+			fmt.Printf("\n⚠️  Could not list orphaned packages (this is normal if there are none)\n")
+		}
+	}
+
+	if dryRun {
+		fmt.Println("\n💡 Dry-run mode: no packages removed")
+		fmt.Println("   Run with --force to actually remove orphaned packages")
+		return
+	}
+
+	// Remove orphans
+	if removeCmd != nil {
+		removeCmd.Stdout = os.Stdout
+		removeCmd.Stderr = os.Stderr
+		if err := removeCmd.Run(); err != nil {
+			fmt.Printf("❌ Failed to remove orphaned packages: %v\n", err)
+			return
+		}
+		fmt.Println("\n✅ Orphaned packages removed successfully!")
+	}
+}
+
+func removeOldKernels(dryRun bool) {
+	fmt.Println("🧹 Checking for old kernel versions...")
+
+	// Check if this is a Debian/Ubuntu system
+	if _, err := exec.LookPath("apt"); err != nil {
+		fmt.Println("❌ This feature only supports Debian/Ubuntu (APT-based systems)")
+		fmt.Println("   Current system does not have APT package manager")
+		return
+	}
+
+	// Get current kernel version
+	unameCmd := exec.Command("uname", "-r")
+	currentKernel, err := unameCmd.Output()
+	if err != nil {
+		fmt.Printf("❌ Could not detect current kernel: %v\n", err)
+		return
+	}
+
+	currentVersion := string(currentKernel[:len(currentKernel)-1]) // Remove trailing newline
+	fmt.Printf("📌 Current kernel: %s\n", currentVersion)
+
+	// List installed kernels
+	listCmd := exec.Command("dpkg", "--list")
+	output, err := listCmd.Output()
+	if err != nil {
+		fmt.Printf("❌ Could not list installed packages: %v\n", err)
+		return
+	}
+
+	fmt.Println("\n📋 Installed kernel packages:")
+	lines := string(output)
+	kernelCount := 0
+	for _, line := range strings.Split(lines, "\n") {
+		if strings.Contains(line, "linux-image-") || strings.Contains(line, "linux-headers-") {
+			if strings.HasPrefix(line, "ii") {
+				fmt.Println("  " + line)
+				kernelCount++
+			}
+		}
+	}
+
+	if kernelCount == 0 {
+		fmt.Println("  (none found)")
+		return
+	}
+
+	if dryRun {
+		fmt.Println("\n💡 Dry-run mode: run 'sudo apt autoremove' to remove old kernels")
+		fmt.Println("   This will keep your current kernel and one previous version")
+		fmt.Println("   Use --force to automatically run the command")
+		return
+	}
+
+	fmt.Println("\n🗑️  Running: sudo apt autoremove")
+	fmt.Println("   This will remove old kernels while keeping current + one previous")
+
+	autoremoveCmd := exec.Command("sudo", "apt", "autoremove", "-y")
+	autoremoveCmd.Stdout = os.Stdout
+	autoremoveCmd.Stderr = os.Stderr
+
+	if err := autoremoveCmd.Run(); err != nil {
+		fmt.Printf("❌ Failed to remove old kernels: %v\n", err)
+		return
+	}
+
+	fmt.Println("\n✅ Old kernels removed successfully!")
+	fmt.Println("💡 Tip: Your system automatically marks old kernels for autoremoval")
+}
+
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(dockerCmd)
 	rootCmd.AddCommand(duplicatesCmd)
+	rootCmd.AddCommand(pkgCmd)
 
 	backupCmd.AddCommand(backupListCmd)
 	backupCmd.AddCommand(backupRestoreCmd)
@@ -614,7 +782,31 @@ func init() {
 	duplicatesCmd.AddCommand(duplicatesFindCmd)
 	duplicatesCmd.AddCommand(duplicatesCleanCmd)
 
+	pkgCmd.AddCommand(pkgOrphansCmd)
+	pkgCmd.AddCommand(pkgKernelsCmd)
+
 	duplicatesFindCmd.Flags().Int64("min-size", 1024, "Minimum file size to consider (bytes)")
+
+	pkgOrphansCmd.Flags().Bool("dry-run", true, "Preview orphaned packages without removing")
+	pkgKernelsCmd.Flags().Bool("dry-run", true, "Preview old kernels without removing")
+
+	// Add --force flag for pkg subcommands
+	pkgOrphansCmd.Flags().Bool("force", false, "Actually remove orphaned packages")
+	pkgKernelsCmd.Flags().Bool("force", false, "Actually remove old kernels")
+
+	// Override dry-run when --force is used
+	pkgOrphansCmd.PreRun = func(cmd *cobra.Command, args []string) {
+		force, _ := cmd.Flags().GetBool("force")
+		if force {
+			cmd.Flags().Set("dry-run", "false")
+		}
+	}
+	pkgKernelsCmd.PreRun = func(cmd *cobra.Command, args []string) {
+		force, _ := cmd.Flags().GetBool("force")
+		if force {
+			cmd.Flags().Set("dry-run", "false")
+		}
+	}
 
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
 

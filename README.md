@@ -54,6 +54,12 @@ moonbit duplicates find [paths...]          # Find duplicates (default: home dir
 moonbit duplicates find --min-size 10240    # Find duplicates >= 10KB
 moonbit duplicates clean                    # Interactive removal (coming soon)
 
+# Package manager cleanup (requires sudo)
+moonbit pkg orphans             # List orphaned packages (dry-run)
+moonbit pkg orphans --force     # Remove orphaned packages (Pacman/APT/DNF/Zypper)
+moonbit pkg kernels             # List old kernels (Debian/Ubuntu only)
+moonbit pkg kernels --force     # Remove old kernels (keep current + previous)
+
 # Docker cleanup (uses docker CLI)
 moonbit docker images    # Remove unused images
 moonbit docker all       # Remove all unused resources
