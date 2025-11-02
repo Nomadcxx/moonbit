@@ -117,6 +117,7 @@ dist/
 
 # Planning and development documents (keep local)
 AGENTS.md
+CLAUDE.md
 TODO.md
 implementation_plan.md
 moonbit_overview.md
