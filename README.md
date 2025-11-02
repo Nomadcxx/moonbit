@@ -104,11 +104,6 @@ Working:
 - [x] Development tool caches (pip, npm, cargo, gradle, maven, go)
 - [x] Docker cleanup commands
 
-Todo:
-- [ ] Quick vs Deep clean modes
-- [ ] Multi-distro support (apt, dnf, zypper)
-- [ ] Better TUI with file preview
-- [ ] Additional cleanup targets (VSCode extensions, browser data)
 
 ## Development
 
@@ -117,8 +112,6 @@ make build    # Build binary
 make test     # Run tests
 make install  # Install to /usr/local/bin
 ```
-
-See [CLAUDE.md](CLAUDE.md) for architecture details.
 
 ## Requirements
 
