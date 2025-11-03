@@ -1,6 +1,7 @@
-.PHONY: all build test clean install uninstall run dev help install-systemd uninstall-systemd
+.PHONY: all build test clean install uninstall run dev help install-systemd uninstall-systemd installer
 
 BINARY_NAME=moonbit
+INSTALLER_NAME=moonbit-installer
 INSTALL_PATH=/usr/local/bin
 SYSTEMD_PATH=/etc/systemd/system
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -40,6 +41,7 @@ test-all: test test-race test-coverage
 clean:
 	@echo "Cleaning..."
 	rm -f $(BINARY_NAME)
+	rm -f $(INSTALLER_NAME)
 	rm -f coverage.out coverage.html
 	@echo "Clean complete"
 
@@ -118,6 +120,12 @@ build-all:
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BINARY_NAME)-darwin-arm64 cmd/main.go
 	@echo "Multi-platform build complete"
 
+# Build the installer
+installer:
+	@echo "Building $(INSTALLER_NAME)..."
+	go build $(LDFLAGS) -o $(INSTALLER_NAME) cmd/installer/main.go
+	@echo "Build complete: ./$(INSTALLER_NAME)"
+
 # Show help
 help:
 	@echo "MoonBit - System Cleaner Makefile"
@@ -136,6 +144,7 @@ help:
 	@echo "  uninstall      Remove binary from $(INSTALL_PATH)"
 	@echo "  install-systemd   Install systemd service/timer files"
 	@echo "  uninstall-systemd Remove systemd service/timer files"
+	@echo "  installer      Build the installer TUI"
 	@echo "  run            Build and run in TUI mode"
 	@echo "  dev            Build and run with sudo (for system paths)"
 	@echo "  fmt            Format code with go fmt"
