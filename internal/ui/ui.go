@@ -376,9 +376,7 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var totalFiles int
 
 		// Scan ALL categories (matching CLI behavior)
-		for i, category := range cfg.Categories {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Scanning %d/%d: %s\n", i+1, len(cfg.Categories), category.Name)
-			
+		for _, category := range cfg.Categories {
 			// Check if category paths exist
 			exists := false
 			for _, path := range category.Paths {
@@ -389,7 +387,6 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 			}
 
 			if !exists {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Skipping %s - no paths exist\n", category.Name)
 				continue
 			}
 
@@ -402,12 +399,9 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
 					totalSize += msg.Complete.Stats.Size
 					totalFiles += msg.Complete.Stats.FileCount
-					fmt.Fprintf(os.Stderr, "[DEBUG] Completed %s: %d files, %d bytes in %v\n", 
-						category.Name, msg.Complete.Stats.FileCount, msg.Complete.Stats.Size, msg.Complete.Duration)
 					break
 				}
 				if msg.Error != nil {
-					fmt.Fprintf(os.Stderr, "[DEBUG] Error in %s: %v\n", category.Name, msg.Error)
 					return scanCompleteMsg{
 						Success: false,
 						Error:   msg.Error.Error(),
