@@ -408,7 +408,8 @@ Press Enter to exit`
 
 	return fmt.Sprintf(`Installation complete!
 
-%sYou can now run 'sudo moonbit' from any terminal.
+%sYou can now run 'moonbit' from any terminal.
+If root access is needed, you'll be prompted for your password.
 
 Press Enter to exit`, scheduleMsg)
 }

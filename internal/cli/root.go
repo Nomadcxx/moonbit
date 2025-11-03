@@ -36,18 +36,10 @@ Features:
 • Multiple cleaning categories (Pacman cache, temporary files, browser cache, etc.)
 • JSON output for automation and launcher integration`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Check for root access
+		// Check for root access and re-exec with sudo if needed
 		if !isRunningAsRoot() {
-			fmt.Println("❌ MoonBit requires root access for system-wide cleaning")
-			fmt.Println("")
-			fmt.Println("Please run with sudo:")
-			fmt.Println("  sudo moonbit")
-			fmt.Println("")
-			fmt.Println("This is required to access:")
-			fmt.Println("  • Package manager caches (/var/cache)")
-			fmt.Println("  • System logs (/var/log)")
-			fmt.Println("  • System temporary files (/var/tmp)")
-			os.Exit(1)
+			reexecWithSudo()
+			return
 		}
 
 		// Start Bubble Tea UI with MoonBit model
@@ -61,11 +53,8 @@ var scanCmd = &cobra.Command{
 	Long:  "Scan the system for cleanable files and cache locations",
 	Run: func(cmd *cobra.Command, args []string) {
 		if !isRunningAsRoot() {
-			fmt.Println("❌ Scan command requires root access for complete system scan")
-			fmt.Println("")
-			fmt.Println("Please run with sudo:")
-			fmt.Println("  sudo moonbit scan")
-			os.Exit(1)
+			reexecWithSudo()
+			return
 		}
 
 		ScanAndSave()
@@ -78,14 +67,8 @@ var cleanCmd = &cobra.Command{
 	Long:  "Clean files discovered in the last scan",
 	Run: func(cmd *cobra.Command, args []string) {
 		if !isRunningAsRoot() && !dryRun {
-			fmt.Println("❌ Clean command requires root access for system-wide cleaning")
-			fmt.Println("")
-			fmt.Println("Please run with sudo:")
-			fmt.Println("  sudo moonbit clean --force")
-			fmt.Println("")
-			fmt.Println("Or run in dry-run mode (no root required):")
-			fmt.Println("  moonbit clean")
-			os.Exit(1)
+			reexecWithSudo()
+			return
 		}
 
 		if err := CleanSession(dryRun); err != nil {
@@ -98,6 +81,39 @@ var cleanCmd = &cobra.Command{
 // isRunningAsRoot checks if the current process has root privileges
 func isRunningAsRoot() bool {
 	return os.Geteuid() == 0
+}
+
+// reexecWithSudo re-executes the current command with sudo
+func reexecWithSudo() {
+	fmt.Println("🔐 MoonBit requires root access for system-wide operations")
+	fmt.Println("Please enter your password when prompted...")
+	fmt.Println()
+
+	// Get the current executable path
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Unable to determine executable path: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Build the sudo command with all original arguments
+	args := append([]string{exe}, os.Args[1:]...)
+	cmd := exec.Command("sudo", args...)
+
+	// Connect stdin/stdout/stderr to maintain interactivity
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Run the command
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 // ScanAndSave runs a comprehensive scan and saves results to cache
