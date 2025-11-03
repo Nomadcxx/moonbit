@@ -2,21 +2,20 @@
   <img src="logo.png" alt="MoonBit" />
 </div>
 
-A cross-distro system cleaner for Linux with an interactive TUI. Clean temporary files, caches, logs, and free up disk space.
+A modern system cleaner for Linux built in Go with an interactive TUI. Clean temporary files, caches, logs, docker images etc and free up disk space.
 
 ![Eldritch Theme](https://img.shields.io/badge/theme-eldritch-37f499?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 ## Features
 
-- **Cross-Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
-- **Package Manager Cleanup**: Pacman, APT, DNF, Zypper, AUR helpers
-- **Development Tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
-- **System Caches**: Font, Mesa shader, WebKit, thumbnails
-- **Docker Cleanup**: Images, containers, volumes
-- **Media Servers**: Plex and Jellyfin transcoding cleanup
-- **Automated Scheduling**: Systemd timers for daily/weekly cleaning
-- **Safe Operations**: Dry-run mode, backups, protected paths
+- **distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
+- **package manager**: Pacman, APT, DNF, Zypper, AUR helpers
+- *development tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
+- *system caches**: Font, Mesa shader, WebKit, thumbnails
+- *dDocker cleanup**: Images, containers, volumes
+- **media servers**: Plex and Jellyfin transcoding cleanup
+- **automated scheduling**: Systemd timers for daily/weekly cleaning
 
 ## Installation
 
@@ -44,8 +43,11 @@ cd moonbit
 make installer
 sudo ./moonbit-installer
 ```
-
-## Usage
+## Usage (TUI)
+```bash
+moonbit
+```
+## Usage (CLI)
 
 Just run `moonbit` - it'll prompt for your password if needed:
 
