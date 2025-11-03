@@ -91,7 +91,6 @@ func newModel() model {
 		{name: "Check dependencies", description: "Checking system dependencies", execute: checkDependencies, status: statusPending},
 		{name: "Build binary", description: "Building moonbit", execute: buildBinary, status: statusPending},
 		{name: "Install binary", description: "Installing to /usr/local/bin", execute: installBinary, status: statusPending},
-		{name: "Install assets", description: "Installing ascii.txt to /usr/share/moonbit", execute: installAssets, status: statusPending},
 		{name: "Install systemd", description: "Installing systemd timers", execute: installSystemd, optional: true, status: statusPending},
 		{name: "Configure schedule", description: "Configuring cleaning schedule", execute: configureSchedule, optional: true, status: statusPending},
 		{name: "Enable service", description: "Enabling systemd timers", execute: enableService, optional: true, status: statusPending},
@@ -146,7 +145,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						{name: "Check privileges", description: "Checking root access", execute: checkPrivileges, status: statusPending},
 						{name: "Disable service", description: "Disabling systemd timers", execute: disableService, status: statusPending},
 						{name: "Remove binary", description: "Removing moonbit binary", execute: removeBinary, status: statusPending},
-						{name: "Remove assets", description: "Removing /usr/share/moonbit", execute: removeAssets, status: statusPending},
 						{name: "Remove systemd", description: "Removing systemd files", execute: removeSystemd, optional: true, status: statusPending},
 					}
 					// Skip schedule selection for uninstall
@@ -225,11 +223,11 @@ func (m model) View() string {
 
 	// ASCII Header
 	headerLines := []string{
-		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀",
-		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀",
-		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀",
 		"",
-		"System Cleaner for Linux",
+		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
+		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
+		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
+		"",
 	}
 
 	for _, line := range headerLines {
@@ -492,28 +490,30 @@ func buildBinary(m *model) error {
 	if err != nil {
 		return fmt.Errorf("build failed: %v - %s", err, string(output))
 	}
+
+	// Verify binary was created
+	if _, err := os.Stat("moonbit"); err != nil {
+		return fmt.Errorf("binary not found after build (run installer from moonbit project root)")
+	}
+
 	return nil
 }
 
 func installBinary(m *model) error {
+	// Verify binary exists
+	if _, err := os.Stat("moonbit"); err != nil {
+		return fmt.Errorf("moonbit binary not found (run build first)")
+	}
+
 	// Copy binary to /usr/local/bin
 	cmd := exec.Command("install", "-m", "755", "moonbit", "/usr/local/bin/moonbit")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to install binary: %v", err)
 	}
-	return nil
-}
 
-func installAssets(m *model) error {
-	// Create /usr/share/moonbit directory
-	if err := os.MkdirAll("/usr/share/moonbit", 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %v", err)
-	}
-
-	// Copy ascii.txt
-	cmd := exec.Command("install", "-m", "644", "ascii.txt", "/usr/share/moonbit/ascii.txt")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to install ascii.txt: %v", err)
+	// Verify installation
+	if _, err := os.Stat("/usr/local/bin/moonbit"); err != nil {
+		return fmt.Errorf("failed to verify binary installation")
 	}
 
 	return nil
@@ -532,6 +532,14 @@ func installSystemd(m *model) error {
 		"systemd/moonbit-clean.timer",
 	}
 
+	// Verify source files exist
+	for _, file := range files {
+		if _, err := os.Stat(file); err != nil {
+			return fmt.Errorf("systemd file not found: %s (run installer from moonbit project root)", file)
+		}
+	}
+
+	// Copy files to /etc/systemd/system/
 	for _, file := range files {
 		target := "/etc/systemd/system/" + strings.TrimPrefix(file, "systemd/")
 		cmd := exec.Command("install", "-m", "644", file, target)
@@ -604,13 +612,6 @@ func removeBinary(m *model) error {
 	return nil
 }
 
-func removeAssets(m *model) error {
-	if err := os.RemoveAll("/usr/share/moonbit"); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove assets: %v", err)
-	}
-	return nil
-}
-
 func removeSystemd(m *model) error {
 	files := []string{
 		"/etc/systemd/system/moonbit-scan.service",
@@ -631,6 +632,14 @@ func removeSystemd(m *model) error {
 }
 
 func main() {
+	// Check for root privileges before starting TUI
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "Error: This installer requires root privileges.")
+		fmt.Fprintln(os.Stderr, "Please run with sudo:")
+		fmt.Fprintln(os.Stderr, "  sudo ./moonbit-installer")
+		os.Exit(1)
+	}
+
 	p := tea.NewProgram(newModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running installer: %v\n", err)
