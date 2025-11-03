@@ -12,25 +12,27 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Theme colors - Monochrome
+// Theme colors - Eldritch (Lovecraftian horror inspired)
 var (
-	BgBase       = lipgloss.Color("#1a1a1a")
-	Primary      = lipgloss.Color("#ffffff")
-	Secondary    = lipgloss.Color("#cccccc")
-	Accent       = lipgloss.Color("#ffffff")
-	FgPrimary    = lipgloss.Color("#ffffff")
-	FgSecondary  = lipgloss.Color("#cccccc")
-	FgMuted      = lipgloss.Color("#666666")
-	ErrorColor   = lipgloss.Color("#ffffff")
-	WarningColor = lipgloss.Color("#888888")
+	BgBase       = lipgloss.Color("#212337") // Sunken Depths Grey
+	BgElevated   = lipgloss.Color("#323449") // Shallow Depths Grey
+	Primary      = lipgloss.Color("#37f499") // Great Old One Green
+	Secondary    = lipgloss.Color("#04d1f9") // Watery Tomb Blue
+	Accent       = lipgloss.Color("#a48cf2") // Lovecraft Purple
+	FgPrimary    = lipgloss.Color("#ebfafa") // Lighthouse White
+	FgSecondary  = lipgloss.Color("#7081d0") // The Old One Purple
+	FgMuted      = lipgloss.Color("#7081d0") // The Old One Purple (comments)
+	ErrorColor   = lipgloss.Color("#f16c75") // R'lyeh Red
+	WarningColor = lipgloss.Color("#f7c67f") // Dreaming Orange
+	SuccessColor = lipgloss.Color("#37f499") // Great Old One Green
 )
 
 // Styles
 var (
-	checkMark   = lipgloss.NewStyle().Foreground(Accent).SetString("[OK]")
+	checkMark   = lipgloss.NewStyle().Foreground(SuccessColor).SetString("[OK]")
 	failMark    = lipgloss.NewStyle().Foreground(ErrorColor).SetString("[FAIL]")
 	skipMark    = lipgloss.NewStyle().Foreground(WarningColor).SetString("[SKIP]")
-	headerStyle = lipgloss.NewStyle().Foreground(Primary).Bold(true)
+	headerStyle = lipgloss.NewStyle().Foreground(FgPrimary)
 )
 
 type installStep int
@@ -232,7 +234,12 @@ func (m model) View() string {
 	}
 
 	for _, line := range headerLines {
-		content.WriteString(headerStyle.Render(line))
+		centered := lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Width(m.width).
+			Align(lipgloss.Center).
+			Render(line)
+		content.WriteString(centered)
 		content.WriteString("\n")
 	}
 	content.WriteString("\n")
