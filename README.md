@@ -2,7 +2,7 @@
   <img src="logo.png" alt="MoonBit" />
 </div>
 
-A modern system cleaner for Linux built in Go with an interactive TUI. Clean temporary files, caches, logs, docker images etc and free up disk space.
+A modern system cleaner built in Go with a TUI and CLI. Clean temporary files, caches, logs and docker images. 
 
 ![Eldritch Theme](https://img.shields.io/badge/theme-eldritch-37f499?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
@@ -13,7 +13,7 @@ A modern system cleaner for Linux built in Go with an interactive TUI. Clean tem
 - **package manager**: Pacman, APT, DNF, Zypper, AUR helpers
 - *development tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
 - *system caches**: Font, Mesa shader, WebKit, thumbnails
-- *dDocker cleanup**: Images, containers, volumes
+- *docker cleanup**: Images, containers, volumes
 - **media servers**: Plex and Jellyfin transcoding cleanup
 - **automated scheduling**: Systemd timers for daily/weekly cleaning
 
