@@ -19,7 +19,8 @@ import (
 )
 
 var (
-	dryRun bool
+	dryRun   bool
+	scanMode string // "quick", "deep", or "" (all)
 )
 
 var rootCmd = &cobra.Command{
@@ -118,7 +119,19 @@ func reexecWithSudo() {
 
 // ScanAndSave runs a comprehensive scan and saves results to cache
 func ScanAndSave() error {
-	fmt.Println("🧹 MoonBit Comprehensive System Scan")
+	return ScanAndSaveWithMode(scanMode)
+}
+
+// ScanAndSaveWithMode runs a scan filtered by mode (quick/deep)
+func ScanAndSaveWithMode(mode string) error {
+	modeLabel := "Comprehensive"
+	if mode == "quick" {
+		modeLabel = "Quick"
+	} else if mode == "deep" {
+		modeLabel = "Deep"
+	}
+	
+	fmt.Printf("🧹 MoonBit %s System Scan\n", modeLabel)
 	fmt.Println("=====================================")
 
 	cfg, err := config.Load("")
@@ -144,6 +157,11 @@ func ScanAndSave() error {
 	allCategories = append(allCategories, availableCategories...)
 
 	for i, category := range allCategories {
+		// Filter by mode
+		if mode == "quick" && category.Risk != config.Low {
+			continue // Quick mode: only Low risk
+		}
+		// Deep mode scans everything (no filter needed)
 		// Check if this category path exists (for categories from config)
 		exists := false
 		for _, path := range category.Paths {
@@ -210,7 +228,14 @@ func ScanAndSave() error {
 
 // CleanSession executes the actual cleaning based on session cache
 func CleanSession(dryRun bool) error {
-	fmt.Println("🧹 MoonBit Cleaning Session")
+	modeLabel := "Standard"
+	if scanMode == "quick" {
+		modeLabel = "Quick"
+	} else if scanMode == "deep" {
+		modeLabel = "Deep"
+	}
+	
+	fmt.Printf("🧹 MoonBit %s Cleaning Session\n", modeLabel)
 	fmt.Println("===========================")
 
 	// Load session cache
@@ -228,6 +253,15 @@ func CleanSession(dryRun bool) error {
 	cfg, err := config.Load("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
+	}
+	
+	// Filter cache by mode if specified
+	if scanMode != "" {
+		cache = filterCacheByMode(cache, cfg, scanMode)
+		if cache.TotalFiles == 0 {
+			fmt.Printf("✅ No files to clean in %s mode!\n", scanMode)
+			return nil
+		}
 	}
 
 	c := cleaner.NewCleaner(cfg)
@@ -361,6 +395,57 @@ func loadSessionCache() (*config.SessionCache, error) {
 	}
 
 	return &cache, nil
+}
+
+// filterCacheByMode filters cached files based on clean mode
+func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode string) *config.SessionCache {
+	if mode == "" {
+		return cache // No filtering
+	}
+	
+	// Build map of category paths to risk levels
+	riskByPath := make(map[string]config.RiskLevel)
+	for _, cat := range cfg.Categories {
+		for _, path := range cat.Paths {
+			riskByPath[path] = cat.Risk
+		}
+	}
+	
+	// Filter files
+	var filteredFiles []config.FileInfo
+	var filteredSize uint64
+	
+	for _, file := range cache.ScanResults.Files {
+		// Find which category this file belongs to
+		risk := config.Low // Default to Low
+		for catPath, catRisk := range riskByPath {
+			if strings.HasPrefix(file.Path, catPath) {
+				risk = catRisk
+				break
+			}
+		}
+		
+		// Apply mode filter
+		if mode == "quick" && risk != config.Low {
+			continue // Quick mode: only Low risk
+		}
+		// Deep mode includes everything
+		
+		filteredFiles = append(filteredFiles, file)
+		filteredSize += file.Size
+	}
+	
+	return &config.SessionCache{
+		ScanResults: &config.Category{
+			Name:      cache.ScanResults.Name,
+			Files:     filteredFiles,
+			FileCount: len(filteredFiles),
+			Size:      filteredSize,
+		},
+		TotalSize:  filteredSize,
+		TotalFiles: len(filteredFiles),
+		ScannedAt:  cache.ScannedAt,
+	}
 }
 
 // humanizeBytes converts bytes to human-readable format
@@ -848,7 +933,11 @@ func init() {
 		}
 	}
 
+	// Scan mode flags
+	scanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Scan mode: 'quick' (safe caches only) or 'deep' (all categories)")
+	
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
+	cleanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Clean mode: 'quick' (safe caches only) or 'deep' (all categories)")
 
 	// Force flag should set dryRun to false
 	var forceFlag bool

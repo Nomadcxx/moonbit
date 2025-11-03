@@ -86,8 +86,29 @@ type SessionCache struct {
 	ScannedAt   time.Time `json:"scanned_at"`
 }
 
+// getRealUserHome returns the actual user's home directory, even when running as root
+func getRealUserHome() string {
+	// When running with sudo, SUDO_USER contains the original user
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
+		// Try to get home from /etc/passwd or common patterns
+		userHome := "/home/" + sudoUser
+		if stat, err := os.Stat(userHome); err == nil && stat.IsDir() {
+			return userHome
+		}
+	}
+	
+	// Fallback to HOME or os.UserHomeDir
+	if home := os.Getenv("HOME"); home != "" {
+		return home
+	}
+	
+	home, _ := os.UserHomeDir()
+	return home
+}
+
 // DefaultConfig returns a comprehensive configuration with real cleaning targets
 func DefaultConfig() *Config {
+	userHome := getRealUserHome()
 	cfg := &Config{
 		Scan: struct {
 			MaxDepth       int      `toml:"max_depth"`
@@ -110,28 +131,28 @@ func DefaultConfig() *Config {
 			},
 			{
 				Name:         "Yay Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/yay"},
+				Paths:        []string{userHome + "/.cache/yay"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Paru Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/paru"},
+				Paths:        []string{userHome + "/.cache/paru"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Pamac Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/pamac"},
+				Paths:        []string{userHome + "/.cache/pamac"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "User Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache"},
+				Paths:        []string{userHome + "/.cache"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -146,7 +167,7 @@ func DefaultConfig() *Config {
 			},
 			{
 				Name:         "Thumbnails",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/thumbnails"},
+				Paths:        []string{userHome + "/.cache/thumbnails"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -154,7 +175,14 @@ func DefaultConfig() *Config {
 			},
 			{
 				Name:         "Browser Cache (Safe)",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/mozilla"},
+				Paths: []string{
+					userHome + "/.cache/mozilla",
+					userHome + "/.cache/firefox",
+					userHome + "/.cache/zen",
+					userHome + "/.cache/BraveSoftware",
+					userHome + "/.cache/google-chrome",
+					userHome + "/.cache/chromium",
+				},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -169,7 +197,7 @@ func DefaultConfig() *Config {
 			},
 			{
 				Name:         "Recent Files",
-				Paths:        []string{os.Getenv("HOME") + "/.recently-used.xbel"},
+				Paths:        []string{userHome + "/.recently-used.xbel"},
 				Risk:         Medium,
 				Selected:     false,
 				ShredEnabled: false,
@@ -200,21 +228,21 @@ func DefaultConfig() *Config {
 			// Additional User Caches
 			{
 				Name:         "Font Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/fontconfig"},
+				Paths:        []string{userHome + "/.cache/fontconfig"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Mesa Shader Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/mesa_shader_cache"},
+				Paths:        []string{userHome + "/.cache/mesa_shader_cache"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "WebKit Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/webkit", os.Getenv("HOME") + "/.cache/webkitgtk"},
+				Paths:        []string{userHome + "/.cache/webkit", userHome + "/.cache/webkitgtk"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -222,14 +250,14 @@ func DefaultConfig() *Config {
 			// .local/share cleanup
 			{
 				Name:         "Trash",
-				Paths:        []string{os.Getenv("HOME") + "/.local/share/Trash"},
+				Paths:        []string{userHome + "/.local/share/Trash"},
 				Risk:         Low,
 				Selected:     false,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Application Logs",
-				Paths:        []string{os.Getenv("HOME") + "/.local/share/xorg"},
+				Paths:        []string{userHome + "/.local/share/xorg"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -260,7 +288,7 @@ func DefaultConfig() *Config {
 			// System Cleanup
 			{
 				Name:         "Crash Reports",
-				Paths:        []string{"/var/crash", os.Getenv("HOME") + "/.local/share/apport/coredump"},
+				Paths:        []string{"/var/crash", userHome + "/.local/share/apport/coredump"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -268,42 +296,42 @@ func DefaultConfig() *Config {
 			// Development Tools Caches
 			{
 				Name:         "pip Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/pip"},
+				Paths:        []string{userHome + "/.cache/pip"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "npm Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.npm", os.Getenv("HOME") + "/.cache/npm"},
+				Paths:        []string{userHome + "/.npm", userHome + "/.cache/npm"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Cargo Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cargo/registry/cache"},
+				Paths:        []string{userHome + "/.cargo/registry/cache"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Gradle Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.gradle/caches"},
+				Paths:        []string{userHome + "/.gradle/caches"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Maven Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.m2/repository"},
+				Paths:        []string{userHome + "/.m2/repository"},
 				Risk:         Medium,
 				Selected:     false,
 				ShredEnabled: false,
 			},
 			{
 				Name:         "Go Build Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.cache/go-build"},
+				Paths:        []string{userHome + "/.cache/go-build"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -327,7 +355,7 @@ func DefaultConfig() *Config {
 			// System caches
 			{
 				Name:         "Flatpak Cache",
-				Paths:        []string{os.Getenv("HOME") + "/.var/app"},
+				Paths:        []string{userHome + "/.var/app"},
 				Risk:         Medium,
 				Selected:     false,
 				ShredEnabled: false,
