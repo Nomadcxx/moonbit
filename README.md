@@ -1,14 +1,12 @@
 <div align="center">
   <img src="logo.png" alt="MoonBit" />
 </div>
-
 A modern system cleaner built in Go with a TUI and CLI. Clean temporary files, caches, logs and docker images and much more.
 
 ![Eldritch Theme](https://img.shields.io/badge/theme-eldritch-37f499?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 ## Features
-
 - **distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
 - **package manager**: Pacman, APT, DNF, Zypper, AUR helpers
 - *development tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
