@@ -1,17 +1,63 @@
-# MoonBit
+<div align="center">
+  <img src="logo.png" alt="MoonBit" />
+</div>
 
 **Status: Work in Progress**
 
 A system cleaner TUI for Linux. Scan and clean temporary files, caches, and logs.
 
-## Quick Start
+## Installation
+
+### Quick Install (Recommended)
+
+Install with a single command:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Nomadcxx/moonbit/main/install.sh | sudo bash
+```
+
+This will:
+- Download and build MoonBit
+- Launch the interactive installer
+- Let you choose your auto-cleaning schedule (daily, weekly, or manual)
+- Install the binary to `/usr/local/bin` so you can run `moonbit` from anywhere
+
+### Manual Installation
+
+If you prefer to install manually:
+
+```bash
+# Clone the repository
+git clone https://github.com/Nomadcxx/moonbit.git
+cd moonbit
+
+# Build and run the installer
+make installer
+sudo ./moonbit-installer
+```
+
+Or build and install directly:
 
 ```bash
 make build
-sudo ./moonbit     # Requires sudo for system-wide cleaning
+sudo make install
 ```
 
 **Note**: MoonBit requires root access to scan and clean system directories like `/var/cache`, `/var/log`, and package manager caches.
+
+## Quick Start
+
+After installation, run MoonBit from anywhere:
+
+```bash
+sudo moonbit     # Launch interactive TUI
+```
+
+The TUI lets you:
+- Scan your system for cleanable files
+- Preview what will be deleted
+- Selectively choose categories to clean
+- See space savings before confirming
 
 ## What It Does
 
@@ -73,12 +119,15 @@ moonbit backup restore <name>
 
 ## Automated Cleaning (Systemd)
 
-Set up automated scans and cleaning with systemd timers:
+The installer automatically sets up systemd timers based on your preference:
+
+- **Daily**: Scan daily at 2 AM, clean weekly on Sunday at 3 AM
+- **Weekly**: Scan and clean weekly on Sunday at 3 AM
+- **Manual**: No automation, run `moonbit` manually as needed
+
+To manually install systemd timers without using the installer:
 
 ```bash
-# Install MoonBit
-make install
-
 # Install and enable systemd timers
 make install-systemd
 sudo systemctl enable --now moonbit-scan.timer
@@ -87,10 +136,6 @@ sudo systemctl enable --now moonbit-clean.timer
 # Check status
 systemctl list-timers moonbit-*
 ```
-
-Default schedule:
-- **Scan**: Daily at 2 AM
-- **Clean**: Weekly on Sunday at 3 AM
 
 See `systemd/README.md` for customization.
 

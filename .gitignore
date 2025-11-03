@@ -5,6 +5,7 @@
 *.so
 *.dylib
 moonbit
+moonbit-installer
 moonbit-test
 
 # Test binary, built with `go test -c`
