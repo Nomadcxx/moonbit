@@ -7,13 +7,15 @@ A modern system cleaner built in Go with a TUI and CLI. Clean temporary files, c
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 ## Features
-- **distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
-- **package manager**: Pacman, APT, DNF, Zypper, AUR helpers
-- *development tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
-- *system caches**: Font, Mesa shader, WebKit, thumbnails
-- *docker cleanup**: Images, containers, volumes
-- **media servers**: Plex and Jellyfin transcoding cleanup
-- **automated scheduling**: Systemd timers for daily/weekly cleaning
+- **Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
+- **Package Managers**: Pacman, APT, DNF, Zypper, AUR helpers (yay, paru)
+- **Development Tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
+- **System Caches**: Font, Mesa shader, WebKit, thumbnails, browser caches
+- **Docker Cleanup**: Images, containers, volumes, build cache
+- **Media Servers**: Plex and Jellyfin transcoding cleanup
+- **Scan Modes**: Quick scan (safe/fast) or Deep scan (comprehensive)
+- **Safe by Default**: Dry-run mode prevents accidental deletions
+- **Automated Scheduling**: Systemd timers for regular maintenance
 
 ## Installation
 
@@ -41,39 +43,47 @@ cd moonbit
 make installer
 sudo ./moonbit-installer
 ```
-## Usage (TUI)
-```bash
-moonbit
-```
-## Usage (CLI)
+## Usage
 
-Just run `moonbit` - it'll prompt for your password if needed:
+### Interactive TUI
 
 ```bash
-moonbit              # Interactive TUI
-moonbit scan         # Scan system
-moonbit clean        # Clean (dry-run by default)
-moonbit clean --force # Actually delete files
+moonbit              # Launch interactive TUI
 ```
 
-### Additional Commands
+The TUI offers two scan modes:
+- **Quick Scan** - Fast scan of safe caches only (~25 categories)
+- **Deep Scan** - Comprehensive scan of all categories including system logs
+
+### CLI Commands
 
 ```bash
+# Scanning
+moonbit scan                    # Standard scan
+moonbit scan --mode quick       # Quick scan (safe caches only)
+moonbit scan --mode deep        # Deep scan (all categories)
+
+# Cleaning
+moonbit clean                   # Preview what would be deleted (dry-run)
+moonbit clean --force           # Actually delete files
+moonbit clean --mode quick      # Clean only quick scan categories
+moonbit clean --mode deep       # Clean all scanned categories
+
 # Package manager cleanup
-moonbit pkg orphans              # Remove orphaned packages
-moonbit pkg kernels              # Remove old kernels (Debian/Ubuntu)
+moonbit pkg orphans             # Remove orphaned packages
+moonbit pkg kernels             # Remove old kernels (Debian/Ubuntu)
 
 # Docker cleanup
-moonbit docker images            # Remove unused images
-moonbit docker all               # Remove all unused resources
+moonbit docker images           # Remove unused images
+moonbit docker all              # Remove all unused resources
 
 # Find duplicates
-moonbit duplicates find          # Find duplicate files
-moonbit duplicates find --min-size 10240  # Only files >= 10KB
+moonbit duplicates find                    # Find duplicate files
+moonbit duplicates find --min-size 10240   # Only files >= 10KB
 
 # Backups
-moonbit backup list              # List backups
-moonbit backup restore <name>    # Restore backup
+moonbit backup list             # List available backups
+moonbit backup restore <name>   # Restore a backup
 ```
 
 ## Automated Cleaning
