@@ -221,12 +221,13 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header
+	// ASCII Header - preserved exactly from ascii.txt including all spacing
 	headerLines := []string{
 		"",
 		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
 		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
 		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
+		"",
 		"",
 	}
 
