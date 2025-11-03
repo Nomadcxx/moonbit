@@ -402,13 +402,8 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var totalSize uint64
 		var totalFiles int
 
-		// Scan only selected categories (skip risky/slow ones by default)
+		// Scan ALL categories (matching CLI behavior)
 		for _, category := range cfg.Categories {
-			// Skip categories not selected by default (risky or slow)
-			if !category.Selected {
-				continue
-			}
-			
 			// Check if category paths exist
 			exists := false
 			for _, path := range category.Paths {
