@@ -237,18 +237,6 @@ func (m model) View() string {
 	}
 	content.WriteString("\n")
 
-	// Title
-	titleStyle := lipgloss.NewStyle().
-		Foreground(Accent).
-		Bold(true).
-		Align(lipgloss.Center)
-	title := "moonbit installer"
-	if m.uninstallMode {
-		title = "moonbit uninstaller"
-	}
-	content.WriteString(titleStyle.Render(title))
-	content.WriteString("\n\n")
-
 	// Main content based on step
 	var mainContent string
 	switch m.step {
@@ -262,11 +250,13 @@ func (m model) View() string {
 		mainContent = m.renderComplete()
 	}
 
-	// Wrap in border
+	// Wrap in border with elevated background
 	mainStyle := lipgloss.NewStyle().
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Primary).
+		Background(BgElevated).
+		Foreground(FgPrimary).
 		Width(m.width - 4)
 	content.WriteString(mainStyle.Render(mainContent))
 	content.WriteString("\n")
