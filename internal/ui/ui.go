@@ -165,10 +165,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				contentHeight = 10
 			}
 
-			m.categoryViewport = viewport.New(m.width-4, contentHeight)
+			// File viewport takes 1/3 of height, category viewport takes the rest
+			fileHeight := contentHeight / 3
+			if fileHeight < 5 {
+				fileHeight = 5
+			}
+			categoryHeight := contentHeight - fileHeight - 3 // 3 for separator
+
+			m.categoryViewport = viewport.New(m.width-4, categoryHeight)
 			m.resultsViewport = viewport.New(m.width-4, contentHeight)
-			// File viewport takes half the height for file details
-			m.fileViewport = viewport.New(m.width-4, contentHeight/2)
+			m.fileViewport = viewport.New(m.width-4, fileHeight)
 			m.viewportReady = true
 		} else {
 			// Update viewport dimensions on window resize
@@ -176,12 +182,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if contentHeight < 10 {
 				contentHeight = 10
 			}
+			
+			fileHeight := contentHeight / 3
+			if fileHeight < 5 {
+				fileHeight = 5
+			}
+			categoryHeight := contentHeight - fileHeight - 3
+			
 			m.categoryViewport.Width = m.width - 4
-			m.categoryViewport.Height = contentHeight
+			m.categoryViewport.Height = categoryHeight
 			m.resultsViewport.Width = m.width - 4
 			m.resultsViewport.Height = contentHeight
 			m.fileViewport.Width = m.width - 4
-			m.fileViewport.Height = contentHeight / 2
+			m.fileViewport.Height = fileHeight
 		}
 	case tickMsg:
 		// Update progress display if scanning
