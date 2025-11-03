@@ -1062,12 +1062,11 @@ func (m Model) renderSelect() string {
 			rendered, err := r.Render(markdown)
 			if err == nil {
 				m.fileViewport.SetContent(rendered)
-				fileDetailsSection = lipgloss.NewStyle().
-					BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(Primary).
-					Padding(0, 1).
-					Render(m.fileViewport.View())
-				fileDetailsSection += "\n\n"
+				// Add a separator line before the file details
+				separator := lipgloss.NewStyle().
+					Foreground(FgMuted).
+					Render(strings.Repeat("─", m.width-4))
+				fileDetailsSection = m.fileViewport.View() + "\n" + separator + "\n\n"
 			}
 		}
 	}
@@ -1171,7 +1170,8 @@ func (m Model) renderSelect() string {
 	selectedSize := m.calculateSelectedSize()
 	footer := selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize))
 
-	// Combine header, file details viewport, category viewport, and footer
+	// Combine all parts: header + file details (if any) + category viewport + footer
+	// Everything here will be inside the bordered panel
 	return header.String() + fileDetailsSection + m.categoryViewport.View() + "\n\n" + footer
 }
 
