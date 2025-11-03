@@ -15,6 +15,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -103,6 +104,7 @@ type Model struct {
 	// Viewports for scrolling
 	categoryViewport viewport.Model
 	resultsViewport  viewport.Model
+	fileViewport     viewport.Model
 	viewportReady    bool
 
 	// Settings
@@ -165,6 +167,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.categoryViewport = viewport.New(m.width-4, contentHeight)
 			m.resultsViewport = viewport.New(m.width-4, contentHeight)
+			// File viewport takes half the height for file details
+			m.fileViewport = viewport.New(m.width-4, contentHeight/2)
 			m.viewportReady = true
 		} else {
 			// Update viewport dimensions on window resize
@@ -176,6 +180,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.categoryViewport.Height = contentHeight
 			m.resultsViewport.Width = m.width - 4
 			m.resultsViewport.Height = contentHeight
+			m.fileViewport.Width = m.width - 4
+			m.fileViewport.Height = contentHeight / 2
 		}
 	case tickMsg:
 		// Update progress display if scanning
@@ -234,6 +240,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "pgup", "pgdown", "home", "end":
 			// These keys will be handled by viewport update in Update()
 			return m, nil
+		case "j": // Vim-style down for file viewport
+			if m.mode == ModeSelect && m.menuIndex < len(m.categories) {
+				m.fileViewport.LineDown(1)
+				return m, nil
+			}
+		case "k": // Vim-style up for file viewport
+			if m.mode == ModeSelect && m.menuIndex < len(m.categories) {
+				m.fileViewport.LineUp(1)
+				return m, nil
+			}
 		}
 	}
 
@@ -1032,6 +1048,30 @@ func (m Model) renderSelect() string {
 		Render("SELECT CATEGORIES TO CLEAN"))
 	header.WriteString("\n\n")
 
+	// Render file details viewport for currently selected category (if it's a category)
+	var fileDetailsSection string
+	if m.menuIndex < len(m.categories) {
+		markdown := m.generateFileListMarkdown(m.menuIndex)
+		
+		// Render with glamour
+		r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(m.width-8),
+		)
+		if err == nil {
+			rendered, err := r.Render(markdown)
+			if err == nil {
+				m.fileViewport.SetContent(rendered)
+				fileDetailsSection = lipgloss.NewStyle().
+					BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(Primary).
+					Padding(0, 1).
+					Render(m.fileViewport.View())
+				fileDetailsSection += "\n\n"
+			}
+		}
+	}
+
 	// Build viewport content with categories using clean checkboxes
 	for i, cat := range m.categories {
 		var line string
@@ -1131,8 +1171,8 @@ func (m Model) renderSelect() string {
 	selectedSize := m.calculateSelectedSize()
 	footer := selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize))
 
-	// Combine header, viewport, and footer
-	return header.String() + m.categoryViewport.View() + "\n\n" + footer
+	// Combine header, file details viewport, category viewport, and footer
+	return header.String() + fileDetailsSection + m.categoryViewport.View() + "\n\n" + footer
 }
 
 // calculateSelectedSize calculates total size of selected categories
@@ -1149,6 +1189,58 @@ func (m Model) calculateSelectedSize() string {
 		}
 	}
 	return fmt.Sprintf("%d MB", totalMB)
+}
+
+// generateFileListMarkdown creates markdown for file list of selected category
+func (m Model) generateFileListMarkdown(catIndex int) string {
+	if catIndex < 0 || catIndex >= len(m.categories) {
+		return "# No Category Selected\n\nNavigate through categories to see file details."
+	}
+	
+	cat := m.categories[catIndex]
+	var md strings.Builder
+	
+	md.WriteString(fmt.Sprintf("# %s\n\n", cat.Name))
+	md.WriteString(fmt.Sprintf("**Files:** %d | **Size:** %s\n\n", cat.Files, cat.Size))
+	
+	// Get actual file list for this category from scan results
+	if m.scanResults != nil && m.scanResults.ScanResults != nil {
+		// Match files to this category by checking paths
+		var categoryFiles []config.FileInfo
+		for _, file := range m.scanResults.ScanResults.Files {
+			// Try to match file to this category
+			for _, configCat := range m.cfg.Categories {
+				if configCat.Name == cat.Name {
+					for _, catPath := range configCat.Paths {
+						if strings.HasPrefix(file.Path, catPath) {
+							categoryFiles = append(categoryFiles, file)
+							break
+						}
+					}
+					break
+				}
+			}
+		}
+		
+		if len(categoryFiles) > 0 {
+			md.WriteString("## Files to be cleaned:\n\n")
+			// Limit to first 100 files for performance
+			displayLimit := 100
+			for i, file := range categoryFiles {
+				if i >= displayLimit {
+					md.WriteString(fmt.Sprintf("\n*... and %d more files*\n", len(categoryFiles)-displayLimit))
+					break
+				}
+				md.WriteString(fmt.Sprintf("- `%s` (%s)\n", file.Path, humanizeBytes(file.Size)))
+			}
+		} else {
+			md.WriteString("*No files found for this category*\n")
+		}
+	} else {
+		md.WriteString("*Run a scan first to see file details*\n")
+	}
+	
+	return md.String()
 }
 
 // renderConfirm renders the confirmation screen (sysc-greet style)
@@ -1312,7 +1404,7 @@ func (m Model) getFooterText() string {
 	case ModeResults:
 		return "Enter Continue  |  Esc Back  |  Q Quit"
 	case ModeSelect:
-		return "↑/↓ Navigate  |  Space Toggle  |  Enter Select  |  Esc Back"
+		return "↑/↓ Navigate  |  Space Toggle  |  j/k Scroll Files  |  Enter Select  |  Esc Back"
 	case ModeComplete:
 		return "Press any key to continue"
 	default:
