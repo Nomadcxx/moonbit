@@ -373,12 +373,8 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var totalSize uint64
 		var totalFiles int
 
-		// Scan each category
+		// Scan ALL categories (matching CLI behavior)
 		for _, category := range cfg.Categories {
-			if !category.Selected {
-				continue
-			}
-
 			// Check if category paths exist
 			exists := false
 			for _, path := range category.Paths {
@@ -507,14 +503,13 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 		// Group files by category name from config
 		categoryMap := make(map[string]*CategoryInfo)
 
+		// Include ALL categories (matching scan behavior)
 		for _, cat := range m.cfg.Categories {
-			if cat.Selected {
-				categoryMap[cat.Name] = &CategoryInfo{
-					Name:    cat.Name,
-					Files:   0,
-					Size:    "0 B",
-					Enabled: true,
-				}
+			categoryMap[cat.Name] = &CategoryInfo{
+				Name:    cat.Name,
+				Files:   0,
+				Size:    "0 B",
+				Enabled: true,
 			}
 		}
 
