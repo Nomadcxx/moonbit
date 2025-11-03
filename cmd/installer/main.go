@@ -223,23 +223,16 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - preserved exactly from ascii.txt including all spacing
+	// ASCII Header
 	headerLines := []string{
-		"",
 		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
 		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
 		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
 		"",
-		"",
 	}
 
 	for _, line := range headerLines {
-		centered := lipgloss.NewStyle().
-			Foreground(FgPrimary).
-			Width(m.width).
-			Align(lipgloss.Center).
-			Render(line)
-		content.WriteString(centered)
+		content.WriteString(headerStyle.Render(line))
 		content.WriteString("\n")
 	}
 	content.WriteString("\n")
@@ -648,7 +641,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(newModel(), tea.WithAltScreen())
+	p := tea.NewProgram(newModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running installer: %v\n", err)
 		os.Exit(1)
