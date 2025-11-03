@@ -17,7 +17,7 @@ func TestNewModel(t *testing.T) {
 	assert.Equal(t, ModeWelcome, model.mode)
 	assert.Equal(t, 0, model.menuIndex)
 	assert.NotNil(t, model.cfg)
-	assert.Len(t, model.menuOptions, 4)
+	assert.Len(t, model.menuOptions, 5, "Should have 5 menu options (Quick Scan, Deep Scan, Review Results, Clean System, Exit)")
 }
 
 func TestViewModes(t *testing.T) {

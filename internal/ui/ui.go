@@ -75,6 +75,7 @@ type Model struct {
 	// Menu selection
 	menuIndex   int
 	menuOptions []string
+	scanMode    string // "quick" or "deep"
 
 	// Scan state
 	scanActive      bool
@@ -119,12 +120,14 @@ func NewModel() Model {
 		mode:      ModeWelcome,
 		menuIndex: 0,
 		menuOptions: []string{
-			"Quick Scan",
+			"Quick Scan (Safe caches only)",
+			"Deep Scan (All categories)",
 			"Review Results",
 			"Clean System",
 			"Exit",
 		},
-		cfg: cfg,
+		scanMode: "quick", // Default to quick mode
+		cfg:      cfg,
 	}
 }
 
@@ -285,12 +288,16 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 	case ModeWelcome:
 		switch m.menuIndex {
 		case 0: // Quick Scan
+			m.scanMode = "quick"
 			return m.startScan()
-		case 1: // Review Results
+		case 1: // Deep Scan
+			m.scanMode = "deep"
+			return m.startScan()
+		case 2: // Review Results
 			return m.showResults()
-		case 2: // Clean System
+		case 3: // Clean System
 			return m.startClean()
-		case 3: // Exit
+		case 4: // Exit
 			return m, tea.Quit
 		}
 	case ModeResults:
@@ -353,7 +360,11 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.scanActive = true
 	m.scanStarted = time.Now()
 	m.scanProgress = 0
-	m.currentPhase = "Starting scan..."
+	if m.scanMode == "deep" {
+		m.currentPhase = "Starting deep scan (all categories)..."
+	} else {
+		m.currentPhase = "Starting quick scan (safe caches)..."
+	}
 	m.scanOutput.Reset()
 
 	// Reset progress state
@@ -362,11 +373,11 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.currentFile = ""
 	m.totalFilesGuess = 0
 
-	return m, tea.Batch(runScanCmd(m.cfg), tick())
+	return m, tea.Batch(runScanCmd(m.cfg, m.scanMode), tick())
 }
 
 // runScanCmd executes the scan using the scanner package directly
-func runScanCmd(cfg *config.Config) tea.Cmd {
+func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		s := scanner.NewScanner(cfg)
@@ -375,8 +386,14 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var totalSize uint64
 		var totalFiles int
 
-		// Scan ALL categories (matching CLI behavior)
+		// Scan categories based on mode
 		for _, category := range cfg.Categories {
+			// In quick mode, only scan Selected:true categories
+			if scanMode == "quick" && !category.Selected {
+				continue
+			}
+			// In deep mode, scan all categories
+			
 			// Check if category paths exist
 			exists := false
 			for _, path := range category.Paths {
