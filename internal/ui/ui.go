@@ -241,41 +241,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up":
-		// Don't use up/down in confirm mode
-		if m.mode == ModeConfirm {
-			return m, nil
-		}
 		if m.menuIndex > 0 {
 			m.menuIndex--
 		}
 	case "down":
-		// Don't use up/down in confirm mode
-		if m.mode == ModeConfirm {
-			return m, nil
-		}
 		// Calculate max index based on current mode
 		maxIndex := len(m.menuOptions) - 1
 		if m.mode == ModeSelect {
 			// categories + Select All + Clean + Back
 			maxIndex = len(m.categories) + 2
+		} else if m.mode == ModeConfirm {
+			// 2 options: Confirm & Clean, Cancel
+			maxIndex = 1
 		}
 
 		if m.menuIndex < maxIndex {
 			m.menuIndex++
-		}
-	case "left":
-		// Use left/right for confirmation buttons
-		if m.mode == ModeConfirm {
-			if m.menuIndex > 0 {
-				m.menuIndex--
-			}
-		}
-	case "right":
-		// Use left/right for confirmation buttons
-		if m.mode == ModeConfirm {
-			if m.menuIndex < 1 {
-				m.menuIndex++
-			}
 		}
 	case "enter", " ":
 		// Handle complete mode specially
@@ -318,12 +299,12 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case ModeConfirm:
-		if m.menuIndex == 0 { // Cancel
+		if m.menuIndex == 0 { // Confirm & Clean (first option)
+			return m.executeClean()
+		} else { // Cancel (second option, menuIndex == 1)
 			m.mode = ModeSelect
 			m.menuIndex = 0
 			return m, nil
-		} else { // Confirm (menuIndex == 1)
-			return m.executeClean()
 		}
 	case ModeSelect:
 		totalOptions := len(m.categories) + 3 // categories + Select All + Clean + Back
@@ -606,7 +587,7 @@ func (m Model) startClean() (tea.Model, tea.Cmd) {
 // showConfirm displays confirmation dialog
 func (m Model) showConfirm() (tea.Model, tea.Cmd) {
 	m.mode = ModeConfirm
-	m.menuIndex = 1 // Default to Confirm & Clean (requires user to explicitly cancel)
+	m.menuIndex = 0 // Default to Confirm & Clean (first option)
 	return m, nil
 }
 
@@ -1222,21 +1203,8 @@ func (m Model) renderConfirm() string {
 		Render("Select an option:"))
 	content.WriteString("\n\n")
 
-	// Cancel button
+	// Confirm & Clean button (first option, index 0)
 	if m.menuIndex == 0 {
-		content.WriteString(lipgloss.NewStyle().
-			Foreground(Primary).
-			Bold(true).
-			Render("> Cancel"))
-	} else {
-		content.WriteString(lipgloss.NewStyle().
-			Foreground(FgPrimary).
-			Render("  Cancel"))
-	}
-	content.WriteString("\n")
-
-	// Confirm & Clean button
-	if m.menuIndex == 1 {
 		content.WriteString(lipgloss.NewStyle().
 			Foreground(Danger).
 			Bold(true).
@@ -1245,6 +1213,19 @@ func (m Model) renderConfirm() string {
 		content.WriteString(lipgloss.NewStyle().
 			Foreground(FgPrimary).
 			Render("  Confirm & Clean"))
+	}
+	content.WriteString("\n")
+
+	// Cancel button (second option, index 1)
+	if m.menuIndex == 1 {
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Primary).
+			Bold(true).
+			Render("> Cancel"))
+	} else {
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Render("  Cancel"))
 	}
 
 	return content.String()
