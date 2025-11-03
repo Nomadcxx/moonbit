@@ -15,7 +15,6 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -104,7 +103,6 @@ type Model struct {
 	// Viewports for scrolling
 	categoryViewport viewport.Model
 	resultsViewport  viewport.Model
-	fileViewport     viewport.Model
 	viewportReady    bool
 
 	// Settings
@@ -165,16 +163,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				contentHeight = 10
 			}
 
-			// File viewport takes 1/3 of height, category viewport takes the rest
-			fileHeight := contentHeight / 3
-			if fileHeight < 5 {
-				fileHeight = 5
-			}
-			categoryHeight := contentHeight - fileHeight - 3 // 3 for separator
-
-			m.categoryViewport = viewport.New(m.width-4, categoryHeight)
+			m.categoryViewport = viewport.New(m.width-4, contentHeight)
 			m.resultsViewport = viewport.New(m.width-4, contentHeight)
-			m.fileViewport = viewport.New(m.width-4, fileHeight)
 			m.viewportReady = true
 		} else {
 			// Update viewport dimensions on window resize
@@ -183,18 +173,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				contentHeight = 10
 			}
 			
-			fileHeight := contentHeight / 3
-			if fileHeight < 5 {
-				fileHeight = 5
-			}
-			categoryHeight := contentHeight - fileHeight - 3
-			
 			m.categoryViewport.Width = m.width - 4
-			m.categoryViewport.Height = categoryHeight
+			m.categoryViewport.Height = contentHeight
 			m.resultsViewport.Width = m.width - 4
 			m.resultsViewport.Height = contentHeight
-			m.fileViewport.Width = m.width - 4
-			m.fileViewport.Height = fileHeight
 		}
 	case tickMsg:
 		// Update progress display if scanning
@@ -253,16 +235,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "pgup", "pgdown", "home", "end":
 			// These keys will be handled by viewport update in Update()
 			return m, nil
-		case "j": // Vim-style down for file viewport
-			if m.mode == ModeSelect && m.menuIndex < len(m.categories) {
-				m.fileViewport.LineDown(1)
-				return m, nil
-			}
-		case "k": // Vim-style up for file viewport
-			if m.mode == ModeSelect && m.menuIndex < len(m.categories) {
-				m.fileViewport.LineUp(1)
-				return m, nil
-			}
+
 		}
 	}
 
@@ -403,7 +376,9 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 		var totalFiles int
 
 		// Scan ALL categories (matching CLI behavior)
-		for _, category := range cfg.Categories {
+		for i, category := range cfg.Categories {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Scanning %d/%d: %s\n", i+1, len(cfg.Categories), category.Name)
+			
 			// Check if category paths exist
 			exists := false
 			for _, path := range category.Paths {
@@ -414,6 +389,7 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 			}
 
 			if !exists {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Skipping %s - no paths exist\n", category.Name)
 				continue
 			}
 
@@ -426,9 +402,12 @@ func runScanCmd(cfg *config.Config) tea.Cmd {
 					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
 					totalSize += msg.Complete.Stats.Size
 					totalFiles += msg.Complete.Stats.FileCount
+					fmt.Fprintf(os.Stderr, "[DEBUG] Completed %s: %d files, %d bytes in %v\n", 
+						category.Name, msg.Complete.Stats.FileCount, msg.Complete.Stats.Size, msg.Complete.Duration)
 					break
 				}
 				if msg.Error != nil {
+					fmt.Fprintf(os.Stderr, "[DEBUG] Error in %s: %v\n", category.Name, msg.Error)
 					return scanCompleteMsg{
 						Success: false,
 						Error:   msg.Error.Error(),
@@ -1061,27 +1040,14 @@ func (m Model) renderSelect() string {
 		Render("SELECT CATEGORIES TO CLEAN"))
 	header.WriteString("\n\n")
 
-	// Render file details viewport for currently selected category (if it's a category)
-	var fileDetailsSection string
-	if m.menuIndex < len(m.categories) {
-		markdown := m.generateFileListMarkdown(m.menuIndex)
-		
-		// Render with glamour
-		r, err := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
-			glamour.WithWordWrap(m.width-8),
-		)
-		if err == nil {
-			rendered, err := r.Render(markdown)
-			if err == nil {
-				m.fileViewport.SetContent(rendered)
-				// Add a separator line before the file details
-				separator := lipgloss.NewStyle().
-					Foreground(FgMuted).
-					Render(strings.Repeat("─", m.width-4))
-				fileDetailsSection = m.fileViewport.View() + "\n" + separator + "\n\n"
-			}
-		}
+	// Simple scan summary at the top
+	var scanSummary string
+	if m.scanResults != nil && m.scanResults.TotalFiles > 0 {
+		scanSummary = lipgloss.NewStyle().
+			Foreground(Accent).
+			Render(fmt.Sprintf("Scan found: %d categories with %d files (%s total)", 
+				len(m.categories), m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize)))
+		scanSummary += "\n\n"
 	}
 
 	// Build viewport content with categories using clean checkboxes
@@ -1183,9 +1149,8 @@ func (m Model) renderSelect() string {
 	selectedSize := m.calculateSelectedSize()
 	footer := selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize))
 
-	// Combine all parts: header + file details (if any) + category viewport + footer
-	// Everything here will be inside the bordered panel
-	return header.String() + fileDetailsSection + m.categoryViewport.View() + "\n\n" + footer
+	// Combine: header + scan summary + category viewport + footer
+	return header.String() + scanSummary + m.categoryViewport.View() + "\n\n" + footer
 }
 
 // calculateSelectedSize calculates total size of selected categories
@@ -1202,58 +1167,6 @@ func (m Model) calculateSelectedSize() string {
 		}
 	}
 	return fmt.Sprintf("%d MB", totalMB)
-}
-
-// generateFileListMarkdown creates markdown for file list of selected category
-func (m Model) generateFileListMarkdown(catIndex int) string {
-	if catIndex < 0 || catIndex >= len(m.categories) {
-		return "# No Category Selected\n\nNavigate through categories to see file details."
-	}
-	
-	cat := m.categories[catIndex]
-	var md strings.Builder
-	
-	md.WriteString(fmt.Sprintf("# %s\n\n", cat.Name))
-	md.WriteString(fmt.Sprintf("**Files:** %d | **Size:** %s\n\n", cat.Files, cat.Size))
-	
-	// Get actual file list for this category from scan results
-	if m.scanResults != nil && m.scanResults.ScanResults != nil {
-		// Match files to this category by checking paths
-		var categoryFiles []config.FileInfo
-		for _, file := range m.scanResults.ScanResults.Files {
-			// Try to match file to this category
-			for _, configCat := range m.cfg.Categories {
-				if configCat.Name == cat.Name {
-					for _, catPath := range configCat.Paths {
-						if strings.HasPrefix(file.Path, catPath) {
-							categoryFiles = append(categoryFiles, file)
-							break
-						}
-					}
-					break
-				}
-			}
-		}
-		
-		if len(categoryFiles) > 0 {
-			md.WriteString("## Files to be cleaned:\n\n")
-			// Limit to first 100 files for performance
-			displayLimit := 100
-			for i, file := range categoryFiles {
-				if i >= displayLimit {
-					md.WriteString(fmt.Sprintf("\n*... and %d more files*\n", len(categoryFiles)-displayLimit))
-					break
-				}
-				md.WriteString(fmt.Sprintf("- `%s` (%s)\n", file.Path, humanizeBytes(file.Size)))
-			}
-		} else {
-			md.WriteString("*No files found for this category*\n")
-		}
-	} else {
-		md.WriteString("*Run a scan first to see file details*\n")
-	}
-	
-	return md.String()
 }
 
 // renderConfirm renders the confirmation screen (sysc-greet style)
@@ -1417,7 +1330,7 @@ func (m Model) getFooterText() string {
 	case ModeResults:
 		return "Enter Continue  |  Esc Back  |  Q Quit"
 	case ModeSelect:
-		return "↑/↓ Navigate  |  Space Toggle  |  j/k Scroll Files  |  Enter Select  |  Esc Back"
+		return "↑/↓ Navigate  |  Space Toggle  |  Enter Select  |  Esc Back"
 	case ModeComplete:
 		return "Press any key to continue"
 	default:
