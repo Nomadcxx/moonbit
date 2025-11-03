@@ -273,14 +273,19 @@ func CleanSession(dryRun bool) error {
 			cache.TotalFiles, humanizeBytes(cache.TotalSize))
 
 		// Show preview of what would be cleaned
-		fmt.Println("\n📋 Files that would be deleted:")
-		for i, file := range cache.ScanResults.Files {
-			if i >= 10 { // Limit preview
-				fmt.Printf("   ... and %d more files\n", len(cache.ScanResults.Files)-10)
-				break
+		if cache.ScanResults != nil && len(cache.ScanResults.Files) > 0 {
+			fmt.Println("\n📋 Files that would be deleted:")
+			for i, file := range cache.ScanResults.Files {
+				if i >= 10 { // Limit preview
+					fmt.Printf("   ... and %d more files\n", len(cache.ScanResults.Files)-10)
+					break
+				}
+				fmt.Printf("   %s (%s)\n", file.Path, humanizeBytes(file.Size))
 			}
-			fmt.Printf("   %s (%s)\n", file.Path, humanizeBytes(file.Size))
 		}
+		
+		fmt.Println("\n💡 Use --force flag to actually delete files:")
+		fmt.Println("   moonbit clean --force")
 		return nil
 	}
 
