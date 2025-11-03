@@ -158,10 +158,11 @@ func ScanAndSaveWithMode(mode string) error {
 
 	for i, category := range allCategories {
 		// Filter by mode
-		if mode == "quick" && category.Risk != config.Low {
-			continue // Quick mode: only Low risk
+		if mode == "quick" && !category.Selected {
+			continue // Quick mode: only Selected:true categories (safe, fast)
 		}
 		// Deep mode scans everything (no filter needed)
+		
 		// Check if this category path exists (for categories from config)
 		exists := false
 		for _, path := range category.Paths {
