@@ -2,168 +2,102 @@
   <img src="logo.png" alt="MoonBit" />
 </div>
 
-**Status: Work in Progress**
+A cross-distro system cleaner for Linux with an interactive TUI. Clean temporary files, caches, logs, and free up disk space.
 
-A system cleaner TUI for Linux. Scan and clean temporary files, caches, and logs.
+![Eldritch Theme](https://img.shields.io/badge/theme-eldritch-37f499?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+
+## Features
+
+- **Cross-Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
+- **Package Manager Cleanup**: Pacman, APT, DNF, Zypper, AUR helpers
+- **Development Tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
+- **System Caches**: Font, Mesa shader, WebKit, thumbnails
+- **Docker Cleanup**: Images, containers, volumes
+- **Media Servers**: Plex and Jellyfin transcoding cleanup
+- **Automated Scheduling**: Systemd timers for daily/weekly cleaning
+- **Safe Operations**: Dry-run mode, backups, protected paths
 
 ## Installation
 
-### Quick Install (Recommended)
+### Arch Linux (AUR)
 
-Install with a single command:
+```bash
+yay -S moonbit
+# or
+paru -S moonbit
+```
+
+### Quick Install Script
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Nomadcxx/moonbit/main/install.sh | sudo bash
 ```
 
-This will:
-- Download and build MoonBit
-- Launch the interactive installer
-- Let you choose your auto-cleaning schedule (daily, weekly, or manual)
-- Install the binary to `/usr/local/bin` so you can run `moonbit` from anywhere
+### Manual Build
 
-### Manual Installation
-
-If you prefer to install manually:
+**Requirements:** Go 1.21+
 
 ```bash
-# Clone the repository
 git clone https://github.com/Nomadcxx/moonbit.git
 cd moonbit
-
-# Build and run the installer
 make installer
 sudo ./moonbit-installer
 ```
 
-Or build and install directly:
+## Usage
+
+Just run `moonbit` - it'll prompt for your password if needed:
 
 ```bash
-make build
-sudo make install
+moonbit              # Interactive TUI
+moonbit scan         # Scan system
+moonbit clean        # Clean (dry-run by default)
+moonbit clean --force # Actually delete files
 ```
 
-**Note**: MoonBit requires root access to scan and clean system directories like `/var/cache`, `/var/log`, and package manager caches.
-
-## Quick Start
-
-After installation, run MoonBit from anywhere:
+### Additional Commands
 
 ```bash
-sudo moonbit     # Launch interactive TUI
+# Package manager cleanup
+moonbit pkg orphans              # Remove orphaned packages
+moonbit pkg kernels              # Remove old kernels (Debian/Ubuntu)
+
+# Docker cleanup
+moonbit docker images            # Remove unused images
+moonbit docker all               # Remove all unused resources
+
+# Find duplicates
+moonbit duplicates find          # Find duplicate files
+moonbit duplicates find --min-size 10240  # Only files >= 10KB
+
+# Backups
+moonbit backup list              # List backups
+moonbit backup restore <name>    # Restore backup
 ```
 
-The TUI lets you:
-- Scan your system for cleanable files
-- Preview what will be deleted
-- Selectively choose categories to clean
-- See space savings before confirming
+## Automated Cleaning
 
-## What It Does
-
-**Cross-Distro Package Managers:**
-- Arch: Pacman, Yay, Paru, Pamac
-- Debian/Ubuntu: APT cache
-- Fedora/RHEL: DNF cache
-- openSUSE: Zypper cache
-
-**Development Tools:**
-- Python (pip), Node.js (npm), Rust (cargo)
-- Java (gradle, maven), Go (build cache)
-
-**System & User Caches:**
-- Font cache, Mesa shader cache, WebKit cache
-- Thumbnails (age-based filtering: >30 days old)
-- Browser caches, application caches
-
-**Media Servers:**
-- Plex: transcoding temp files
-- Jellyfin: transcodes and cache
-
-**Other:**
-- Docker cleanup (images, containers, volumes)
-- Crash reports, system logs, trash
-- Duplicate file detection with SHA256 hashing
-- Interactive TUI for selective cleaning
-- Automatic backup before deletion
-
-## Commands
-
-```bash
-# Interactive TUI
-moonbit
-
-# CLI mode
-moonbit scan
-moonbit clean --force
-
-# Find and remove duplicate files
-moonbit duplicates find [paths...]          # Find duplicates (default: home directory)
-moonbit duplicates find --min-size 10240    # Find duplicates >= 10KB
-moonbit duplicates clean                    # Interactive removal (coming soon)
-
-# Package manager cleanup (requires sudo)
-moonbit pkg orphans             # List orphaned packages (dry-run)
-moonbit pkg orphans --force     # Remove orphaned packages (Pacman/APT/DNF/Zypper)
-moonbit pkg kernels             # List old kernels (Debian/Ubuntu only)
-moonbit pkg kernels --force     # Remove old kernels (keep current + previous)
-
-# Docker cleanup (uses docker CLI)
-moonbit docker images    # Remove unused images
-moonbit docker all       # Remove all unused resources
-
-# Manage backups
-moonbit backup list
-moonbit backup restore <name>
-```
-
-## Automated Cleaning (Systemd)
-
-The installer automatically sets up systemd timers based on your preference:
+The installer sets up systemd timers:
 
 - **Daily**: Scan daily at 2 AM, clean weekly on Sunday at 3 AM
 - **Weekly**: Scan and clean weekly on Sunday at 3 AM
-- **Manual**: No automation, run `moonbit` manually as needed
+- **Manual**: No automation
 
-To manually install systemd timers without using the installer:
+Check timer status:
 
 ```bash
-# Install and enable systemd timers
-make install-systemd
-sudo systemctl enable --now moonbit-scan.timer
-sudo systemctl enable --now moonbit-clean.timer
-
-# Check status
 systemctl list-timers moonbit-*
 ```
-
-See `systemd/README.md` for customization.
-
-## Current Status
-
-Working:
-- [x] Basic scanning and cleaning
-- [x] Interactive category selection
-- [x] Backup/restore functionality
-- [x] Safety checks (protected paths, size limits)
-- [x] Development tool caches (pip, npm, cargo, gradle, maven, go)
-- [x] Docker cleanup commands
-
 
 ## Development
 
 ```bash
 make build    # Build binary
 make test     # Run tests
-make install  # Install to /usr/local/bin
+make installer # Build installer
 ```
-
-## Requirements
-
-- Go 1.21+
-- Linux (Arch-based tested, others should work)
-- sudo for system paths
 
 ## License
 
-MIT - see [LICENSE](LICENSE)
+MIT
