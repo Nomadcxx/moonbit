@@ -86,7 +86,7 @@ func isRunningAsRoot() bool {
 
 // reexecWithSudo re-executes the current command with sudo
 func reexecWithSudo() {
-	fmt.Println("🔐 MoonBit requires root access for system-wide operations")
+	fmt.Println("MoonBit requires root access for system-wide operations")
 	fmt.Println("Please enter your password when prompted...")
 	fmt.Println()
 
@@ -131,7 +131,7 @@ func ScanAndSaveWithMode(mode string) error {
 		modeLabel = "Deep"
 	}
 	
-	fmt.Printf("🧹 MoonBit %s System Scan\n", modeLabel)
+	fmt.Printf("MoonBit %s Scan\n", modeLabel)
 	fmt.Println("=====================================")
 
 	cfg, err := config.Load("")
@@ -173,7 +173,7 @@ func ScanAndSaveWithMode(mode string) error {
 		}
 
 		if exists || category.Name == "Thumbnail Cache" {
-			fmt.Printf("🔍 Scanning %s (%d/%d)...\n", category.Name, i+1, len(allCategories))
+			fmt.Printf("Scanning %s (%d/%d)...\n", category.Name, i+1, len(allCategories))
 
 			progressCh := make(chan scanner.ScanMsg, 10)
 			go s.ScanCategory(context.Background(), &category, progressCh)
@@ -181,10 +181,9 @@ func ScanAndSaveWithMode(mode string) error {
 			// Collect results for this category
 			for msg := range progressCh {
 				if msg.Complete != nil {
-					fmt.Printf("   ✅ Found %d files (%s) in %s\n",
+					fmt.Printf("  Found %d files (%s)\n",
 						msg.Complete.Stats.FileCount,
-						humanizeBytes(msg.Complete.Stats.Size),
-						category.Name)
+						humanizeBytes(msg.Complete.Stats.Size))
 
 					// Add to totals
 					totalSize += msg.Complete.Stats.Size
@@ -193,12 +192,12 @@ func ScanAndSaveWithMode(mode string) error {
 					break
 				}
 				if msg.Error != nil {
-					fmt.Printf("   ❌ Error scanning %s: %v\n", category.Name, msg.Error)
+					fmt.Printf("  Error: %v\n", msg.Error)
 					break
 				}
 			}
 		} else {
-			fmt.Printf("⚠️  Skipping %s (path not found)\n", category.Name)
+			fmt.Printf("Skipping %s (not found)\n", category.Name)
 		}
 
 		// Small delay between scans
@@ -218,11 +217,10 @@ func ScanAndSaveWithMode(mode string) error {
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 
-	fmt.Println("\n📊 SCAN RESULTS")
-	fmt.Println("================")
-	fmt.Printf("🎯 Total cleanable files: %d\n", totalFiles)
-	fmt.Printf("💾 Total space to save: %s\n", humanizeBytes(totalSize))
-	fmt.Printf("⏱️  Scan completed at: %s\n", time.Now().Format("15:04:05"))
+	fmt.Println("\nScan Results")
+	fmt.Println("=====================================")
+	fmt.Printf("Files found: %d\n", totalFiles)
+	fmt.Printf("Space available: %s\n", humanizeBytes(totalSize))
 
 	return nil
 }
@@ -236,7 +234,7 @@ func CleanSession(dryRun bool) error {
 		modeLabel = "Deep"
 	}
 	
-	fmt.Printf("🧹 MoonBit %s Cleaning Session\n", modeLabel)
+	fmt.Printf("MoonBit %s Clean\n", modeLabel)
 	fmt.Println("===========================")
 
 	// Load session cache
@@ -246,7 +244,7 @@ func CleanSession(dryRun bool) error {
 	}
 
 	if cache.TotalFiles == 0 {
-		fmt.Println("✅ No files to clean!")
+		fmt.Println("No files to clean.")
 		return nil
 	}
 
@@ -260,7 +258,7 @@ func CleanSession(dryRun bool) error {
 	if scanMode != "" {
 		cache = filterCacheByMode(cache, cfg, scanMode)
 		if cache.TotalFiles == 0 {
-			fmt.Printf("✅ No files to clean in %s mode!\n", scanMode)
+			fmt.Printf("No files to clean in %s mode.\n", scanMode)
 			return nil
 		}
 	}
@@ -269,7 +267,7 @@ func CleanSession(dryRun bool) error {
 	ctx := context.Background()
 
 	if dryRun {
-		fmt.Printf("🔍 DRY RUN - Would delete %d files (%s)\n",
+		fmt.Printf("DRY RUN - Would delete %d files (%s)\n",
 			cache.TotalFiles, humanizeBytes(cache.TotalSize))
 
 		// Show preview of what would be cleaned
@@ -328,12 +326,12 @@ func CleanSession(dryRun bool) error {
 		}
 	}
 
-	fmt.Printf("\n✅ CLEANING COMPLETE!\n")
-	fmt.Printf("   🗑️  Deleted: %d files\n", deletedFiles)
-	fmt.Printf("   💾 Freed up: %s\n", humanizeBytes(deletedBytes))
+	fmt.Printf("\nCleaning Complete\n")
+	fmt.Printf("  Files deleted: %d\n", deletedFiles)
+	fmt.Printf("  Space freed: %s\n", humanizeBytes(deletedBytes))
 
 	if len(errors) > 0 {
-		fmt.Printf("   ⚠️  Errors: %d files could not be deleted\n", len(errors))
+		fmt.Printf("  Errors: %d files could not be deleted\n", len(errors))
 		if len(errors) <= 5 {
 			for _, err := range errors {
 				fmt.Printf("      - %s\n", err)
@@ -486,7 +484,7 @@ var backupListCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		backups, err := cleaner.ListBackups()
 		if err != nil {
-			fmt.Printf("❌ Failed to list backups: %v\n", err)
+			fmt.Printf("Failed to list backups: %v\n", err)
 			return
 		}
 
@@ -607,7 +605,7 @@ var dockerAllCmd = &cobra.Command{
 		dfCmd2.Stderr = os.Stderr
 		dfCmd2.Run()
 
-		fmt.Println("\n✅ Docker cleanup complete!")
+		fmt.Println("\nDocker cleanup complete!")
 	},
 }
 
@@ -668,7 +666,7 @@ var duplicatesFindCmd = &cobra.Command{
 		fmt.Printf("Wasted space: %s\n\n", humanizeBytes(uint64(result.WastedSpace)))
 
 		if len(result.Groups) == 0 {
-			fmt.Println("✅ No duplicate files found!")
+			fmt.Println("No duplicate files found.")
 			return
 		}
 
@@ -726,7 +724,7 @@ var pkgOrphansCmd = &cobra.Command{
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		if !dryRun && !isRunningAsRoot() {
-			fmt.Println("❌ Removing orphaned packages requires root access")
+			fmt.Println("Removing orphaned packages requires root access")
 			fmt.Println("")
 			fmt.Println("Please run with sudo:")
 			fmt.Println("  sudo moonbit pkg orphans --force")
@@ -823,7 +821,7 @@ func removeOrphanedPackages(dryRun bool) {
 			fmt.Printf("❌ Failed to remove orphaned packages: %v\n", err)
 			return
 		}
-		fmt.Println("\n✅ Orphaned packages removed successfully!")
+		fmt.Println("\nOrphaned packages removed successfully!")
 	}
 }
 
@@ -892,7 +890,7 @@ func removeOldKernels(dryRun bool) {
 		return
 	}
 
-	fmt.Println("\n✅ Old kernels removed successfully!")
+	fmt.Println("\nOld kernels removed successfully!")
 	fmt.Println("💡 Tip: Your system automatically marks old kernels for autoremoval")
 }
 
