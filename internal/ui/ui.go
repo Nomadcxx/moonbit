@@ -795,8 +795,24 @@ func borderedPanel(content string, borderColor lipgloss.Color, width int) string
 
 // View renders the UI (sysc-greet inspired layout)
 func (m Model) View() string {
-	if m.width == 0 {
+	if m.width == 0 || m.height == 0 {
 		return "Loading..."
+	}
+	
+	// Ensure minimum dimensions for proper rendering
+	// ASCII art is 54 chars wide, need at least 60 for borders
+	minWidth := 60
+	minHeight := 20
+	if m.width < minWidth || m.height < minHeight {
+		msg := lipgloss.NewStyle().
+			Foreground(Warning).
+			Bold(true).
+			Width(m.width).
+			Height(m.height).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render(fmt.Sprintf("Terminal too small!\nMinimum: %dx%d\nCurrent: %dx%d", 
+				minWidth, minHeight, m.width, m.height))
+		return msg
 	}
 
 	var content strings.Builder
