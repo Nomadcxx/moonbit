@@ -131,8 +131,8 @@ func ScanAndSaveWithMode(mode string) error {
 		modeLabel = "Deep"
 	}
 	
-	fmt.Printf("MoonBit %s Scan\n", modeLabel)
-	fmt.Println("=====================================")
+	fmt.Println(S.Header(fmt.Sprintf("MoonBit %s Scan", modeLabel)))
+	fmt.Println(S.Separator())
 
 	cfg, err := config.Load("")
 	if err != nil {
@@ -217,10 +217,11 @@ func ScanAndSaveWithMode(mode string) error {
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 
-	fmt.Println("\nScan Results")
-	fmt.Println("=====================================")
-	fmt.Printf("Files found: %d\n", totalFiles)
-	fmt.Printf("Space available: %s\n", humanizeBytes(totalSize))
+	fmt.Println()
+	fmt.Println(S.Header("Scan Results"))
+	fmt.Println(S.Separator())
+	fmt.Printf("  %s %d\n", S.Bold("Files found:"), totalFiles)
+	fmt.Printf("  %s %s\n", S.Bold("Space available:"), S.Success(humanizeBytes(totalSize)))
 
 	return nil
 }
@@ -234,8 +235,8 @@ func CleanSession(dryRun bool) error {
 		modeLabel = "Deep"
 	}
 	
-	fmt.Printf("MoonBit %s Clean\n", modeLabel)
-	fmt.Println("===========================")
+	fmt.Println(S.Header(fmt.Sprintf("MoonBit %s Clean", modeLabel)))
+	fmt.Println(S.Separator())
 
 	// Load session cache
 	cache, err := loadSessionCache()
@@ -326,12 +327,14 @@ func CleanSession(dryRun bool) error {
 		}
 	}
 
-	fmt.Printf("\nCleaning Complete\n")
-	fmt.Printf("  Files deleted: %d\n", deletedFiles)
-	fmt.Printf("  Space freed: %s\n", humanizeBytes(deletedBytes))
+	fmt.Println()
+	fmt.Println(S.Header("Cleaning Complete"))
+	fmt.Println(S.Separator())
+	fmt.Printf("  %s %d\n", S.Bold("Files deleted:"), deletedFiles)
+	fmt.Printf("  %s %s\n", S.Bold("Space freed:"), S.Success(humanizeBytes(deletedBytes)))
 
 	if len(errors) > 0 {
-		fmt.Printf("  Errors: %d files could not be deleted\n", len(errors))
+		fmt.Printf("  %s %d files could not be deleted\n", S.Warning("Errors:"), len(errors))
 		if len(errors) <= 5 {
 			for _, err := range errors {
 				fmt.Printf("      - %s\n", err)
