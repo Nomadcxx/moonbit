@@ -801,24 +801,20 @@ func (m Model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - centered
+	// ASCII Header - just render without width constraints
+	headerStyle := lipgloss.NewStyle().
+		Foreground(Primary).
+		Bold(true)
+	
 	for _, line := range strings.Split(asciiHeader, "\n") {
-		centered := lipgloss.NewStyle().
-			Foreground(Primary).
-			Bold(true).
-			Width(m.width).
-			Align(lipgloss.Center).
-			Render(line)
-		content.WriteString(centered)
+		content.WriteString(headerStyle.Render(line))
 		content.WriteString("\n")
 	}
-
-	// Subtitle - centered
+	
+	// Subtitle
 	subtitle := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
-		Width(m.width).
-		Align(lipgloss.Center).
 		Render("System Cleaner for Linux")
 	content.WriteString(subtitle)
 	content.WriteString("\n\n")
@@ -851,25 +847,25 @@ func (m Model) View() string {
 		borderColor = Accent
 	}
 
-	// Center the bordered panel
+	// Bordered panel (not centered yet)
 	panel := borderedPanel(mainContent, borderColor, m.width)
-	centeredPanel := lipgloss.NewStyle().
-		Width(m.width).
-		Align(lipgloss.Center).
-		Render(panel)
-	content.WriteString(centeredPanel)
+	content.WriteString(panel)
 
-	// Footer - centered
+	// Footer
 	content.WriteString("\n\n")
 	footer := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
-		Width(m.width).
-		Align(lipgloss.Center).
 		Render(m.getFooterText())
 	content.WriteString(footer)
 
-	return content.String()
+	// Center everything at the end with a single wrapper
+	bgStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Top)
+	
+	return bgStyle.Render(content.String())
 }
 
 // renderWelcome renders the welcome screen (sysc-greet style)
