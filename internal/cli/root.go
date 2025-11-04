@@ -85,9 +85,11 @@ func isRunningAsRoot() bool {
 
 // reexecWithSudo re-executes the current command with sudo
 func reexecWithSudo() {
-	fmt.Println("MoonBit requires root access for system-wide operations")
-	fmt.Println("Please enter your password when prompted...")
-	fmt.Println()
+	fmt.Println(S.ASCIIHeader())
+	fmt.Println(S.Warning("⚠ Root Access Required"))
+	fmt.Println(S.Separator())
+	fmt.Println("MoonBit needs root access to scan and clean system-wide caches.")
+	fmt.Println(S.Muted("You will be prompted for your password...\n"))
 
 	// Get the current executable path
 	exe, err := os.Executable()
