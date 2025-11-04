@@ -25,17 +25,16 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "moonbit",
-	Short: "MoonBit – system cleaner TUI",
-	Long: `MoonBit is a Go-based TUI application for system cleaning and privacy scrubbing.
-It provides interactive scanning, previewing, and selective deletion of temporary files,
-caches, logs, and application data on Linux (Arch-primary).
-
-Features:
-• Interactive TUI with beautiful theming (sysc-greet inspired)
-• Safe dry-runs and undo mechanisms
-• Parallel scanning with progress tracking
-• Multiple cleaning categories (Pacman cache, temporary files, browser cache, etc.)
-• JSON output for automation and launcher integration`,
+	Short: "MoonBit - System Cleaner for Linux",
+	Long: S.ASCIIHeader() + "\n" + 
+		S.Muted("A modern system cleaner for Linux\n") + 
+		S.Muted("Clean caches, logs, and temporary files with ease\n\n") +
+		S.Bold("Features:\n") +
+		"  • Interactive TUI and powerful CLI\n" +
+		"  • Safe dry-runs by default\n" +
+		"  • Quick and Deep scan modes\n" +
+		"  • Support for all major package managers\n" +
+		"  • Docker cleanup and duplicate file detection",
 	Run: func(cmd *cobra.Command, args []string) {
 		// Check for root access and re-exec with sudo if needed
 		if !isRunningAsRoot() {
@@ -131,7 +130,8 @@ func ScanAndSaveWithMode(mode string) error {
 		modeLabel = "Deep"
 	}
 	
-	fmt.Println(S.Header(fmt.Sprintf("MoonBit %s Scan", modeLabel)))
+	fmt.Println(S.ASCIIHeader())
+	fmt.Println(S.Header(fmt.Sprintf("%s Scan", modeLabel)))
 	fmt.Println(S.Separator())
 
 	cfg, err := config.Load("")
@@ -235,7 +235,8 @@ func CleanSession(dryRun bool) error {
 		modeLabel = "Deep"
 	}
 	
-	fmt.Println(S.Header(fmt.Sprintf("MoonBit %s Clean", modeLabel)))
+	fmt.Println(S.ASCIIHeader())
+	fmt.Println(S.Header(fmt.Sprintf("%s Clean", modeLabel)))
 	fmt.Println(S.Separator())
 
 	// Load session cache

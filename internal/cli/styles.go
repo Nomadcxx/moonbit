@@ -5,20 +5,20 @@ import (
 	"strings"
 )
 
-// ANSI color codes
+// ANSI color codes - Eldritch theme
 const (
 	Reset   = "\033[0m"
 	Bold    = "\033[1m"
 	Dim     = "\033[2m"
 	
-	// Colors
-	Red     = "\033[31m"
-	Green   = "\033[32m"
-	Yellow  = "\033[33m"
-	Blue    = "\033[34m"
-	Magenta = "\033[35m"
-	Cyan    = "\033[36m"
-	Gray    = "\033[90m"
+	// Eldritch colors (using closest ANSI approximations)
+	Red     = "\033[38;2;241;108;117m"  // R'lyeh' Red #f16c75
+	Green   = "\033[38;2;55;244;153m"   // Great Old One Green #37f499
+	Yellow  = "\033[38;2;241;252;121m"  // Gold of Yuggoth #f1fc79
+	Cyan    = "\033[38;2;4;209;249m"    // Watery Tomb Blue #04d1f9
+	Purple  = "\033[38;2;164;140;242m"  // Lovecraft Purple #a48cf2
+	Comment = "\033[38;2;112;129;208m"  // The Old One Purple #7081d0
+	Gray    = "\033[38;2;112;129;208m"  // Using comment color for muted
 )
 
 // Style helpers for consistent CLI output
@@ -27,7 +27,7 @@ type Style struct{}
 var S = Style{}
 
 func (s Style) Header(text string) string {
-	return Bold + Cyan + text + Reset
+	return Bold + Green + text + Reset  // Eldritch primary green
 }
 
 func (s Style) Success(text string) string {
@@ -43,7 +43,7 @@ func (s Style) Warning(text string) string {
 }
 
 func (s Style) Info(text string) string {
-	return Blue + text + Reset
+	return Cyan + text + Reset  // Watery Tomb Blue
 }
 
 func (s Style) Muted(text string) string {
@@ -92,4 +92,14 @@ func (s Style) Progress(current, total int, label string) string {
 	
 	return fmt.Sprintf("%s[%s%s%s] %s%d/%d%s %s",
 		Gray, Reset, Cyan+bar, Gray, Reset, current, total, Gray, label+Reset)
+}
+
+// ASCIIHeader returns the MoonBit ASCII art header
+func (s Style) ASCIIHeader() string {
+ascii := `
+█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ 
+█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   
+▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀
+`
+return Green + ascii + Reset
 }
