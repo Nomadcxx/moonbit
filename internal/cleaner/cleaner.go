@@ -71,10 +71,11 @@ func NewCleaner(cfg *config.Config) *Cleaner {
 			"/usr/sbin",
 			"/sbin",
 			"/etc",
-			"/var/lib",
 			"/boot",
 			"/sys",
 			"/proc",
+			// Note: /var/lib removed to allow Docker cleanup
+			// Categories should be specific about what they clean
 		},
 	}
 
@@ -491,10 +492,11 @@ func GetDefaultSafetyConfig() *SafetyConfig {
 			"/usr/sbin",
 			"/sbin",
 			"/etc",
-			"/var/lib",
 			"/boot",
 			"/sys",
 			"/proc",
+			// Note: /var/lib removed to allow Docker cleanup
+			// Categories should be specific about what they clean
 		},
 	}
 }
