@@ -82,7 +82,7 @@ func NewCleaner(cfg *config.Config) *Cleaner {
 	return &Cleaner{
 		cfg:           cfg,
 		safetyConfig:  safetyCfg,
-		backupEnabled: true,
+		backupEnabled: false, // Disabled for performance - use manual backups
 	}
 }
 

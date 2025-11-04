@@ -57,14 +57,34 @@ var scanCmd = &cobra.Command{
 			return
 		}
 
-		ScanAndSave()
+		if err := ScanAndSave(); err != nil {
+			fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Ask if user wants to clean now
+		fmt.Println()
+		fmt.Print(S.Bold("Would you like to clean these files now? [y/N]: "))
+		
+		var response string
+		fmt.Scanln(&response)
+		
+		if strings.ToLower(response) == "y" || strings.ToLower(response) == "yes" {
+			fmt.Println()
+			if err := CleanSession(false); err != nil {
+				fmt.Fprintf(os.Stderr, "Clean failed: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Println(S.Muted("\nFiles not cleaned. Run 'moonbit clean' to clean them later."))
+		}
 	},
 }
 
 var cleanCmd = &cobra.Command{
 	Use:   "clean",
-	Short: "Clean discovered files",
-	Long:  "Clean files discovered in the last scan",
+	Short: "Clean files from last scan",
+	Long:  "Clean files discovered in the last scan\n\nBy default, files are DELETED. Use --dry-run to preview first.",
 	Run: func(cmd *cobra.Command, args []string) {
 		if !isRunningAsRoot() && !dryRun {
 			reexecWithSudo()
@@ -946,17 +966,8 @@ func init() {
 	// Scan mode flags
 	scanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Scan mode: 'quick' (safe caches only) or 'deep' (all categories)")
 	
-	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview what would be deleted without actually deleting")
+	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Preview only, don't delete files")
 	cleanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Clean mode: 'quick' (safe caches only) or 'deep' (all categories)")
-
-	// Force flag should set dryRun to false
-	var forceFlag bool
-	cleanCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Actually delete files (disable dry-run)")
-	cleanCmd.PreRun = func(cmd *cobra.Command, args []string) {
-		if forceFlag {
-			dryRun = false
-		}
-	}
 }
 
 func Execute() {
