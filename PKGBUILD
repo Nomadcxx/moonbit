@@ -1,6 +1,6 @@
 # Maintainer: Nomadcxx <noovie@gmail.com>
 pkgname=moonbit
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Cross-distro system cleaner TUI for Linux with automated scheduling"
 arch=('x86_64' 'aarch64')
