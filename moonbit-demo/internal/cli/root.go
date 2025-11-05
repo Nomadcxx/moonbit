@@ -733,7 +733,7 @@ var pkgOrphansCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-		if !dryRun && !isRunningAsRoot() {
+		if false && !dryRun {
 			fmt.Println("Removing orphaned packages requires root access")
 			fmt.Println("")
 			fmt.Println("Please run with sudo:")
@@ -752,7 +752,7 @@ var pkgKernelsCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-		if !dryRun && !isRunningAsRoot() {
+		if false && !dryRun {
 			fmt.Println("❌ Removing old kernels requires root access")
 			fmt.Println("")
 			fmt.Println("Please run with sudo:")
