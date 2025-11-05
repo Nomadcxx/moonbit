@@ -14,7 +14,6 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -108,9 +107,6 @@ type Model struct {
 	resultsViewport  viewport.Model
 	viewportReady    bool
 
-	// Progress bar
-	progressBar progress.Model
-
 	// Settings
 	cfg *config.Config
 }
@@ -118,13 +114,6 @@ type Model struct {
 // NewModel creates a new MoonBit model
 func NewModel() Model {
 	cfg := config.DefaultConfig()
-
-	// Create styled progress bar with Eldritch theme
-	prog := progress.New(
-		progress.WithScaledGradient(string(Primary), string(Secondary)),
-		progress.WithWidth(50),
-		progress.WithoutPercentage(),
-	)
 
 	return Model{
 		width:     80,
@@ -138,9 +127,8 @@ func NewModel() Model {
 			"Clean System",
 			"Exit",
 		},
-		scanMode:    "quick", // Default to quick mode
-		progressBar: prog,
-		cfg:         cfg,
+		scanMode: "quick", // Default to quick mode
+		cfg:      cfg,
 	}
 }
 
@@ -208,11 +196,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tick()
 		}
 		return m, nil
-	case progress.FrameMsg:
-		// Update progress bar animation
-		progressModel, cmd := m.progressBar.Update(msg)
-		m.progressBar = progressModel.(progress.Model)
-		return m, cmd
 	case scanProgressMsg:
 		m.scanProgress = msg.Progress
 		m.currentPhase = msg.Phase
@@ -391,7 +374,7 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.currentFile = ""
 	m.totalFilesGuess = 0
 
-	return m, tea.Batch(runScanCmd(m.cfg, m.scanMode), tick(), m.progressBar.Init())
+	return m, tea.Batch(runScanCmd(m.cfg, m.scanMode), tick())
 }
 
 // runScanCmd executes the scan using the scanner package directly
@@ -634,7 +617,7 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	// Build a filtered category with only files from enabled categories
 	filteredCache := m.buildFilteredCache()
 
-	return m, tea.Batch(runCleanCmd(m.cfg, filteredCache), tick(), m.progressBar.Init())
+	return m, tea.Batch(runCleanCmd(m.cfg, filteredCache), tick())
 }
 
 // buildFilteredCache creates a cache with only files from enabled categories
@@ -998,12 +981,32 @@ func (m Model) renderScanProgress() string {
 
 	// Styled progress bar with percentage
 	progressPercent := fmt.Sprintf("%.1f%%", m.scanProgress*100)
-	progressView := m.progressBar.ViewAs(m.scanProgress)
+
+	// Simple gradient progress bar without bubbles/progress model
+	barWidth := 50
+	filledWidth := int(m.scanProgress * float64(barWidth))
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+
+	// Create gradient from Primary to Secondary
+	bar := ""
+	for i := 0; i < barWidth; i++ {
+		if i < filledWidth {
+			bar += "█"
+		} else {
+			bar += "░"
+		}
+	}
+
+	// Style the bar with Primary color
+	styledBar := lipgloss.NewStyle().
+		Foreground(Primary).
+		Render(bar)
 
 	content.WriteString(lipgloss.NewStyle().
-		Foreground(FgPrimary).
 		Align(lipgloss.Center).
-		Render(progressView))
+		Render(styledBar))
 	content.WriteString("\n")
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(Secondary).
@@ -1314,18 +1317,39 @@ func (m Model) renderClean() string {
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress indicator (indeterminate animation for cleaning)
+	// Progress indicator (animated for cleaning)
 	if m.cleanActive {
-		// Use animated progress bar moving back and forth
+		// Animated progress bar moving back and forth
 		elapsed := time.Since(m.cleanStarted).Seconds()
-		// Oscillate between 0.1 and 0.9
+		barWidth := 50
+
+		// Oscillate position between 0 and barWidth
 		animProgress := 0.5 + 0.4*math.Sin(elapsed*2.0)
-		progressView := m.progressBar.ViewAs(animProgress)
+		filledWidth := int(animProgress * float64(barWidth))
+		if filledWidth < 0 {
+			filledWidth = 0
+		}
+		if filledWidth > barWidth {
+			filledWidth = barWidth
+		}
+
+		// Create animated bar
+		bar := ""
+		for i := 0; i < barWidth; i++ {
+			if i < filledWidth {
+				bar += "█"
+			} else {
+				bar += "░"
+			}
+		}
+
+		styledBar := lipgloss.NewStyle().
+			Foreground(Danger).
+			Render(bar)
 
 		content.WriteString(lipgloss.NewStyle().
-			Foreground(FgPrimary).
 			Align(lipgloss.Center).
-			Render(progressView))
+			Render(styledBar))
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().
 			Foreground(Danger).
