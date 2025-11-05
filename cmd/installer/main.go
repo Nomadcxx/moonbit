@@ -223,17 +223,24 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header
+	// ASCII Header with width constraints and centering
 	headerLines := []string{
 		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
 		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
 		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
-		"",
 	}
 
+	// Apply width constraints to each header line individually
+	headerLineStyle := lipgloss.NewStyle().
+		Foreground(FgPrimary).
+		Width(m.width).
+		Align(lipgloss.Center)
+
 	for _, line := range headerLines {
-		content.WriteString(headerStyle.Render(line))
-		content.WriteString("\n")
+		if strings.TrimSpace(line) != "" {
+			content.WriteString(headerLineStyle.Render(line))
+			content.WriteString("\n")
+		}
 	}
 	content.WriteString("\n")
 

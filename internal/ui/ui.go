@@ -817,22 +817,27 @@ func (m Model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - just render without width constraints
+	// ASCII Header - render with width constraints and centering per line
 	headerStyle := lipgloss.NewStyle().
 		Foreground(Primary).
-		Bold(true)
-	
+		Bold(true).
+		Width(m.width).
+		Align(lipgloss.Center)
+
 	for _, line := range strings.Split(asciiHeader, "\n") {
-		content.WriteString(headerStyle.Render(line))
-		content.WriteString("\n")
+		if strings.TrimSpace(line) != "" {
+			content.WriteString(headerStyle.Render(line))
+			content.WriteString("\n")
+		}
 	}
-	
+
 	// Subtitle
-	subtitle := lipgloss.NewStyle().
+	subtitleStyle := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
-		Render("System Cleaner for Linux")
-	content.WriteString(subtitle)
+		Width(m.width).
+		Align(lipgloss.Center)
+	content.WriteString(subtitleStyle.Render("System Cleaner for Linux"))
 	content.WriteString("\n\n")
 
 	// Main content area with borders
