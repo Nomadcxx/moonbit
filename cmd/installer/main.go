@@ -223,25 +223,28 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header with width constraints and centering
+	// ASCII Header - build entire block first, then center as one unit
 	headerLines := []string{
 		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
 		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
 		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
 	}
 
-	// Apply width constraints to each header line individually
-	headerLineStyle := lipgloss.NewStyle().
-		Foreground(FgPrimary).
-		Width(m.width).
-		Align(lipgloss.Center)
-
+	// Build ASCII block with styling
+	var headerBlock strings.Builder
 	for _, line := range headerLines {
 		if strings.TrimSpace(line) != "" {
-			content.WriteString(headerLineStyle.Render(line))
-			content.WriteString("\n")
+			headerBlock.WriteString(headerStyle.Render(line))
+			headerBlock.WriteString("\n")
 		}
 	}
+
+	// Center the entire ASCII block as one unit
+	centeredHeader := lipgloss.NewStyle().
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(headerBlock.String())
+	content.WriteString(centeredHeader)
 	content.WriteString("\n")
 
 	// Main content based on step

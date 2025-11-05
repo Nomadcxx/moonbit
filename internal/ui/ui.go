@@ -817,27 +817,34 @@ func (m Model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - render with width constraints and centering per line
+	// ASCII Header - build the entire header block first, then center it
+	var headerBlock strings.Builder
 	headerStyle := lipgloss.NewStyle().
 		Foreground(Primary).
-		Bold(true).
-		Width(m.width).
-		Align(lipgloss.Center)
+		Bold(true)
 
 	for _, line := range strings.Split(asciiHeader, "\n") {
 		if strings.TrimSpace(line) != "" {
-			content.WriteString(headerStyle.Render(line))
-			content.WriteString("\n")
+			headerBlock.WriteString(headerStyle.Render(line))
+			headerBlock.WriteString("\n")
 		}
 	}
 
+	// Center the entire ASCII block as one unit
+	centeredHeader := lipgloss.NewStyle().
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(headerBlock.String())
+	content.WriteString(centeredHeader)
+
 	// Subtitle
-	subtitleStyle := lipgloss.NewStyle().
+	subtitle := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
 		Width(m.width).
-		Align(lipgloss.Center)
-	content.WriteString(subtitleStyle.Render("System Cleaner for Linux"))
+		Align(lipgloss.Center).
+		Render("System Cleaner for Linux")
+	content.WriteString(subtitle)
 	content.WriteString("\n\n")
 
 	// Main content area with borders
