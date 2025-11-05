@@ -1005,16 +1005,16 @@ func (m Model) renderScanProgress() string {
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Animated indeterminate progress bar while scanning
+	// Animated indeterminate progress bar with gradient while scanning
 	barWidth := 50
 
 	if m.scanActive {
-		// Indeterminate progress - show moving wave
+		// Indeterminate progress - show moving wave with gradient
 		elapsed := time.Since(m.scanStarted).Seconds()
 		// Calculate position of the "wave" - moves left to right
 		wavePos := int(elapsed*10) % barWidth
 
-		bar := ""
+		var bar strings.Builder
 		for i := 0; i < barWidth; i++ {
 			// Create a 5-character wide "wave" of filled blocks
 			dist := i - wavePos
@@ -1022,19 +1022,25 @@ func (m Model) renderScanProgress() string {
 				dist = -dist
 			}
 			if dist < 3 {
-				bar += "█"
+				// Calculate gradient position (0.0 to 1.0) across the bar
+				gradientPos := float64(i) / float64(barWidth)
+				// Interpolate between Primary (Great Old One Green) and Secondary (Watery Tomb Blue)
+				color := interpolateColor(Primary, Secondary, gradientPos)
+				coloredChar := lipgloss.NewStyle().
+					Foreground(color).
+					Render("█")
+				bar.WriteString(coloredChar)
 			} else {
-				bar += "░"
+				// Subtle empty bar color
+				bar.WriteString(lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#323449")).
+					Render("░"))
 			}
 		}
 
-		styledBar := lipgloss.NewStyle().
-			Foreground(Primary).
-			Render(bar)
-
 		content.WriteString(lipgloss.NewStyle().
 			Align(lipgloss.Center).
-			Render(styledBar))
+			Render(bar.String()))
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().
 			Foreground(Secondary).
@@ -1042,15 +1048,20 @@ func (m Model) renderScanProgress() string {
 			Align(lipgloss.Center).
 			Render("Scanning..."))
 	} else {
-		// Static completed bar
-		bar := strings.Repeat("█", barWidth)
-		styledBar := lipgloss.NewStyle().
-			Foreground(Primary).
-			Render(bar)
+		// Static completed bar with gradient
+		var bar strings.Builder
+		for i := 0; i < barWidth; i++ {
+			gradientPos := float64(i) / float64(barWidth)
+			color := interpolateColor(Primary, Secondary, gradientPos)
+			coloredChar := lipgloss.NewStyle().
+				Foreground(color).
+				Render("█")
+			bar.WriteString(coloredChar)
+		}
 
 		content.WriteString(lipgloss.NewStyle().
 			Align(lipgloss.Center).
-			Render(styledBar))
+			Render(bar.String()))
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().
 			Foreground(Secondary).
@@ -1362,9 +1373,9 @@ func (m Model) renderClean() string {
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress indicator (animated for cleaning)
+	// Progress indicator (animated for cleaning with gradient)
 	if m.cleanActive {
-		// Animated progress bar moving back and forth
+		// Animated progress bar moving back and forth with gradient
 		elapsed := time.Since(m.cleanStarted).Seconds()
 		barWidth := 50
 
@@ -1378,23 +1389,27 @@ func (m Model) renderClean() string {
 			filledWidth = barWidth
 		}
 
-		// Create animated bar
-		bar := ""
+		// Create animated bar with gradient from Danger (red) to Warning (orange)
+		var bar strings.Builder
 		for i := 0; i < barWidth; i++ {
 			if i < filledWidth {
-				bar += "█"
+				// Calculate gradient position across filled portion
+				gradientPos := float64(i) / float64(barWidth)
+				color := interpolateColor(Danger, Warning, gradientPos)
+				coloredChar := lipgloss.NewStyle().
+					Foreground(color).
+					Render("█")
+				bar.WriteString(coloredChar)
 			} else {
-				bar += "░"
+				bar.WriteString(lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#323449")).
+					Render("░"))
 			}
 		}
 
-		styledBar := lipgloss.NewStyle().
-			Foreground(Danger).
-			Render(bar)
-
 		content.WriteString(lipgloss.NewStyle().
 			Align(lipgloss.Center).
-			Render(styledBar))
+			Render(bar.String()))
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().
 			Foreground(Danger).
@@ -1491,6 +1506,39 @@ func humanizeBytes(bytes uint64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+// interpolateColor interpolates between two lipgloss colors
+func interpolateColor(color1, color2 lipgloss.Color, factor float64) lipgloss.Color {
+	// Parse hex colors
+	c1 := string(color1)
+	c2 := string(color2)
+
+	// Extract RGB values from hex
+	r1, g1, b1 := parseHexColor(c1)
+	r2, g2, b2 := parseHexColor(c2)
+
+	// Interpolate each component
+	r := uint8(float64(r1)*(1-factor) + float64(r2)*factor)
+	g := uint8(float64(g1)*(1-factor) + float64(g2)*factor)
+	b := uint8(float64(b1)*(1-factor) + float64(b2)*factor)
+
+	return lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b))
+}
+
+// parseHexColor parses a hex color string to RGB values
+func parseHexColor(hex string) (uint8, uint8, uint8) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		// Default to white if invalid
+		return 255, 255, 255
+	}
+
+	r, _ := strconv.ParseUint(hex[0:2], 16, 8)
+	g, _ := strconv.ParseUint(hex[2:4], 16, 8)
+	b, _ := strconv.ParseUint(hex[4:6], 16, 8)
+
+	return uint8(r), uint8(g), uint8(b)
 }
 
 // Message types for async operations
