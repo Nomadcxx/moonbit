@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -106,6 +108,9 @@ type Model struct {
 	resultsViewport  viewport.Model
 	viewportReady    bool
 
+	// Progress bar
+	progressBar progress.Model
+
 	// Settings
 	cfg *config.Config
 }
@@ -113,6 +118,13 @@ type Model struct {
 // NewModel creates a new MoonBit model
 func NewModel() Model {
 	cfg := config.DefaultConfig()
+
+	// Create styled progress bar with Eldritch theme
+	prog := progress.New(
+		progress.WithScaledGradient(string(Primary), string(Secondary)),
+		progress.WithWidth(50),
+		progress.WithoutPercentage(),
+	)
 
 	return Model{
 		width:     80,
@@ -126,8 +138,9 @@ func NewModel() Model {
 			"Clean System",
 			"Exit",
 		},
-		scanMode: "quick", // Default to quick mode
-		cfg:      cfg,
+		scanMode:    "quick", // Default to quick mode
+		progressBar: prog,
+		cfg:         cfg,
 	}
 }
 
@@ -184,8 +197,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		// Update progress display if scanning
 		if m.scanActive && m.totalFilesGuess > 0 {
-			progress := float64(m.filesScanned) / float64(m.totalFilesGuess)
-			m.scanProgress = progress
+			prog := float64(m.filesScanned) / float64(m.totalFilesGuess)
+			m.scanProgress = prog
 			if m.currentFile != "" {
 				m.currentPhase = fmt.Sprintf("Scanning: %s", filepath.Base(m.currentFile))
 			}
@@ -195,6 +208,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tick()
 		}
 		return m, nil
+	case progress.FrameMsg:
+		// Update progress bar animation
+		progressModel, cmd := m.progressBar.Update(msg)
+		m.progressBar = progressModel.(progress.Model)
+		return m, cmd
 	case scanProgressMsg:
 		m.scanProgress = msg.Progress
 		m.currentPhase = msg.Phase
@@ -373,7 +391,7 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 	m.currentFile = ""
 	m.totalFilesGuess = 0
 
-	return m, tea.Batch(runScanCmd(m.cfg, m.scanMode), tick())
+	return m, tea.Batch(runScanCmd(m.cfg, m.scanMode), tick(), m.progressBar.Init())
 }
 
 // runScanCmd executes the scan using the scanner package directly
@@ -616,7 +634,7 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	// Build a filtered category with only files from enabled categories
 	filteredCache := m.buildFilteredCache()
 
-	return m, tea.Batch(runCleanCmd(m.cfg, filteredCache), tick())
+	return m, tea.Batch(runCleanCmd(m.cfg, filteredCache), tick(), m.progressBar.Init())
 }
 
 // buildFilteredCache creates a cache with only files from enabled categories
@@ -869,7 +887,7 @@ func (m Model) View() string {
 		borderColor = Secondary
 	case ModeConfirm:
 		mainContent = m.renderConfirm()
-		borderColor = Warning
+		borderColor = Danger  // Red border for dangerous action confirmation
 	case ModeClean:
 		mainContent = m.renderClean()
 		borderColor = Danger
@@ -978,23 +996,20 @@ func (m Model) renderScanProgress() string {
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress bar with real-time updates
-	progress := int(m.scanProgress * 50)
-	if m.scanActive {
-		if m.scanProgress > 0 && m.scanProgress < 1 {
-			// Show real progress
-			progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
-			content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
-		} else {
-			// Show indeterminate progress animation
-			animFrame := int(time.Since(m.scanStarted).Milliseconds()/100) % 50
-			progressBar := strings.Repeat("░", animFrame) + "█" + strings.Repeat("░", 49-animFrame)
-			content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] Scanning...", progressBar)))
-		}
-	} else {
-		progressBar := strings.Repeat("█", progress) + strings.Repeat("░", 50-progress)
-		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] %.1f%%", progressBar, m.scanProgress*100)))
-	}
+	// Styled progress bar with percentage
+	progressPercent := fmt.Sprintf("%.1f%%", m.scanProgress*100)
+	progressView := m.progressBar.ViewAs(m.scanProgress)
+
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgPrimary).
+		Align(lipgloss.Center).
+		Render(progressView))
+	content.WriteString("\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(Secondary).
+		Bold(true).
+		Align(lipgloss.Center).
+		Render(progressPercent))
 	content.WriteString("\n\n")
 
 	// Show current file being scanned
@@ -1207,18 +1222,18 @@ func (m Model) calculateSelectedSize() string {
 	return fmt.Sprintf("%d MB", totalMB)
 }
 
-// renderConfirm renders the confirmation screen (sysc-greet style)
+// renderConfirm renders the confirmation screen (Eldritch themed)
 func (m Model) renderConfirm() string {
 	var content strings.Builder
 
-	// Warning marker and header
+	// Warning marker and header - using Eldritch Primary color
 	warnMarker := lipgloss.NewStyle().
-		Foreground(Warning).
+		Foreground(Primary).
 		Bold(true).
 		Render("[WARN]")
 
 	header := lipgloss.NewStyle().
-		Foreground(Warning).
+		Foreground(Primary).
 		Bold(true).
 		Render("FINAL CONFIRMATION REQUIRED")
 
@@ -1299,11 +1314,24 @@ func (m Model) renderClean() string {
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Progress indicator (animated)
+	// Progress indicator (indeterminate animation for cleaning)
 	if m.cleanActive {
-		animFrame := int(time.Since(m.cleanStarted).Milliseconds()/100) % 50
-		progressBar := strings.Repeat("░", animFrame) + "█" + strings.Repeat("░", 49-animFrame)
-		content.WriteString(progressBarStyle.Render(fmt.Sprintf("[%s] Cleaning...", progressBar)))
+		// Use animated progress bar moving back and forth
+		elapsed := time.Since(m.cleanStarted).Seconds()
+		// Oscillate between 0.1 and 0.9
+		animProgress := 0.5 + 0.4*math.Sin(elapsed*2.0)
+		progressView := m.progressBar.ViewAs(animProgress)
+
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(FgPrimary).
+			Align(lipgloss.Center).
+			Render(progressView))
+		content.WriteString("\n")
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Danger).
+			Bold(true).
+			Align(lipgloss.Center).
+			Render("Cleaning..."))
 	}
 
 	return content.String()
