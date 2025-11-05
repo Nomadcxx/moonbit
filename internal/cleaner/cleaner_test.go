@@ -18,7 +18,7 @@ func TestNewCleaner(t *testing.T) {
 	assert.NotNil(t, c)
 	assert.Equal(t, cfg, c.cfg)
 	assert.NotNil(t, c.safetyConfig)
-	assert.True(t, c.backupEnabled)
+	assert.False(t, c.backupEnabled) // Disabled for performance
 	assert.True(t, c.safetyConfig.SafeMode)
 }
 
@@ -44,7 +44,7 @@ func TestIsProtectedPath(t *testing.T) {
 		{"System bin", "/bin/ls", true},
 		{"User bin", "/usr/bin/cat", true},
 		{"Etc config", "/etc/passwd", true},
-		{"Var lib", "/var/lib/mysql", true},
+		{"Var lib", "/var/lib/mysql", false}, // /var/lib removed to allow Docker cleanup
 		{"Temp file", "/tmp/test.txt", false},
 		{"Home cache", "/home/user/.cache/test", false},
 		{"Var tmp", "/var/tmp/test", false},

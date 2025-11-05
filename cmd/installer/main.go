@@ -223,18 +223,28 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header
+	// ASCII Header - build entire block first, then center as one unit
 	headerLines := []string{
 		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
 		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
 		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
-		"",
 	}
 
+	// Build ASCII block with styling
+	var headerBlock strings.Builder
 	for _, line := range headerLines {
-		content.WriteString(headerStyle.Render(line))
-		content.WriteString("\n")
+		if strings.TrimSpace(line) != "" {
+			headerBlock.WriteString(headerStyle.Render(line))
+			headerBlock.WriteString("\n")
+		}
 	}
+
+	// Center the entire ASCII block as one unit
+	centeredHeader := lipgloss.NewStyle().
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(headerBlock.String())
+	content.WriteString(centeredHeader)
 	content.WriteString("\n")
 
 	// Main content based on step

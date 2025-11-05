@@ -3,6 +3,7 @@ package ui
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -11,9 +12,27 @@ import (
 var debugLog *log.Logger
 
 func init() {
-	// Initialize debug logger
-	logFile, err := os.OpenFile("/tmp/moonbit-debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
+	// Initialize debug logger with user-specific location
+	var logFile *os.File
+	var err error
+
+	// Try XDG_CACHE_HOME first, then fallback to ~/.cache
+	cacheHome := os.Getenv("XDG_CACHE_HOME")
+	if cacheHome == "" {
+		homeDir, homeErr := os.UserHomeDir()
+		if homeErr == nil {
+			cacheHome = filepath.Join(homeDir, ".cache")
+		}
+	}
+
+	if cacheHome != "" {
+		logDir := filepath.Join(cacheHome, "moonbit")
+		os.MkdirAll(logDir, 0700) // User-only permissions
+		logPath := filepath.Join(logDir, "debug.log")
+		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // User-only read/write
+	}
+
+	if err != nil || logFile == nil {
 		debugLog = log.New(os.Stderr, "[MOONBIT] ", log.Ldate|log.Ltime|log.Lshortfile)
 	} else {
 		debugLog = log.New(logFile, "[MOONBIT] ", log.Ldate|log.Ltime|log.Lshortfile)
