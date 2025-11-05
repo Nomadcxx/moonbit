@@ -275,7 +275,14 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 
 	// Check against protected paths
 	for _, protected := range c.safetyConfig.ProtectedPaths {
-		if filepath.HasPrefix(absPath, protected) {
+		// Ensure protected path ends with separator for proper boundary checking
+		protectedWithSep := protected
+		if !strings.HasSuffix(protected, string(filepath.Separator)) {
+			protectedWithSep = protected + string(filepath.Separator)
+		}
+
+		// Check if path starts with protected directory
+		if absPath == protected || strings.HasPrefix(absPath, protectedWithSep) {
 			return true
 		}
 	}
@@ -438,9 +445,15 @@ func RestoreBackup(backupPath string) error {
 			continue
 		}
 
-		io.Copy(dst, src)
+		_, copyErr := io.Copy(dst, src)
 		src.Close()
 		dst.Close()
+
+		if copyErr != nil {
+			// Remove partial file on copy failure
+			os.Remove(file.Path)
+			continue
+		}
 	}
 
 	return nil
