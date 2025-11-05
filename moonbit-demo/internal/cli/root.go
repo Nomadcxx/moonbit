@@ -36,12 +36,6 @@ var rootCmd = &cobra.Command{
 		"  • Support for all major package managers\n" +
 		"  • Docker cleanup and duplicate file detection",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Check for root access and re-exec with sudo if needed
-		if !isRunningAsRoot() {
-			reexecWithSudo()
-			return
-		}
-
 		// Start Bubble Tea UI with MoonBit model
 		ui.Start()
 	},
@@ -52,11 +46,6 @@ var scanCmd = &cobra.Command{
 	Short: "Scan system for cleanable files",
 	Long:  "Scan the system for cleanable files and cache locations",
 	Run: func(cmd *cobra.Command, args []string) {
-		if !isRunningAsRoot() {
-			reexecWithSudo()
-			return
-		}
-
 		if err := ScanAndSave(); err != nil {
 			fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
 			os.Exit(1)
@@ -86,11 +75,6 @@ var cleanCmd = &cobra.Command{
 	Short: "Clean files from last scan",
 	Long:  "Clean files discovered in the last scan\n\nBy default, files are DELETED. Use --dry-run to preview first.",
 	Run: func(cmd *cobra.Command, args []string) {
-		if !isRunningAsRoot() && !dryRun {
-			reexecWithSudo()
-			return
-		}
-
 		if err := CleanSession(dryRun); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
