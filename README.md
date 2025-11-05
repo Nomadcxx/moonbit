@@ -9,6 +9,14 @@
 
 ---
 
+## Demos
+
+### CLI Quick Scan (1920x1080)
+![CLI Demo](demos/cli-scan.gif)
+
+### TUI Full Workflow (1920x1080)
+![TUI Demo](demos/tui-full.gif)
+
 ## Features
 - **Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
 - **Package Managers**: Pacman, APT, DNF, Zypper, AUR helpers (yay, paru)
