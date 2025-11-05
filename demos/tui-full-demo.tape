@@ -4,73 +4,74 @@ Set FontSize 18
 Set Width 1920
 Set Height 1080
 Set Theme "Catppuccin Mocha"
+Set PlaybackSpeed 1.5
 
 Type "# MoonBit TUI - Interactive System Cleaner"
 Enter
-Sleep 1s
+Sleep 800ms
 
-Type "../moonbit-demo/moonbit-demo"
+Type "/home/nomadx/Documents/moonbit/moonbit-demo/moonbit-demo"
 Enter
-Sleep 2s
+Sleep 1.5s
 
 # Show welcome screen with ASCII
-Sleep 3s
+Sleep 2s
 
 # Navigate menu
 Down
-Sleep 1s
+Sleep 600ms
 Down
-Sleep 1s
+Sleep 600ms
 
 # Go back to Quick Scan
 Up
-Sleep 1s
+Sleep 600ms
 
 # Select Quick Scan
 Enter
-Sleep 2s
+Sleep 1s
 
 # Wait for scan to complete
-Sleep 15s
+Sleep 8s
 
 # Now in category selection - navigate categories
 Down
-Sleep 800ms
+Sleep 500ms
 Down
-Sleep 800ms
+Sleep 500ms
 Down
-Sleep 800ms
+Sleep 500ms
 
 # Go back up
 Up@2
-Sleep 1s
+Sleep 600ms
 
 # Toggle selection with Space
 Space
-Sleep 500ms
+Sleep 400ms
 
 # Navigate to another category
 Down@4
-Sleep 1s
+Sleep 700ms
 
 # Toggle another
 Space
-Sleep 500ms
+Sleep 400ms
 
 # Show the selections
-Sleep 2s
+Sleep 1.5s
 
 # Navigate to buttons (use arrow keys)
 Right
-Sleep 500ms
+Sleep 400ms
 
 # Select Clean
 Enter
-Sleep 2s
+Sleep 1s
 
 # Show cleaning in progress
-Sleep 10s
+Sleep 5s
 
 # Exit
 Type "q"
-Sleep 1s
+Sleep 800ms

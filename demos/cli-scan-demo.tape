@@ -4,24 +4,25 @@ Set FontSize 18
 Set Width 1920
 Set Height 1080
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 100ms
+Set TypingSpeed 50ms
+Set PlaybackSpeed 1.5
 
 Type "# MoonBit CLI - Quick Scan"
 Enter
-Sleep 1s
+Sleep 800ms
 
-Type "../moonbit-demo/moonbit-demo scan --mode quick"
+Type "/home/nomadx/Documents/moonbit/moonbit-demo/moonbit-demo scan --mode quick"
 Enter
-Sleep 3s
+Sleep 1.5s
 
 # Wait for scan to complete
-Sleep 12s
+Sleep 6s
 
 # User says yes to clean
 Type "y"
 Enter
 
 # Wait for cleaning
-Sleep 8s
+Sleep 4s
 
-Sleep 2s
+Sleep 1s
