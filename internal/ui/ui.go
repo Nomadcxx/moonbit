@@ -380,12 +380,32 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 // runScanCmd executes the scan using the scanner package directly
 func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 	return func() tea.Msg {
+		// Count total categories to scan for progress calculation
+		totalCategories := 0
+		for _, category := range cfg.Categories {
+			if scanMode == "quick" && !category.Selected {
+				continue
+			}
+			exists := false
+			for _, path := range category.Paths {
+				if _, err := os.Stat(path); err == nil {
+					exists = true
+					break
+				}
+			}
+			if exists {
+				totalCategories++
+			}
+		}
+
 		ctx := context.Background()
 		s := scanner.NewScanner(cfg)
 
 		var scannedCategories []config.Category
 		var totalSize uint64
 		var totalFiles int
+		var totalFilesScanned int
+		categoriesScanned := 0
 
 		// Scan categories based on mode
 		for _, category := range cfg.Categories {
@@ -393,8 +413,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 			if scanMode == "quick" && !category.Selected {
 				continue
 			}
-			// In deep mode, scan all categories
-			
+
 			// Check if category paths exist
 			exists := false
 			for _, path := range category.Paths {
@@ -413,10 +432,17 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 
 			// Collect results for this category
 			for msg := range progressCh {
+				// Forward progress updates (but we can't send them from here)
+				// We'll track total files scanned for final progress
+				if msg.Progress != nil {
+					totalFilesScanned += msg.Progress.FilesScanned
+				}
+
 				if msg.Complete != nil {
 					scannedCategories = append(scannedCategories, *msg.Complete.Stats)
 					totalSize += msg.Complete.Stats.Size
 					totalFiles += msg.Complete.Stats.FileCount
+					categoriesScanned++
 					break
 				}
 				if msg.Error != nil {
@@ -979,40 +1005,59 @@ func (m Model) renderScanProgress() string {
 	content.WriteString(phaseStyle.Render(phaseText))
 	content.WriteString("\n\n")
 
-	// Styled progress bar with percentage
-	progressPercent := fmt.Sprintf("%.1f%%", m.scanProgress*100)
-
-	// Simple gradient progress bar without bubbles/progress model
+	// Animated indeterminate progress bar while scanning
 	barWidth := 50
-	filledWidth := int(m.scanProgress * float64(barWidth))
-	if filledWidth > barWidth {
-		filledWidth = barWidth
-	}
 
-	// Create gradient from Primary to Secondary
-	bar := ""
-	for i := 0; i < barWidth; i++ {
-		if i < filledWidth {
-			bar += "█"
-		} else {
-			bar += "░"
+	if m.scanActive {
+		// Indeterminate progress - show moving wave
+		elapsed := time.Since(m.scanStarted).Seconds()
+		// Calculate position of the "wave" - moves left to right
+		wavePos := int(elapsed*10) % barWidth
+
+		bar := ""
+		for i := 0; i < barWidth; i++ {
+			// Create a 5-character wide "wave" of filled blocks
+			dist := i - wavePos
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist < 3 {
+				bar += "█"
+			} else {
+				bar += "░"
+			}
 		}
+
+		styledBar := lipgloss.NewStyle().
+			Foreground(Primary).
+			Render(bar)
+
+		content.WriteString(lipgloss.NewStyle().
+			Align(lipgloss.Center).
+			Render(styledBar))
+		content.WriteString("\n")
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Secondary).
+			Bold(true).
+			Align(lipgloss.Center).
+			Render("Scanning..."))
+	} else {
+		// Static completed bar
+		bar := strings.Repeat("█", barWidth)
+		styledBar := lipgloss.NewStyle().
+			Foreground(Primary).
+			Render(bar)
+
+		content.WriteString(lipgloss.NewStyle().
+			Align(lipgloss.Center).
+			Render(styledBar))
+		content.WriteString("\n")
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Secondary).
+			Bold(true).
+			Align(lipgloss.Center).
+			Render("Complete"))
 	}
-
-	// Style the bar with Primary color
-	styledBar := lipgloss.NewStyle().
-		Foreground(Primary).
-		Render(bar)
-
-	content.WriteString(lipgloss.NewStyle().
-		Align(lipgloss.Center).
-		Render(styledBar))
-	content.WriteString("\n")
-	content.WriteString(lipgloss.NewStyle().
-		Foreground(Secondary).
-		Bold(true).
-		Align(lipgloss.Center).
-		Render(progressPercent))
 	content.WriteString("\n\n")
 
 	// Show current file being scanned
