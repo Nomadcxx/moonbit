@@ -817,27 +817,27 @@ func (m Model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - center each line individually to avoid lipgloss width calculation issues
+	// ASCII Header - sysc-greet pattern: style entire block first, then center
+	// Per-line Render() causes JoinVertical/centering to miscalculate widths
 	headerStyle := lipgloss.NewStyle().
 		Foreground(Primary).
 		Bold(true)
 
-	for _, line := range strings.Split(asciiHeader, "\n") {
-		trimmedLine := strings.TrimSpace(line)
-		if trimmedLine != "" {
-			// Remove trailing spaces that can cause rendering issues
-			cleanLine := strings.TrimRight(trimmedLine, " ")
-			styledLine := headerStyle.Render(cleanLine)
-			centeredLine := lipgloss.NewStyle().
-				Width(m.width).
-				Align(lipgloss.Center).
-				Render(styledLine)
-			content.WriteString(centeredLine)
-			content.WriteString("\n")
-		}
-	}
+	// Clean up ASCII - trim whitespace and remove empty lines
+	cleanASCII := strings.TrimSpace(asciiHeader)
 
-	// Subtitle - center it the same way
+	// Apply styling to entire ASCII block at once
+	styledASCII := headerStyle.Render(cleanASCII)
+
+	// Center the styled block
+	centeredASCII := lipgloss.NewStyle().
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(styledASCII)
+	content.WriteString(centeredASCII)
+	content.WriteString("\n")
+
+	// Subtitle - style first, then center
 	subtitleText := "System Cleaner for Linux"
 	styledSubtitle := lipgloss.NewStyle().
 		Foreground(FgMuted).
