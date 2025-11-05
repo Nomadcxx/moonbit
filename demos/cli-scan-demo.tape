@@ -7,10 +7,6 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms
 Set PlaybackSpeed 1.5
 
-Type "# MoonBit CLI - Quick Scan"
-Enter
-Sleep 800ms
-
 Type "/home/nomadx/Documents/moonbit/moonbit-demo/moonbit-demo scan --mode quick"
 Enter
 Sleep 1.5s

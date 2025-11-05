@@ -6,10 +6,6 @@ Set Height 1080
 Set Theme "Catppuccin Mocha"
 Set PlaybackSpeed 1.5
 
-Type "# MoonBit TUI - Interactive System Cleaner"
-Enter
-Sleep 800ms
-
 Type "/home/nomadx/Documents/moonbit/moonbit-demo/moonbit-demo"
 Enter
 Sleep 1.5s
