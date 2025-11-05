@@ -830,18 +830,20 @@ func (m Model) View() string {
 		}
 	}
 
-	// Center the entire ASCII block as one unit
+	// Center the entire ASCII block as one unit with background
 	centeredHeader := lipgloss.NewStyle().
 		Width(m.width).
+		Background(BgBase).
 		Align(lipgloss.Center).
 		Render(headerBlock.String())
 	content.WriteString(centeredHeader)
 
-	// Subtitle
+	// Subtitle with background
 	subtitle := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
 		Width(m.width).
+		Background(BgBase).
 		Align(lipgloss.Center).
 		Render("System Cleaner for Linux")
 	content.WriteString(subtitle)

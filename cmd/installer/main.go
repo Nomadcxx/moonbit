@@ -239,9 +239,10 @@ func (m model) View() string {
 		}
 	}
 
-	// Center the entire ASCII block as one unit
+	// Center the entire ASCII block as one unit with background
 	centeredHeader := lipgloss.NewStyle().
 		Width(m.width).
+		Background(BgBase).
 		Align(lipgloss.Center).
 		Render(headerBlock.String())
 	content.WriteString(centeredHeader)
