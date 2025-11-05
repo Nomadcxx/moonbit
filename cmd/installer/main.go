@@ -223,28 +223,25 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - build entire block first, then center as one unit
+	// ASCII Header - center each line individually to avoid lipgloss width calculation issues
 	headerLines := []string{
-		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
-		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
-		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
+		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀",
+		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀",
+		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀",
 	}
 
-	// Build ASCII block with styling
-	var headerBlock strings.Builder
+	// Render and center each line separately
 	for _, line := range headerLines {
 		if strings.TrimSpace(line) != "" {
-			headerBlock.WriteString(headerStyle.Render(line))
-			headerBlock.WriteString("\n")
+			styledLine := headerStyle.Render(line)
+			centeredLine := lipgloss.NewStyle().
+				Width(m.width).
+				Align(lipgloss.Center).
+				Render(styledLine)
+			content.WriteString(centeredLine)
+			content.WriteString("\n")
 		}
 	}
-
-	// Center the entire ASCII block as one unit
-	centeredHeader := lipgloss.NewStyle().
-		Width(m.width).
-		Align(lipgloss.Center).
-		Render(headerBlock.String())
-	content.WriteString(centeredHeader)
 	content.WriteString("\n")
 
 	// Main content based on step

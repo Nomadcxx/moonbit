@@ -817,34 +817,37 @@ func (m Model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - build the entire header block first, then center it
-	var headerBlock strings.Builder
+	// ASCII Header - center each line individually to avoid lipgloss width calculation issues
 	headerStyle := lipgloss.NewStyle().
 		Foreground(Primary).
 		Bold(true)
 
 	for _, line := range strings.Split(asciiHeader, "\n") {
-		if strings.TrimSpace(line) != "" {
-			headerBlock.WriteString(headerStyle.Render(line))
-			headerBlock.WriteString("\n")
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine != "" {
+			// Remove trailing spaces that can cause rendering issues
+			cleanLine := strings.TrimRight(trimmedLine, " ")
+			styledLine := headerStyle.Render(cleanLine)
+			centeredLine := lipgloss.NewStyle().
+				Width(m.width).
+				Align(lipgloss.Center).
+				Render(styledLine)
+			content.WriteString(centeredLine)
+			content.WriteString("\n")
 		}
 	}
 
-	// Center the entire ASCII block as one unit
-	centeredHeader := lipgloss.NewStyle().
-		Width(m.width).
-		Align(lipgloss.Center).
-		Render(headerBlock.String())
-	content.WriteString(centeredHeader)
-
-	// Subtitle
-	subtitle := lipgloss.NewStyle().
+	// Subtitle - center it the same way
+	subtitleText := "System Cleaner for Linux"
+	styledSubtitle := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
+		Render(subtitleText)
+	centeredSubtitle := lipgloss.NewStyle().
 		Width(m.width).
 		Align(lipgloss.Center).
-		Render("System Cleaner for Linux")
-	content.WriteString(subtitle)
+		Render(styledSubtitle)
+	content.WriteString(centeredSubtitle)
 	content.WriteString("\n\n")
 
 	// Main content area with borders
