@@ -12,12 +12,9 @@
 ## Features
 - **Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
 - **Package Managers**: Pacman, APT, DNF, Zypper, AUR helpers (yay, paru)
-- **Development Tools**: Python (pip), Node (npm), Rust (cargo), Go, Java (gradle/maven)
 - **System Caches**: Font, Mesa shader, WebKit, thumbnails, browser caches
 - **Docker Cleanup**: Images, containers, volumes, build cache
 - **Media Servers**: Plex and Jellyfin transcoding cleanup
-- **Scan Modes**: Quick scan (safe/fast) or Deep scan (comprehensive)
-- **Safe by Default**: Dry-run mode prevents accidental deletions
 - **Automated Scheduling**: Systemd timers for regular maintenance
 
 ## Installation
