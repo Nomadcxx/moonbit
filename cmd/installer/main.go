@@ -254,12 +254,11 @@ func (m model) View() string {
 		mainContent = m.renderComplete()
 	}
 
-	// Wrap in border with elevated background
+	// Wrap in border (no background for TUI consistency)
 	mainStyle := lipgloss.NewStyle().
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Primary).
-		Background(BgElevated).
 		Foreground(FgPrimary).
 		Width(m.width - 4)
 	content.WriteString(mainStyle.Render(mainContent))
@@ -275,15 +274,14 @@ func (m model) View() string {
 		content.WriteString("\n" + helpStyle.Render(helpText))
 	}
 
-	// Wrap everything in background with centering
-	bgStyle := lipgloss.NewStyle().
-		Background(BgBase).
+	// Wrap everything with centering (no background)
+	wrapStyle := lipgloss.NewStyle().
 		Foreground(FgPrimary).
 		Width(m.width).
 		Height(m.height).
 		Align(lipgloss.Center, lipgloss.Top)
 
-	return bgStyle.Render(content.String())
+	return wrapStyle.Render(content.String())
 }
 
 func (m model) renderWelcome() string {
