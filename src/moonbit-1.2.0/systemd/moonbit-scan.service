@@ -1,0 +1,21 @@
+[Unit]
+Description=MoonBit System Scan
+Documentation=https://github.com/Nomadcxx/moonbit
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/moonbit scan
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moonbit-scan
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/cache/moonbit /root/.cache/moonbit
+
+[Install]
+WantedBy=multi-user.target
