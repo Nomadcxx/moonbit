@@ -817,34 +817,37 @@ func (m Model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - build the entire header block first, then center it
-	var headerBlock strings.Builder
+	// ASCII Header - sysc-greet pattern: style entire block first, then center
+	// Per-line Render() causes JoinVertical/centering to miscalculate widths
 	headerStyle := lipgloss.NewStyle().
 		Foreground(Primary).
 		Bold(true)
 
-	for _, line := range strings.Split(asciiHeader, "\n") {
-		if strings.TrimSpace(line) != "" {
-			headerBlock.WriteString(headerStyle.Render(line))
-			headerBlock.WriteString("\n")
-		}
-	}
+	// Clean up ASCII - trim whitespace and remove empty lines
+	cleanASCII := strings.TrimSpace(asciiHeader)
 
-	// Center the entire ASCII block as one unit
-	centeredHeader := lipgloss.NewStyle().
+	// Apply styling to entire ASCII block at once
+	styledASCII := headerStyle.Render(cleanASCII)
+
+	// Center the styled block
+	centeredASCII := lipgloss.NewStyle().
 		Width(m.width).
 		Align(lipgloss.Center).
-		Render(headerBlock.String())
-	content.WriteString(centeredHeader)
+		Render(styledASCII)
+	content.WriteString(centeredASCII)
+	content.WriteString("\n")
 
-	// Subtitle
-	subtitle := lipgloss.NewStyle().
+	// Subtitle - style first, then center
+	subtitleText := "System Cleaner for Linux"
+	styledSubtitle := lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Italic(true).
+		Render(subtitleText)
+	centeredSubtitle := lipgloss.NewStyle().
 		Width(m.width).
 		Align(lipgloss.Center).
-		Render("System Cleaner for Linux")
-	content.WriteString(subtitle)
+		Render(styledSubtitle)
+	content.WriteString(centeredSubtitle)
 	content.WriteString("\n\n")
 
 	// Main content area with borders

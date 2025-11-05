@@ -223,29 +223,23 @@ func (m model) View() string {
 
 	var content strings.Builder
 
-	// ASCII Header - build entire block first, then center as one unit
-	headerLines := []string{
-		"█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀ ",
-		"█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀   ",
-		"▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀    ",
-	}
+	// ASCII Header - sysc-greet pattern: style entire block, then use JoinVertical
+	// Per-line Render() causes JoinVertical to miscalculate widths
+	asciiArt := `█▀▄▀█ ▄▀▀▀▄ ▄▀▀▀▄ █▄  █ █▀▀▀▄ ▀▀█▀▀ ▀▀█▀▀    ▄▀    ▄▀
+█   █ █   █ █   █ █ ▀▄█ █▀▀▀▄   █     █    ▄▀    ▄▀
+▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀`
 
-	// Build ASCII block with styling
-	var headerBlock strings.Builder
-	for _, line := range headerLines {
-		if strings.TrimSpace(line) != "" {
-			headerBlock.WriteString(headerStyle.Render(line))
-			headerBlock.WriteString("\n")
-		}
-	}
+	// Apply styling to entire ASCII block at once
+	styledASCII := headerStyle.Render(asciiArt)
 
-	// Center the entire ASCII block as one unit
-	centeredHeader := lipgloss.NewStyle().
+	// Use JoinVertical to center - it handles each line correctly when block is pre-styled
+	centeredASCII := lipgloss.NewStyle().
 		Width(m.width).
 		Align(lipgloss.Center).
-		Render(headerBlock.String())
-	content.WriteString(centeredHeader)
-	content.WriteString("\n")
+		Render(styledASCII)
+
+	content.WriteString(centeredASCII)
+	content.WriteString("\n\n")
 
 	// Main content based on step
 	var mainContent string
