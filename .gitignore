@@ -126,4 +126,10 @@ opencode.json
 test_runner.go
 clean_session.go
 TUI_ROADMAP.md
-.beads/moonbit-demo/
+.beads/
+moonbit-demo/
+src/
+moonbit-debug
+*.pkg.tar.zst
+*.tar.gz
+create_logo.py
