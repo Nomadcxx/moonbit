@@ -5,10 +5,11 @@ Set Width 1920
 Set Height 1080
 Set Theme "Catppuccin Mocha"
 Set PlaybackSpeed 1.5
+Set TypingSpeed 0ms
 
 Type "/home/nomadx/Documents/moonbit/moonbit-demo/moonbit-demo"
 Enter
-Sleep 1.5s
+Sleep 0.5s
 
 # Show welcome screen with ASCII
 Sleep 2s
