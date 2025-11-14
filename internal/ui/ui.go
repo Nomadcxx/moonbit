@@ -302,7 +302,9 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 			return m.startScan()
 		case 2: // Review Results
 			return m.showResults()
-		case 3: // Exit
+		case 3: // Schedule Scan & Clean
+			return m.showSchedule()
+		case 4: // Exit
 			return m, tea.Quit
 		}
 	case ModeResults:
