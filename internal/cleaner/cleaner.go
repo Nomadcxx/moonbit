@@ -62,7 +62,7 @@ type Cleaner struct {
 func NewCleaner(cfg *config.Config) *Cleaner {
 	safetyCfg := &SafetyConfig{
 		RequireConfirmation: true,
-		MaxDeletionSize:     51200, // 50GB default (in MB)
+		MaxDeletionSize:     512000, // 500GB default (in MB) - increased for systemd journals and large caches
 		SafeMode:            true,
 		ShredPasses:         1,
 		ProtectedPaths: []string{
@@ -251,9 +251,10 @@ func (c *Cleaner) performSafetyChecks(category *config.Category, dryRun bool) er
 	}
 
 	// Check total size
-	if category.Size > c.safetyConfig.MaxDeletionSize*1024*1024 {
+	maxBytes := c.safetyConfig.MaxDeletionSize * 1024 * 1024
+	if category.Size > maxBytes {
 		return fmt.Errorf("category size %d bytes exceeds maximum allowed %d bytes",
-			category.Size, c.safetyConfig.MaxDeletionSize*1024*1024)
+			category.Size, maxBytes)
 	}
 
 	// Check for protected paths
