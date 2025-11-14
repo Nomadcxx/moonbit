@@ -351,19 +351,13 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 	case ModeSchedule:
 		switch m.menuIndex {
-		case 0: // Enable Scan Timer
+		case 0: // Enable Both Timers
 			m.currentPhase = "" // Clear previous messages
-			return m.executeTimerCommand("enable", "moonbit-scan.timer")
-		case 1: // Disable Scan Timer
+			return m.executeTimerCommands("enable")
+		case 1: // Disable Both Timers
 			m.currentPhase = ""
-			return m.executeTimerCommand("disable", "moonbit-scan.timer")
-		case 2: // Enable Clean Timer
-			m.currentPhase = ""
-			return m.executeTimerCommand("enable", "moonbit-clean.timer")
-		case 3: // Disable Clean Timer
-			m.currentPhase = ""
-			return m.executeTimerCommand("disable", "moonbit-clean.timer")
-		case 4: // Back
+			return m.executeTimerCommands("disable")
+		case 2: // Back
 			m.mode = ModeWelcome
 			m.menuIndex = 0
 			m.currentPhase = ""
@@ -1796,10 +1790,8 @@ Render("Select an option:"))
 content.WriteString("\n\n")
 
 options := []string{
-"Enable Scan Timer",
-"Disable Scan Timer",
-"Enable Clean Timer",
-"Disable Clean Timer",
+"Enable Scan & Clean Timers",
+"Disable Scan & Clean Timers",
 "← Back",
 }
 
@@ -1871,15 +1863,20 @@ func (m Model) executeTimerCommand(action, timerName string) (tea.Model, tea.Cmd
 return m, runTimerCommand(action, timerName)
 }
 
+// executeTimerCommands executes commands for both timers
+func (m Model) executeTimerCommands(action string) (tea.Model, tea.Cmd) {
+return m, runTimerCommands(action)
+}
+
 // runTimerCommand executes systemctl command asynchronously
 func runTimerCommand(action, timerName string) tea.Cmd {
 return func() tea.Msg {
 var cmd *exec.Cmd
 switch action {
 case "enable":
-cmd = exec.Command("sudo", "systemctl", "enable", "--now", timerName)
+cmd = exec.Command("systemctl", "enable", "--now", timerName)
 case "disable":
-cmd = exec.Command("sudo", "systemctl", "disable", "--now", timerName)
+cmd = exec.Command("systemctl", "disable", "--now", timerName)
 }
 
 if cmd != nil {
@@ -1892,6 +1889,37 @@ message: fmt.Sprintf("Failed to %s %s: %v", action, timerName, err),
 return timerCommandMsg{
 success: true,
 message: fmt.Sprintf("Successfully %sd %s", action, timerName),
+}
+}
+
+return timerCommandMsg{
+success: false,
+message: "Invalid command",
+}
+}
+}
+
+// runTimerCommands executes systemctl commands for both timers
+func runTimerCommands(action string) tea.Cmd {
+return func() tea.Msg {
+var cmd *exec.Cmd
+switch action {
+case "enable":
+cmd = exec.Command("systemctl", "enable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
+case "disable":
+cmd = exec.Command("systemctl", "disable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
+}
+
+if cmd != nil {
+if err := cmd.Run(); err != nil {
+return timerCommandMsg{
+success: false,
+message: fmt.Sprintf("Failed to %s timers: %v", action, err),
+}
+}
+return timerCommandMsg{
+success: true,
+message: fmt.Sprintf("Successfully %sd both timers", action),
 }
 }
 
