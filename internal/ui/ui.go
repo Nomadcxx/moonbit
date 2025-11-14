@@ -209,6 +209,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleScanComplete(msg)
 	case cleanCompleteMsg:
 		return m.handleCleanComplete(msg)
+	case timerCommandMsg:
+		m.currentPhase = msg.message
+		// Stay in schedule mode and refresh
+		return m, nil
 	}
 
 	// Update viewport if in relevant modes
@@ -346,16 +350,21 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 	case ModeSchedule:
 		switch m.menuIndex {
 		case 0: // Enable Scan Timer
+			m.currentPhase = "" // Clear previous messages
 			return m.executeTimerCommand("enable", "moonbit-scan.timer")
 		case 1: // Disable Scan Timer
+			m.currentPhase = ""
 			return m.executeTimerCommand("disable", "moonbit-scan.timer")
 		case 2: // Enable Clean Timer
+			m.currentPhase = ""
 			return m.executeTimerCommand("enable", "moonbit-clean.timer")
 		case 3: // Disable Clean Timer
+			m.currentPhase = ""
 			return m.executeTimerCommand("disable", "moonbit-clean.timer")
 		case 4: // Back
 			m.mode = ModeWelcome
 			m.menuIndex = 0
+			m.currentPhase = ""
 		}
 	}
 
@@ -1723,6 +1732,7 @@ var (
 func (m Model) showSchedule() (tea.Model, tea.Cmd) {
 m.mode = ModeSchedule
 m.menuIndex = 0
+m.currentPhase = "" // Clear any previous status messages
 return m, nil
 }
 
@@ -1807,6 +1817,18 @@ content.WriteString(line)
 content.WriteString("\n")
 }
 
+// Display status message if available
+if m.currentPhase != "" {
+content.WriteString("\n")
+msgColor := Accent
+if strings.Contains(m.currentPhase, "Failed") {
+msgColor = Danger
+}
+content.WriteString(lipgloss.NewStyle().
+Foreground(msgColor).
+Render(m.currentPhase))
+}
+
 return content.String()
 }
 
@@ -1837,7 +1859,19 @@ return "✗"
 }
 
 // executeTimerCommand executes a systemctl command for a timer
+// timerCommandMsg contains the result of a timer command
+type timerCommandMsg struct {
+success bool
+message string
+}
+
 func (m Model) executeTimerCommand(action, timerName string) (tea.Model, tea.Cmd) {
+return m, runTimerCommand(action, timerName)
+}
+
+// runTimerCommand executes systemctl command asynchronously
+func runTimerCommand(action, timerName string) tea.Cmd {
+return func() tea.Msg {
 var cmd *exec.Cmd
 switch action {
 case "enable":
@@ -1848,11 +1882,20 @@ cmd = exec.Command("sudo", "systemctl", "disable", "--now", timerName)
 
 if cmd != nil {
 if err := cmd.Run(); err != nil {
-m.currentPhase = fmt.Sprintf("Failed to %s %s: %v", action, timerName, err)
-} else {
-m.currentPhase = fmt.Sprintf("Successfully %sd %s", action, timerName)
+return timerCommandMsg{
+success: false,
+message: fmt.Sprintf("Failed to %s %s: %v", action, timerName, err),
+}
+}
+return timerCommandMsg{
+success: true,
+message: fmt.Sprintf("Successfully %sd %s", action, timerName),
 }
 }
 
-return m, nil
+return timerCommandMsg{
+success: false,
+message: "Invalid command",
+}
+}
 }
