@@ -124,7 +124,6 @@ func NewModel() Model {
 			"Quick Scan (Safe caches only)",
 			"Deep Scan (All categories)",
 			"Review Results",
-			"Clean System",
 			"Exit",
 		},
 		scanMode: "quick", // Default to quick mode
@@ -296,9 +295,7 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 			return m.startScan()
 		case 2: // Review Results
 			return m.showResults()
-		case 3: // Clean System
-			return m.startClean()
-		case 4: // Exit
+		case 3: // Exit
 			return m, tea.Quit
 		}
 	case ModeResults:
