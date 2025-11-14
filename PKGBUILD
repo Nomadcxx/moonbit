@@ -1,6 +1,6 @@
 # Maintainer: Nomadcxx <noovie@gmail.com>
 pkgname=moonbit
-pkgver=1.2.1
+pkgver=1.2.2
 pkgrel=1
 pkgdesc="A modern system cleaner built in Go with a TUI and CLI"
 arch=('x86_64' 'aarch64')
