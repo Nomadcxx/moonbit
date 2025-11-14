@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -57,6 +58,7 @@ const (
 	ModeConfirm      ViewMode = "confirm"
 	ModeClean        ViewMode = "clean"
 	ModeComplete     ViewMode = "complete"
+	ModeSchedule     ViewMode = "schedule"
 )
 
 // CategoryInfo represents a cleanable category for UI
@@ -124,6 +126,7 @@ func NewModel() Model {
 			"Quick Scan (Safe caches only)",
 			"Deep Scan (All categories)",
 			"Review Results",
+			"Schedule Scan & Clean",
 			"Exit",
 		},
 		scanMode: "quick", // Default to quick mode
@@ -339,6 +342,20 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 			// Toggle individual category
 			m.categories[m.menuIndex].Enabled = !m.categories[m.menuIndex].Enabled
 			m.updateSelectedCount()
+		}
+	case ModeSchedule:
+		switch m.menuIndex {
+		case 0: // Enable Scan Timer
+			return m.executeTimerCommand("enable", "moonbit-scan.timer")
+		case 1: // Disable Scan Timer
+			return m.executeTimerCommand("disable", "moonbit-scan.timer")
+		case 2: // Enable Clean Timer
+			return m.executeTimerCommand("enable", "moonbit-clean.timer")
+		case 3: // Disable Clean Timer
+			return m.executeTimerCommand("disable", "moonbit-clean.timer")
+		case 4: // Back
+			m.mode = ModeWelcome
+			m.menuIndex = 0
 		}
 	}
 
@@ -900,6 +917,9 @@ func (m Model) View() string {
 	case ModeComplete:
 		mainContent = m.renderComplete()
 		borderColor = Accent
+	case ModeSchedule:
+		mainContent = m.renderSchedule()
+		borderColor = Secondary
 	}
 
 	// Bordered panel (not centered yet)
@@ -1480,6 +1500,8 @@ func (m Model) getFooterText() string {
 		return "↑/↓ Navigate  |  Space Toggle  |  Enter Select  |  Esc Back"
 	case ModeComplete:
 		return "Press any key to continue"
+	case ModeSchedule:
+		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	default:
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	}
@@ -1696,3 +1718,141 @@ var (
 			Foreground(FgMuted).
 			Align(lipgloss.Center)
 )
+
+// showSchedule enters schedule mode
+func (m Model) showSchedule() (tea.Model, tea.Cmd) {
+m.mode = ModeSchedule
+m.menuIndex = 0
+return m, nil
+}
+
+// renderSchedule renders the schedule management screen
+func (m Model) renderSchedule() string {
+var content strings.Builder
+
+content.WriteString(lipgloss.NewStyle().
+Foreground(FgSecondary).
+Bold(true).
+Render("Schedule Automated Cleaning"))
+content.WriteString("\n\n")
+
+// Check current timer status
+scanEnabled, scanStatus := checkTimerStatus("moonbit-scan.timer")
+cleanEnabled, cleanStatus := checkTimerStatus("moonbit-clean.timer")
+
+// Display current status
+content.WriteString(lipgloss.NewStyle().
+Foreground(FgSecondary).
+Render("Current Status:"))
+content.WriteString("\n\n")
+
+// Scan timer status
+scanStatusColor := FgMuted
+if scanEnabled {
+scanStatusColor = Accent
+}
+content.WriteString(fmt.Sprintf("  %s  Scan Timer: %s\n",
+getStatusIcon(scanEnabled),
+lipgloss.NewStyle().Foreground(scanStatusColor).Render(scanStatus)))
+
+// Clean timer status  
+cleanStatusColor := FgMuted
+if cleanEnabled {
+cleanStatusColor = Accent
+}
+content.WriteString(fmt.Sprintf("  %s  Clean Timer: %s\n",
+getStatusIcon(cleanEnabled),
+lipgloss.NewStyle().Foreground(cleanStatusColor).Render(cleanStatus)))
+
+content.WriteString("\n")
+
+// Timer info
+content.WriteString(lipgloss.NewStyle().
+Foreground(FgMuted).
+Render("• Scan Timer: Runs daily at 2 AM"))
+content.WriteString("\n")
+content.WriteString(lipgloss.NewStyle().
+Foreground(FgMuted).
+Render("• Clean Timer: Runs weekly on Sunday at 3 AM"))
+content.WriteString("\n\n")
+
+// Menu options
+content.WriteString(lipgloss.NewStyle().
+Foreground(FgSecondary).
+Bold(true).
+Render("Select an option:"))
+content.WriteString("\n\n")
+
+options := []string{
+"Enable Scan Timer",
+"Disable Scan Timer",
+"Enable Clean Timer",
+"Disable Clean Timer",
+"← Back",
+}
+
+for i, option := range options {
+var line string
+if i == m.menuIndex {
+line = lipgloss.NewStyle().
+Foreground(Primary).
+Bold(true).
+Render(fmt.Sprintf("> %s", option))
+} else {
+line = lipgloss.NewStyle().
+Foreground(FgPrimary).
+Render(fmt.Sprintf("  %s", option))
+}
+content.WriteString(line)
+content.WriteString("\n")
+}
+
+return content.String()
+}
+
+// checkTimerStatus checks if a systemd timer is enabled and active
+func checkTimerStatus(timerName string) (bool, string) {
+cmd := exec.Command("systemctl", "is-enabled", timerName)
+output, err := cmd.CombinedOutput()
+enabled := err == nil && strings.TrimSpace(string(output)) == "enabled"
+
+cmd = exec.Command("systemctl", "is-active", timerName)
+output, err = cmd.CombinedOutput()
+active := err == nil && strings.TrimSpace(string(output)) == "active"
+
+if enabled && active {
+return true, "Enabled & Active"
+} else if enabled {
+return true, "Enabled (Inactive)"
+}
+return false, "Disabled"
+}
+
+// getStatusIcon returns an icon for timer status
+func getStatusIcon(enabled bool) string {
+if enabled {
+return "✓"
+}
+return "✗"
+}
+
+// executeTimerCommand executes a systemctl command for a timer
+func (m Model) executeTimerCommand(action, timerName string) (tea.Model, tea.Cmd) {
+var cmd *exec.Cmd
+switch action {
+case "enable":
+cmd = exec.Command("sudo", "systemctl", "enable", "--now", timerName)
+case "disable":
+cmd = exec.Command("sudo", "systemctl", "disable", "--now", timerName)
+}
+
+if cmd != nil {
+if err := cmd.Run(); err != nil {
+m.currentPhase = fmt.Sprintf("Failed to %s %s: %v", action, timerName, err)
+} else {
+m.currentPhase = fmt.Sprintf("Successfully %sd %s", action, timerName)
+}
+}
+
+return m, nil
+}
