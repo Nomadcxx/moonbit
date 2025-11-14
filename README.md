@@ -89,22 +89,36 @@ moonbit backup restore <name>   # Restore a backup
 
 ## Automated Cleaning
 
-MoonBit includes systemd timers for automated maintenance. The installer configures these, but you can also set them up manually after installing via AUR.
-
-### Setup Timers (Post-AUR Installation)
-
-```bash
-# Enable and start scan timer (runs daily at 2 AM)
-sudo systemctl enable --now moonbit-scan.timer
-
-# Enable and start clean timer (runs weekly on Sunday at 3 AM)
-sudo systemctl enable --now moonbit-clean.timer
-```
-
-### Timer Options
+MoonBit includes systemd timers for automated maintenance:
 
 - **moonbit-scan.timer**: Scans daily at 2 AM
 - **moonbit-clean.timer**: Cleans weekly on Sunday at 3 AM
+
+### Setup Timers
+
+**Option 1: Using the TUI (Recommended)**
+
+```bash
+moonbit  # Launch TUI and select "Schedule Scan & Clean"
+```
+
+The TUI allows you to enable/disable timers and view their current status with a simple interface.
+
+**Option 2: Using the Installer**
+
+```bash
+sudo ./moonbit-installer  # Select timer schedule during installation
+```
+
+**Option 3: Manual Setup**
+
+```bash
+# Enable and start scan timer
+sudo systemctl enable --now moonbit-scan.timer
+
+# Enable and start clean timer
+sudo systemctl enable --now moonbit-clean.timer
+```
 
 ### Check Timer Status
 
@@ -117,9 +131,7 @@ journalctl -u moonbit-scan.service
 journalctl -u moonbit-clean.service
 ```
 
-### Customize Timers
-
-Edit timer files to change schedule:
+### Customize Timer Schedule
 
 ```bash
 sudo systemctl edit moonbit-scan.timer
