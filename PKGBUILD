@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="A modern system cleaner built in Go with a TUI and CLI"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Nomadcxx/moonbit"
-license=('MIT')
+license=('GPL-3.0-only')
 depends=('systemd')
 optdepends=(
     'docker: Docker cleanup support'

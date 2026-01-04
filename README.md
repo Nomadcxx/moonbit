@@ -4,7 +4,7 @@
   **A modern system cleaner built in Go with a TUI and CLI**
   
   ![Eldritch Theme](https://img.shields.io/badge/theme-eldritch-37f499?style=flat-square)
-  ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+  ![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)
 </div>
 
 ---
@@ -148,4 +148,4 @@ make installer # Build installer
 
 ## License
 
-MIT
+GPL-3.0
