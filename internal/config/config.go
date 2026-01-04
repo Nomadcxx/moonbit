@@ -96,12 +96,12 @@ func getRealUserHome() string {
 			return userHome
 		}
 	}
-	
+
 	// Fallback to HOME or os.UserHomeDir
 	if home := os.Getenv("HOME"); home != "" {
 		return home
 	}
-	
+
 	home, _ := os.UserHomeDir()
 	return home
 }
@@ -130,15 +130,23 @@ func DefaultConfig() *Config {
 				ShredEnabled: false,
 			},
 			{
-				Name:         "Yay Cache",
-				Paths:        []string{userHome + "/.cache/yay"},
+				Name: "Yay Cache",
+				Paths: []string{
+					userHome + "/.cache/yay",
+					userHome + "/.cache/yay/*",
+					userHome + "/.config/yay/cache",
+				},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
 			},
 			{
-				Name:         "Paru Cache",
-				Paths:        []string{userHome + "/.cache/paru"},
+				Name: "Paru Cache",
+				Paths: []string{
+					userHome + "/.cache/paru",
+					userHome + "/.cache/paru/clone",
+					userHome + "/.config/paru/cache",
+				},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -174,14 +182,21 @@ func DefaultConfig() *Config {
 				MinAgeDays:   30, // Only delete thumbnails older than 30 days
 			},
 			{
-				Name:         "Browser Cache (Safe)",
+				Name: "Browser Cache (Safe)",
 				Paths: []string{
 					userHome + "/.cache/mozilla",
 					userHome + "/.cache/firefox",
+					userHome + "/.mozilla/firefox/*/cache2",
 					userHome + "/.cache/zen",
+					userHome + "/.zen/*/cache2",
 					userHome + "/.cache/BraveSoftware",
+					userHome + "/.cache/BraveSoftware/Brave-Browser/Default/Cache",
+					userHome + "/.config/BraveSoftware/Brave-Browser/Default/Cache",
 					userHome + "/.cache/google-chrome",
+					userHome + "/.cache/google-chrome/Default/Cache",
+					userHome + "/.config/google-chrome/Default/Cache",
 					userHome + "/.cache/chromium",
+					userHome + "/.config/chromium/Default/Cache",
 				},
 				Risk:         Low,
 				Selected:     true,
@@ -295,8 +310,12 @@ func DefaultConfig() *Config {
 			},
 			// Development Tools Caches
 			{
-				Name:         "pip Cache",
-				Paths:        []string{userHome + "/.cache/pip"},
+				Name: "pip Cache",
+				Paths: []string{
+					userHome + "/.cache/pip",
+					userHome + "/.local/share/pip",
+					userHome + "/.pip/cache",
+				},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -309,8 +328,12 @@ func DefaultConfig() *Config {
 				ShredEnabled: false,
 			},
 			{
-				Name:         "Cargo Cache",
-				Paths:        []string{userHome + "/.cargo/registry/cache"},
+				Name: "Cargo Cache",
+				Paths: []string{
+					userHome + "/.cargo/registry/cache",
+					userHome + "/.cargo/registry/index",
+					userHome + "/.cargo/git/db",
+				},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -323,8 +346,11 @@ func DefaultConfig() *Config {
 				ShredEnabled: false,
 			},
 			{
-				Name:         "Maven Cache",
-				Paths:        []string{userHome + "/.m2/repository"},
+				Name: "Maven Cache",
+				Paths: []string{
+					userHome + "/.m2/repository",
+					userHome + "/.m2/wrapper",
+				},
 				Risk:         Medium,
 				Selected:     false,
 				ShredEnabled: false,
@@ -354,8 +380,12 @@ func DefaultConfig() *Config {
 			},
 			// System caches
 			{
-				Name:         "Flatpak Cache",
-				Paths:        []string{userHome + "/.var/app"},
+				Name: "Flatpak Cache",
+				Paths: []string{
+					userHome + "/.var/app/*/cache",
+					userHome + "/.var/app/*/.cache",
+					userHome + "/.var/app/*/data/cache",
+				},
 				Risk:         Medium,
 				Selected:     false,
 				ShredEnabled: false,

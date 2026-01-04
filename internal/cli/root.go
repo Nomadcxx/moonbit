@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,11 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/duplicates"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
+	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/ui"
+	"github.com/Nomadcxx/moonbit/internal/utils"
+	"github.com/Nomadcxx/moonbit/internal/validation"
 	"github.com/spf13/cobra"
 )
 
@@ -26,8 +29,8 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "moonbit",
 	Short: "MoonBit - System Cleaner for Linux",
-	Long: S.ASCIIHeader() + "\n" + 
-		S.Muted("A modern system cleaner for Linux\n") + 
+	Long: S.ASCIIHeader() + "\n" +
+		S.Muted("A modern system cleaner for Linux\n") +
 		S.Muted("Clean caches, logs, and temporary files with ease\n\n") +
 		S.Bold("Features:\n") +
 		"  • Interactive TUI and powerful CLI\n" +
@@ -57,18 +60,24 @@ var scanCmd = &cobra.Command{
 			return
 		}
 
+		if scanMode != "" {
+			if err := validation.ValidateMode(scanMode); err != nil {
+				fmt.Fprintf(os.Stderr, "Invalid scan mode: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		if err := ScanAndSave(); err != nil {
 			fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
 			os.Exit(1)
 		}
 
-		// Ask if user wants to clean now
 		fmt.Println()
 		fmt.Print(S.Bold("Would you like to clean these files now? [y/N]: "))
-		
+
 		var response string
 		fmt.Scanln(&response)
-		
+
 		if strings.ToLower(response) == "y" || strings.ToLower(response) == "yes" {
 			fmt.Println()
 			if err := CleanSession(false); err != nil {
@@ -151,7 +160,7 @@ func ScanAndSaveWithMode(mode string) error {
 	} else if mode == "deep" {
 		modeLabel = "Deep"
 	}
-	
+
 	fmt.Println(S.ASCIIHeader())
 	fmt.Println(S.Header(fmt.Sprintf("%s Scan", modeLabel)))
 	fmt.Println(S.Separator())
@@ -184,7 +193,7 @@ func ScanAndSaveWithMode(mode string) error {
 			continue // Quick mode: only Selected:true categories (safe, fast)
 		}
 		// Deep mode scans everything (no filter needed)
-		
+
 		// Check if this category path exists (for categories from config)
 		exists := false
 		for _, path := range category.Paths {
@@ -205,7 +214,7 @@ func ScanAndSaveWithMode(mode string) error {
 				if msg.Complete != nil {
 					fmt.Printf("  Found %d files (%s)\n",
 						msg.Complete.Stats.FileCount,
-						humanizeBytes(msg.Complete.Stats.Size))
+						utils.HumanizeBytes(msg.Complete.Stats.Size))
 
 					// Add to totals
 					totalSize += msg.Complete.Stats.Size
@@ -235,7 +244,11 @@ func ScanAndSaveWithMode(mode string) error {
 	}
 
 	// Save to cache file
-	if err := saveSessionCache(cache); err != nil {
+	sessionMgr, err := session.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create session manager: %w", err)
+	}
+	if err := sessionMgr.Save(cache); err != nil {
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 
@@ -243,7 +256,7 @@ func ScanAndSaveWithMode(mode string) error {
 	fmt.Println(S.Header("Scan Results"))
 	fmt.Println(S.Separator())
 	fmt.Printf("  %s %d\n", S.Bold("Files found:"), totalFiles)
-	fmt.Printf("  %s %s\n", S.Bold("Space available:"), S.Success(humanizeBytes(totalSize)))
+	fmt.Printf("  %s %s\n", S.Bold("Space available:"), S.Success(utils.HumanizeBytes(totalSize)))
 
 	return nil
 }
@@ -256,13 +269,17 @@ func CleanSession(dryRun bool) error {
 	} else if scanMode == "deep" {
 		modeLabel = "Deep"
 	}
-	
+
 	fmt.Println(S.ASCIIHeader())
 	fmt.Println(S.Header(fmt.Sprintf("%s Clean", modeLabel)))
 	fmt.Println(S.Separator())
 
 	// Load session cache
-	cache, err := loadSessionCache()
+	sessionMgr, err := session.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create session manager: %w", err)
+	}
+	cache, err := sessionMgr.Load()
 	if err != nil {
 		return fmt.Errorf("no scan results found - run scan first: %w", err)
 	}
@@ -277,7 +294,7 @@ func CleanSession(dryRun bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	
+
 	// Filter cache by mode if specified
 	if scanMode != "" {
 		cache = filterCacheByMode(cache, cfg, scanMode)
@@ -292,7 +309,7 @@ func CleanSession(dryRun bool) error {
 
 	if dryRun {
 		fmt.Printf("DRY RUN - Would delete %d files (%s)\n",
-			cache.TotalFiles, humanizeBytes(cache.TotalSize))
+			cache.TotalFiles, utils.HumanizeBytes(cache.TotalSize))
 
 		// Show preview of what would be cleaned
 		if cache.ScanResults != nil && len(cache.ScanResults.Files) > 0 {
@@ -302,10 +319,10 @@ func CleanSession(dryRun bool) error {
 					fmt.Printf("   ... and %d more files\n", len(cache.ScanResults.Files)-10)
 					break
 				}
-				fmt.Printf("   %s (%s)\n", file.Path, humanizeBytes(file.Size))
+				fmt.Printf("   %s (%s)\n", file.Path, utils.HumanizeBytes(file.Size))
 			}
 		}
-		
+
 		fmt.Println("\n💡 Use --force flag to actually delete files:")
 		fmt.Println("   moonbit clean --force")
 		return nil
@@ -313,7 +330,7 @@ func CleanSession(dryRun bool) error {
 
 	// Actual cleaning using cleaner package
 	fmt.Printf("🗑️  Deleting %d files (%s)...\n",
-		cache.TotalFiles, humanizeBytes(cache.TotalSize))
+		cache.TotalFiles, utils.HumanizeBytes(cache.TotalSize))
 
 	progressCh := make(chan cleaner.CleanMsg, 10)
 	go c.CleanCategory(ctx, cache.ScanResults, dryRun, progressCh)
@@ -330,7 +347,7 @@ func CleanSession(dryRun bool) error {
 				fmt.Printf("   Progress: %d/%d files (%s)\n",
 					msg.Progress.FilesProcessed,
 					msg.Progress.TotalFiles,
-					humanizeBytes(msg.Progress.BytesFreed))
+					utils.HumanizeBytes(msg.Progress.BytesFreed))
 			}
 		}
 
@@ -354,7 +371,7 @@ func CleanSession(dryRun bool) error {
 	fmt.Println(S.Header("Cleaning Complete"))
 	fmt.Println(S.Separator())
 	fmt.Printf("  %s %d\n", S.Bold("Files deleted:"), deletedFiles)
-	fmt.Printf("  %s %s\n", S.Bold("Space freed:"), S.Success(humanizeBytes(deletedBytes)))
+	fmt.Printf("  %s %s\n", S.Bold("Space freed:"), S.Success(utils.HumanizeBytes(deletedBytes)))
 
 	if len(errors) > 0 {
 		fmt.Printf("  %s %d files could not be deleted\n", S.Warning("Errors:"), len(errors))
@@ -367,9 +384,7 @@ func CleanSession(dryRun bool) error {
 
 	fmt.Printf("   ⚡ Scan data cleared\n")
 
-	// Clear session cache
-	if err := os.Remove(getSessionCachePath()); err != nil && !os.IsNotExist(err) {
-		// Log warning but don't fail - cleaning succeeded even if cache clear failed
+	if err := clearSessionCache(); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("   ⚠️  Warning: Could not clear cache file: %v\n", err)
 	}
 
@@ -393,38 +408,12 @@ func detectAvailableCategories() []config.Category {
 	return categories
 }
 
-// Session cache functions
-func getSessionCachePath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
-}
-
-func saveSessionCache(cache *config.SessionCache) error {
-	cacheDir := filepath.Dir(getSessionCachePath())
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(cache, "", "  ")
+func clearSessionCache() error {
+	sessionMgr, err := session.NewManager()
 	if err != nil {
 		return err
 	}
-
-	return os.WriteFile(getSessionCachePath(), data, 0600)
-}
-
-func loadSessionCache() (*config.SessionCache, error) {
-	data, err := os.ReadFile(getSessionCachePath())
-	if err != nil {
-		return nil, err
-	}
-
-	var cache config.SessionCache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, err
-	}
-
-	return &cache, nil
+	return sessionMgr.Clear()
 }
 
 // filterCacheByMode filters cached files based on clean mode
@@ -432,7 +421,7 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 	if mode == "" {
 		return cache // No filtering
 	}
-	
+
 	// Build map of category paths to risk levels
 	riskByPath := make(map[string]config.RiskLevel)
 	for _, cat := range cfg.Categories {
@@ -440,11 +429,11 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 			riskByPath[path] = cat.Risk
 		}
 	}
-	
+
 	// Filter files
 	var filteredFiles []config.FileInfo
 	var filteredSize uint64
-	
+
 	for _, file := range cache.ScanResults.Files {
 		// Find which category this file belongs to
 		risk := config.Low // Default to Low
@@ -454,17 +443,17 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 				break
 			}
 		}
-		
+
 		// Apply mode filter
 		if mode == "quick" && risk != config.Low {
 			continue // Quick mode: only Low risk
 		}
 		// Deep mode includes everything
-		
+
 		filteredFiles = append(filteredFiles, file)
 		filteredSize += file.Size
 	}
-	
+
 	return &config.SessionCache{
 		ScanResults: &config.Category{
 			Name:      cache.ScanResults.Name,
@@ -475,26 +464,6 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 		TotalSize:  filteredSize,
 		TotalFiles: len(filteredFiles),
 		ScannedAt:  cache.ScannedAt,
-	}
-}
-
-// humanizeBytes converts bytes to human-readable format
-func humanizeBytes(bytes uint64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", bytes)
 	}
 }
 
@@ -563,16 +532,22 @@ var dockerImagesCmd = &cobra.Command{
 	Use:   "images",
 	Short: "Remove unused Docker images",
 	Run: func(cmd *cobra.Command, args []string) {
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
+
 		fmt.Println("🐳 Cleaning unused Docker images...")
 
-		// Check if docker is available
 		checkCmd := exec.Command("docker", "version")
 		if err := checkCmd.Run(); err != nil {
 			fmt.Println("❌ Docker is not installed or not running")
+			if auditLog != nil {
+				auditLog.LogDockerOperation("prune_images", []string{}, "failed", err)
+			}
 			return
 		}
 
-		// Show current usage
 		dfCmd := exec.Command("docker", "system", "df")
 		dfCmd.Stdout = os.Stdout
 		dfCmd.Stderr = os.Stderr
@@ -584,7 +559,16 @@ var dockerImagesCmd = &cobra.Command{
 		pruneCmd.Stdout = os.Stdout
 		pruneCmd.Stderr = os.Stderr
 
-		if err := pruneCmd.Run(); err != nil {
+		err := pruneCmd.Run()
+		if auditLog != nil {
+			result := "success"
+			if err != nil {
+				result = "failed"
+			}
+			auditLog.LogDockerOperation("prune_images", []string{"-a", "-f"}, result, err)
+		}
+
+		if err != nil {
 			fmt.Printf("❌ Failed to prune images: %v\n", err)
 			return
 		}
@@ -597,16 +581,22 @@ var dockerAllCmd = &cobra.Command{
 	Use:   "all",
 	Short: "Remove all unused Docker resources",
 	Run: func(cmd *cobra.Command, args []string) {
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
+
 		fmt.Println("🐳 Cleaning all unused Docker resources...")
 
-		// Check if docker is available
 		checkCmd := exec.Command("docker", "version")
 		if err := checkCmd.Run(); err != nil {
 			fmt.Println("❌ Docker is not installed or not running")
+			if auditLog != nil {
+				auditLog.LogDockerOperation("prune_all", []string{}, "failed", err)
+			}
 			return
 		}
 
-		// Show current usage
 		fmt.Println("\n📊 Current Docker disk usage:")
 		dfCmd := exec.Command("docker", "system", "df")
 		dfCmd.Stdout = os.Stdout
@@ -619,12 +609,20 @@ var dockerAllCmd = &cobra.Command{
 		pruneCmd.Stdout = os.Stdout
 		pruneCmd.Stderr = os.Stderr
 
-		if err := pruneCmd.Run(); err != nil {
+		err := pruneCmd.Run()
+		if auditLog != nil {
+			result := "success"
+			if err != nil {
+				result = "failed"
+			}
+			auditLog.LogDockerOperation("prune_all", []string{"-a", "--volumes", "-f"}, result, err)
+		}
+
+		if err != nil {
 			fmt.Printf("❌ Failed to prune Docker resources: %v\n", err)
 			return
 		}
 
-		// Show new usage
 		fmt.Println("\n📊 Updated Docker disk usage:")
 		dfCmd2 := exec.Command("docker", "system", "df")
 		dfCmd2.Stdout = os.Stdout
@@ -656,7 +654,7 @@ var duplicatesFindCmd = &cobra.Command{
 
 		fmt.Println("🔍 Scanning for duplicate files...")
 		fmt.Printf("📁 Paths: %v\n", paths)
-		fmt.Printf("📏 Minimum size: %s\n\n", humanizeBytes(uint64(minSize)))
+		fmt.Printf("📏 Minimum size: %s\n\n", utils.HumanizeBytes(uint64(minSize)))
 
 		opts := duplicates.ScanOptions{
 			Paths:   paths,
@@ -673,7 +671,7 @@ var duplicatesFindCmd = &cobra.Command{
 					fmt.Printf("\r%s - %d files scanned (%s)",
 						progress.Phase,
 						progress.FilesScanned,
-						humanizeBytes(uint64(progress.BytesScanned)))
+						utils.HumanizeBytes(uint64(progress.BytesScanned)))
 				}
 			}
 		}()
@@ -689,7 +687,7 @@ var duplicatesFindCmd = &cobra.Command{
 		fmt.Printf("Files scanned: %d\n", result.FilesScanned)
 		fmt.Printf("Duplicate groups: %d\n", len(result.Groups))
 		fmt.Printf("Duplicate files: %d\n", result.TotalDupes)
-		fmt.Printf("Wasted space: %s\n\n", humanizeBytes(uint64(result.WastedSpace)))
+		fmt.Printf("Wasted space: %s\n\n", utils.HumanizeBytes(uint64(result.WastedSpace)))
 
 		if len(result.Groups) == 0 {
 			fmt.Println("No duplicate files found.")
@@ -707,8 +705,8 @@ var duplicatesFindCmd = &cobra.Command{
 			fmt.Printf("\n%d. %d duplicates × %s = %s wasted\n",
 				i+1,
 				len(group.Files),
-				humanizeBytes(uint64(group.Size)),
-				humanizeBytes(uint64(group.TotalSize)))
+				utils.HumanizeBytes(uint64(group.Size)),
+				utils.HumanizeBytes(uint64(group.TotalSize)))
 
 			for j, file := range group.Files {
 				marker := "  "
@@ -783,11 +781,16 @@ var pkgKernelsCmd = &cobra.Command{
 func removeOrphanedPackages(dryRun bool) {
 	fmt.Println("🧹 Searching for orphaned packages...")
 
-	// Detect package manager
+	auditLog, err := audit.NewLogger()
+	if err != nil {
+		fmt.Printf("⚠️  Warning: Failed to initialize audit log: %v\n", err)
+	} else {
+		defer auditLog.Close()
+	}
+
 	var listCmd, removeCmd *exec.Cmd
 
 	if _, err := exec.LookPath("pacman"); err == nil {
-		// Arch Linux (Pacman)
 		fmt.Println("📦 Detected: Pacman (Arch/Manjaro)")
 		listCmd = exec.Command("pacman", "-Qtdq")
 		if !dryRun {
@@ -795,7 +798,6 @@ func removeOrphanedPackages(dryRun bool) {
 			removeCmd = exec.Command("sudo", "pacman", "-Rns", "$(pacman -Qtdq)")
 		}
 	} else if _, err := exec.LookPath("apt"); err == nil {
-		// Debian/Ubuntu (APT)
 		fmt.Println("📦 Detected: APT (Debian/Ubuntu)")
 		listCmd = exec.Command("apt-mark", "showauto")
 		if !dryRun {
@@ -803,7 +805,6 @@ func removeOrphanedPackages(dryRun bool) {
 			removeCmd = exec.Command("sudo", "apt", "autoremove", "-y")
 		}
 	} else if _, err := exec.LookPath("dnf"); err == nil {
-		// Fedora/RHEL (DNF)
 		fmt.Println("📦 Detected: DNF (Fedora/RHEL)")
 		listCmd = exec.Command("dnf", "repoquery", "--extras")
 		if !dryRun {
@@ -811,7 +812,6 @@ func removeOrphanedPackages(dryRun bool) {
 			removeCmd = exec.Command("sudo", "dnf", "autoremove", "-y")
 		}
 	} else if _, err := exec.LookPath("zypper"); err == nil {
-		// openSUSE (Zypper)
 		fmt.Println("📦 Detected: Zypper (openSUSE)")
 		if !dryRun {
 			fmt.Println("\n🗑️  Running: sudo zypper packages --orphaned")
@@ -820,10 +820,12 @@ func removeOrphanedPackages(dryRun bool) {
 	} else {
 		fmt.Println("❌ No supported package manager found")
 		fmt.Println("   Supported: pacman, apt, dnf, zypper")
+		if auditLog != nil {
+			auditLog.LogPackageOperation("remove_orphans", []string{}, "failed", fmt.Errorf("no supported package manager"))
+		}
 		return
 	}
 
-	// List orphans
 	if listCmd != nil {
 		fmt.Println("\n📋 Orphaned packages:")
 		listCmd.Stdout = os.Stdout
@@ -836,15 +838,27 @@ func removeOrphanedPackages(dryRun bool) {
 	if dryRun {
 		fmt.Println("\n💡 Dry-run mode: no packages removed")
 		fmt.Println("   Run with --force to actually remove orphaned packages")
+		if auditLog != nil {
+			auditLog.LogPackageOperation("remove_orphans", []string{}, "dry-run", nil)
+		}
 		return
 	}
 
-	// Remove orphans
 	if removeCmd != nil {
 		removeCmd.Stdout = os.Stdout
 		removeCmd.Stderr = os.Stderr
-		if err := removeCmd.Run(); err != nil {
-			fmt.Printf("❌ Failed to remove orphaned packages: %v\n", err)
+		cmdErr := removeCmd.Run()
+
+		if auditLog != nil {
+			result := "success"
+			if cmdErr != nil {
+				result = "failed"
+			}
+			auditLog.LogPackageOperation("remove_orphans", []string{}, result, cmdErr)
+		}
+
+		if cmdErr != nil {
+			fmt.Printf("❌ Failed to remove orphaned packages: %v\n", cmdErr)
 			return
 		}
 		fmt.Println("\nOrphaned packages removed successfully!")
@@ -965,7 +979,7 @@ func init() {
 
 	// Scan mode flags
 	scanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Scan mode: 'quick' (safe caches only) or 'deep' (all categories)")
-	
+
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Preview only, don't delete files")
 	cleanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Clean mode: 'quick' (safe caches only) or 'deep' (all categories)")
 }

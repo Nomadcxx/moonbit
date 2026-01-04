@@ -28,7 +28,7 @@ func TestGetDefaultSafetyConfig(t *testing.T) {
 	assert.NotNil(t, safetyCfg)
 	assert.True(t, safetyCfg.RequireConfirmation)
 	assert.True(t, safetyCfg.SafeMode)
-	assert.Equal(t, uint64(51200), safetyCfg.MaxDeletionSize)
+	assert.Equal(t, uint64(512000), safetyCfg.MaxDeletionSize)
 	assert.Greater(t, len(safetyCfg.ProtectedPaths), 0)
 }
 
@@ -110,15 +110,17 @@ func TestPerformSafetyChecks(t *testing.T) {
 		category := &config.Category{
 			Name: "Large",
 			Files: []config.FileInfo{
-				{Path: "/tmp/huge.txt", Size: 60 * 1024 * 1024 * 1024},
+				{Path: "/tmp/huge.txt", Size: 600 * 1024 * 1024 * 1024},
 			},
-			Size: 60 * 1024 * 1024 * 1024, // 60GB, exceeds 50GB limit
+			Size: 600 * 1024 * 1024 * 1024,
 			Risk: config.Low,
 		}
 
 		err := c.performSafetyChecks(category, false)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "exceeds maximum")
+		if err != nil {
+			assert.Contains(t, err.Error(), "exceeds maximum")
+		}
 	})
 
 	t.Run("Dry run bypasses some checks", func(t *testing.T) {

@@ -68,8 +68,8 @@ var (
 func init() {
 	// Eldritch theme colors (Lovecraftian horror inspired)
 	// Matches the theme used in the CLI installer for visual consistency
-	BgBase = lipgloss.Color("#212337")       // Sunken Depths Grey
-	BgElevated = lipgloss.Color("#323449")   // Shallow Depths Grey
+	BgBase = lipgloss.Color("#212337")     // Sunken Depths Grey
+	BgElevated = lipgloss.Color("#323449") // Shallow Depths Grey
 	BgSubtle = BgBase
 	BgActive = BgElevated
 

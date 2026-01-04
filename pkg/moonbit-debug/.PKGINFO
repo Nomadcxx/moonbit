@@ -3,12 +3,12 @@
 pkgname = moonbit-debug
 pkgbase = moonbit
 xdata = pkgtype=debug
-pkgver = 1.2.0-1
+pkgver = 1.2.2-1
 pkgdesc = Detached debugging symbols for moonbit
 url = https://github.com/Nomadcxx/moonbit
-builddate = 1762373248
+builddate = 1763116448
 packager = Unknown Packager
-size = 4061744
+size = 4077376
 arch = x86_64
 license = MIT
 makedepend = go>=1.21

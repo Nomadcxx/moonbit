@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/config"
 )
 
@@ -56,13 +58,14 @@ type Cleaner struct {
 	cfg           *config.Config
 	safetyConfig  *SafetyConfig
 	backupEnabled bool
+	auditLog      *audit.Logger
 }
 
 // NewCleaner creates a new cleaner instance
 func NewCleaner(cfg *config.Config) *Cleaner {
 	safetyCfg := &SafetyConfig{
 		RequireConfirmation: true,
-		MaxDeletionSize:     512000, // 500GB default (in MB) - increased for systemd journals and large caches
+		MaxDeletionSize:     512000,
 		SafeMode:            true,
 		ShredPasses:         1,
 		ProtectedPaths: []string{
@@ -74,15 +77,19 @@ func NewCleaner(cfg *config.Config) *Cleaner {
 			"/boot",
 			"/sys",
 			"/proc",
-			// Note: /var/lib removed to allow Docker cleanup
-			// Categories should be specific about what they clean
 		},
+	}
+
+	auditLog, err := audit.NewLogger()
+	if err != nil {
+		log.Printf("Warning: Failed to create audit logger: %v", err)
 	}
 
 	return &Cleaner{
 		cfg:           cfg,
 		safetyConfig:  safetyCfg,
-		backupEnabled: false, // Disabled for performance - use manual backups
+		backupEnabled: false,
+		auditLog:      auditLog,
 	}
 }
 
@@ -150,8 +157,16 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 		}
 	}
 
-	// Send completion message
 	duration := time.Since(start)
+
+	if c.auditLog != nil {
+		var cleanErr error
+		if len(errors) > 0 {
+			cleanErr = fmt.Errorf("%d errors occurred", len(errors))
+		}
+		c.auditLog.LogCleanOperation(filesDeleted, bytesFreed, cleanErr)
+	}
+
 	progressCh <- CleanMsg{
 		Complete: &CleanComplete{
 			Category:      category.Name,
@@ -329,7 +344,7 @@ func (c *Cleaner) createBackup(category *config.Category) string {
 	// Copy each file to backup, preserving relative structure
 	for _, file := range category.Files {
 		if err := c.backupFile(file.Path, backupFilesDir); err != nil {
-			// Log error but continue with other files
+			log.Printf("ERROR: Failed to backup file %s: %v", file.Path, err)
 			continue
 		}
 	}
@@ -368,10 +383,9 @@ func (c *Cleaner) createBackupMetadata(backupPath string, category *config.Categ
 
 // backupFile copies a single file to backup directory
 func (c *Cleaner) backupFile(srcPath, backupDir string) error {
-	// Check if source file exists
 	srcInfo, err := os.Stat(srcPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("stat source file %s: %w", srcPath, err)
 	}
 
 	// Skip if it's a directory (we only backup files)
@@ -423,26 +437,27 @@ func RestoreBackup(backupPath string) error {
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(file.Path)))
 		srcPath := filepath.Join(backupFilesDir, hash[:16])
 
-		// Check if backup file exists
 		if _, err := os.Stat(srcPath); err != nil {
-			continue // Skip missing backup files
-		}
-
-		// Ensure target directory exists
-		targetDir := filepath.Dir(file.Path)
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			log.Printf("ERROR: Backup file not found for %s: %v", file.Path, err)
 			continue
 		}
 
-		// Copy file back
+		targetDir := filepath.Dir(file.Path)
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			log.Printf("ERROR: Failed to create target directory %s: %v", targetDir, err)
+			continue
+		}
+
 		src, err := os.Open(srcPath)
 		if err != nil {
+			log.Printf("ERROR: Failed to open backup file %s: %v", srcPath, err)
 			continue
 		}
 
 		dst, err := os.Create(file.Path)
 		if err != nil {
 			src.Close()
+			log.Printf("ERROR: Failed to create target file %s: %v", file.Path, err)
 			continue
 		}
 
@@ -451,8 +466,8 @@ func RestoreBackup(backupPath string) error {
 		dst.Close()
 
 		if copyErr != nil {
-			// Remove partial file on copy failure
 			os.Remove(file.Path)
+			log.Printf("ERROR: Failed to copy file %s to %s: %v", srcPath, file.Path, copyErr)
 			continue
 		}
 	}
@@ -497,7 +512,7 @@ func ListBackups() ([]string, error) {
 func GetDefaultSafetyConfig() *SafetyConfig {
 	return &SafetyConfig{
 		RequireConfirmation: true,
-		MaxDeletionSize:     51200, // 50GB (in MB)
+		MaxDeletionSize:     512000, // 500GB (in MB) - increased for systemd journals and large caches
 		SafeMode:            true,
 		ShredPasses:         1,
 		ProtectedPaths: []string{

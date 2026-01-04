@@ -1,11 +1,12 @@
 package ui
 
 import (
-	"os"
 	"testing"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/session"
+	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -170,7 +171,7 @@ func TestHumanizeBytesUI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := humanizeBytes(tt.bytes)
+			result := utils.HumanizeBytes(tt.bytes)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -240,15 +241,17 @@ func TestSaveSessionCacheCreatesDirectory(t *testing.T) {
 	}
 
 	// Save should create directory if it doesn't exist
-	err := saveSessionCache(cache)
+	sessionMgr, err := session.NewManager()
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	err = sessionMgr.Save(cache)
 
 	// May fail if permissions don't allow, but shouldn't panic
 	if err == nil {
-		// Verify file was created
-		homeDir, _ := os.UserHomeDir()
-		cachePath := homeDir + "/.cache/moonbit/scan_results.json"
-		_, statErr := os.Stat(cachePath)
-		assert.NoError(t, statErr)
+		// Verify file was created using session manager
+		assert.True(t, sessionMgr.Exists())
 	}
 }
 

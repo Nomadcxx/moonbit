@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -12,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
+	"github.com/Nomadcxx/moonbit/internal/session"
+	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -178,7 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if contentHeight < 10 {
 				contentHeight = 10
 			}
-			
+
 			m.categoryViewport.Width = m.width - 4
 			m.categoryViewport.Height = contentHeight
 			m.resultsViewport.Width = m.width - 4
@@ -489,7 +491,15 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 			cache.ScanResults.Files = append(cache.ScanResults.Files, cat.Files...)
 		}
 
-		if err := saveSessionCache(cache); err != nil {
+		sessionMgr, err := session.NewManager()
+		if err != nil {
+			return scanCompleteMsg{
+				Success: false,
+				Error:   fmt.Sprintf("failed to create session manager: %v", err),
+			}
+		}
+
+		if err := sessionMgr.Save(cache); err != nil {
 			return scanCompleteMsg{
 				Success: false,
 				Error:   fmt.Sprintf("failed to save cache: %v", err),
@@ -558,7 +568,7 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 				m.categories = append(m.categories, CategoryInfo{
 					Name:    cat.Name,
 					Files:   cat.FileCount,
-					Size:    humanizeBytes(cat.Size),
+					Size:    utils.HumanizeBytes(cat.Size),
 					Enabled: true,
 				})
 			}
@@ -613,7 +623,7 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 			m.categories = append(m.categories, CategoryInfo{
 				Name:    "Cleanable Files",
 				Files:   cache.TotalFiles,
-				Size:    humanizeBytes(cache.TotalSize),
+				Size:    utils.HumanizeBytes(cache.TotalSize),
 				Enabled: true,
 			})
 		}
@@ -777,10 +787,10 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 		m.cleanBytesFreed = msg.BytesFreed
 		if msg.Error != "" {
 			m.currentPhase = fmt.Sprintf("Cleaned %d files (%s) with some errors: %s",
-				msg.FilesDeleted, humanizeBytes(msg.BytesFreed), msg.Error)
+				msg.FilesDeleted, utils.HumanizeBytes(msg.BytesFreed), msg.Error)
 		} else {
 			m.currentPhase = fmt.Sprintf("Successfully cleaned %d files, freed %s",
-				msg.FilesDeleted, humanizeBytes(msg.BytesFreed))
+				msg.FilesDeleted, utils.HumanizeBytes(msg.BytesFreed))
 		}
 	} else {
 		m.currentPhase = "Cleaning failed: " + msg.Error
@@ -792,38 +802,12 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 
 // loadSessionCache loads scan results from CLI cache
 func (m Model) loadSessionCache() (*config.SessionCache, error) {
-	homeDir, _ := os.UserHomeDir()
-	cachePath := filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
-
-	data, err := os.ReadFile(cachePath)
+	sessionMgr, err := session.NewManager()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create session manager: %w", err)
 	}
 
-	var cache config.SessionCache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, err
-	}
-
-	return &cache, nil
-}
-
-// saveSessionCache saves scan results to cache
-func saveSessionCache(cache *config.SessionCache) error {
-	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "moonbit")
-	cachePath := filepath.Join(cacheDir, "scan_results.json")
-
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(cache, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(cachePath, data, 0600)
+	return sessionMgr.Load()
 }
 
 // borderedPanel wraps content in a bordered panel (sysc-greet style)
@@ -844,7 +828,7 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
-	
+
 	// Ensure minimum dimensions for proper rendering
 	// ASCII art is 54 chars wide, need at least 60 for borders
 	minWidth := 60
@@ -856,7 +840,7 @@ func (m Model) View() string {
 			Width(m.width).
 			Height(m.height).
 			Align(lipgloss.Center, lipgloss.Center).
-			Render(fmt.Sprintf("Terminal too small!\nMinimum: %dx%d\nCurrent: %dx%d", 
+			Render(fmt.Sprintf("Terminal too small!\nMinimum: %dx%d\nCurrent: %dx%d",
 				minWidth, minHeight, m.width, m.height))
 		return msg
 	}
@@ -915,7 +899,7 @@ func (m Model) View() string {
 		borderColor = Secondary
 	case ModeConfirm:
 		mainContent = m.renderConfirm()
-		borderColor = Danger  // Red border for dangerous action confirmation
+		borderColor = Danger // Red border for dangerous action confirmation
 	case ModeClean:
 		mainContent = m.renderClean()
 		borderColor = Danger
@@ -944,7 +928,7 @@ func (m Model) View() string {
 		Width(m.width).
 		Height(m.height).
 		Align(lipgloss.Center, lipgloss.Top)
-	
+
 	return bgStyle.Render(content.String())
 }
 
@@ -961,7 +945,7 @@ func (m Model) renderWelcome() string {
 		lastScan := fmt.Sprintf("%s Last scan: %d files (%s)",
 			statusMarker,
 			m.scanResults.TotalFiles,
-			humanizeBytes(m.scanResults.TotalSize))
+			utils.HumanizeBytes(m.scanResults.TotalSize))
 
 		content.WriteString(lastScan)
 		content.WriteString("\n\n")
@@ -1018,7 +1002,7 @@ func (m Model) renderScanProgress() string {
 			phaseText = fmt.Sprintf("%s - %d files (%s) - %.1fs",
 				m.currentPhase,
 				m.filesScanned,
-				humanizeBytes(m.bytesScanned),
+				utils.HumanizeBytes(m.bytesScanned),
 				elapsed.Seconds())
 		} else {
 			phaseText = fmt.Sprintf("%s (%.1fs elapsed)", m.currentPhase, elapsed.Seconds())
@@ -1132,7 +1116,7 @@ func (m Model) renderResults() string {
 	if m.scanResults != nil && len(m.categories) > 0 {
 		// Summary stats
 		summary := fmt.Sprintf("Found %d cleanable files (%s)",
-			m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize))
+			m.scanResults.TotalFiles, utils.HumanizeBytes(m.scanResults.TotalSize))
 		viewportContent.WriteString(summaryStyle.Render(summary))
 		viewportContent.WriteString("\n\n")
 
@@ -1179,8 +1163,8 @@ func (m Model) renderSelect() string {
 	if m.scanResults != nil && m.scanResults.TotalFiles > 0 {
 		scanSummary = lipgloss.NewStyle().
 			Foreground(Accent).
-			Render(fmt.Sprintf("Scan found: %d categories with %d files (%s total)", 
-				len(m.categories), m.scanResults.TotalFiles, humanizeBytes(m.scanResults.TotalSize)))
+			Render(fmt.Sprintf("Scan found: %d categories with %d files (%s total)",
+				len(m.categories), m.scanResults.TotalFiles, utils.HumanizeBytes(m.scanResults.TotalSize)))
 		scanSummary += "\n\n"
 	}
 
@@ -1468,7 +1452,7 @@ func (m Model) renderComplete() string {
 	content.WriteString("\n")
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(FgPrimary).
-		Render(fmt.Sprintf("Space Freed:    %s", humanizeBytes(m.cleanBytesFreed))))
+		Render(fmt.Sprintf("Space Freed:    %s", utils.HumanizeBytes(m.cleanBytesFreed))))
 	content.WriteString("\n\n")
 
 	// Warning if there were errors
@@ -1509,26 +1493,6 @@ func (m Model) getFooterText() string {
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	default:
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
-	}
-}
-
-// humanizeBytes converts bytes to human-readable format
-func humanizeBytes(bytes uint64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", bytes)
 	}
 }
 
@@ -1726,206 +1690,242 @@ var (
 
 // showSchedule enters schedule mode
 func (m Model) showSchedule() (tea.Model, tea.Cmd) {
-m.mode = ModeSchedule
-m.menuIndex = 0
-m.currentPhase = "" // Clear any previous status messages
-return m, nil
+	m.mode = ModeSchedule
+	m.menuIndex = 0
+	m.currentPhase = "" // Clear any previous status messages
+	return m, nil
 }
 
 // renderSchedule renders the schedule management screen
 func (m Model) renderSchedule() string {
-var content strings.Builder
+	var content strings.Builder
 
-content.WriteString(lipgloss.NewStyle().
-Foreground(FgSecondary).
-Bold(true).
-Render("Schedule Automated Cleaning"))
-content.WriteString("\n\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Bold(true).
+		Render("Schedule Automated Cleaning"))
+	content.WriteString("\n\n")
 
-// Check current timer status
-scanEnabled, scanStatus := checkTimerStatus("moonbit-scan.timer")
-cleanEnabled, cleanStatus := checkTimerStatus("moonbit-clean.timer")
+	// Check current timer status
+	scanEnabled, scanStatus := checkTimerStatus("moonbit-scan.timer")
+	cleanEnabled, cleanStatus := checkTimerStatus("moonbit-clean.timer")
 
-// Display current status
-content.WriteString(lipgloss.NewStyle().
-Foreground(FgSecondary).
-Render("Current Status:"))
-content.WriteString("\n\n")
+	// Display current status
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Render("Current Status:"))
+	content.WriteString("\n\n")
 
-// Scan timer status
-scanStatusColor := FgMuted
-if scanEnabled {
-scanStatusColor = Accent
-}
-content.WriteString(fmt.Sprintf("  %s  Scan Timer: %s\n",
-getStatusIcon(scanEnabled),
-lipgloss.NewStyle().Foreground(scanStatusColor).Render(scanStatus)))
+	// Scan timer status
+	scanStatusColor := FgMuted
+	if scanEnabled {
+		scanStatusColor = Accent
+	}
+	content.WriteString(fmt.Sprintf("  %s  Scan Timer: %s\n",
+		getStatusIcon(scanEnabled),
+		lipgloss.NewStyle().Foreground(scanStatusColor).Render(scanStatus)))
 
-// Clean timer status  
-cleanStatusColor := FgMuted
-if cleanEnabled {
-cleanStatusColor = Accent
-}
-content.WriteString(fmt.Sprintf("  %s  Clean Timer: %s\n",
-getStatusIcon(cleanEnabled),
-lipgloss.NewStyle().Foreground(cleanStatusColor).Render(cleanStatus)))
+	// Clean timer status
+	cleanStatusColor := FgMuted
+	if cleanEnabled {
+		cleanStatusColor = Accent
+	}
+	content.WriteString(fmt.Sprintf("  %s  Clean Timer: %s\n",
+		getStatusIcon(cleanEnabled),
+		lipgloss.NewStyle().Foreground(cleanStatusColor).Render(cleanStatus)))
 
-content.WriteString("\n")
+	content.WriteString("\n")
 
-// Timer info
-content.WriteString(lipgloss.NewStyle().
-Foreground(FgMuted).
-Render("• Scan Timer: Runs daily at 2 AM"))
-content.WriteString("\n")
-content.WriteString(lipgloss.NewStyle().
-Foreground(FgMuted).
-Render("• Clean Timer: Runs weekly on Sunday at 3 AM"))
-content.WriteString("\n\n")
+	// Timer info
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Render("• Scan Timer: Runs daily at 2 AM"))
+	content.WriteString("\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Render("• Clean Timer: Runs weekly on Sunday at 3 AM"))
+	content.WriteString("\n\n")
 
-// Menu options
-content.WriteString(lipgloss.NewStyle().
-Foreground(FgSecondary).
-Bold(true).
-Render("Select an option:"))
-content.WriteString("\n\n")
+	// Menu options
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Bold(true).
+		Render("Select an option:"))
+	content.WriteString("\n\n")
 
-options := []string{
-"Enable Scan & Clean Timers",
-"Disable Scan & Clean Timers",
-"← Back",
-}
+	options := []string{
+		"Enable Scan & Clean Timers",
+		"Disable Scan & Clean Timers",
+		"← Back",
+	}
 
-for i, option := range options {
-var line string
-if i == m.menuIndex {
-line = lipgloss.NewStyle().
-Foreground(Primary).
-Bold(true).
-Render(fmt.Sprintf("> %s", option))
-} else {
-line = lipgloss.NewStyle().
-Foreground(FgPrimary).
-Render(fmt.Sprintf("  %s", option))
-}
-content.WriteString(line)
-content.WriteString("\n")
-}
+	for i, option := range options {
+		var line string
+		if i == m.menuIndex {
+			line = lipgloss.NewStyle().
+				Foreground(Primary).
+				Bold(true).
+				Render(fmt.Sprintf("> %s", option))
+		} else {
+			line = lipgloss.NewStyle().
+				Foreground(FgPrimary).
+				Render(fmt.Sprintf("  %s", option))
+		}
+		content.WriteString(line)
+		content.WriteString("\n")
+	}
 
-// Display status message if available
-if m.currentPhase != "" {
-content.WriteString("\n")
-msgColor := Accent
-if strings.Contains(m.currentPhase, "Failed") {
-msgColor = Danger
-}
-content.WriteString(lipgloss.NewStyle().
-Foreground(msgColor).
-Render(m.currentPhase))
-}
+	// Display status message if available
+	if m.currentPhase != "" {
+		content.WriteString("\n")
+		msgColor := Accent
+		if strings.Contains(m.currentPhase, "Failed") {
+			msgColor = Danger
+		}
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(msgColor).
+			Render(m.currentPhase))
+	}
 
-return content.String()
+	return content.String()
 }
 
 // checkTimerStatus checks if a systemd timer is enabled and active
 func checkTimerStatus(timerName string) (bool, string) {
-cmd := exec.Command("systemctl", "is-enabled", timerName)
-output, err := cmd.CombinedOutput()
-enabled := err == nil && strings.TrimSpace(string(output)) == "enabled"
+	cmd := exec.Command("systemctl", "is-enabled", timerName)
+	output, err := cmd.CombinedOutput()
+	enabled := err == nil && strings.TrimSpace(string(output)) == "enabled"
 
-cmd = exec.Command("systemctl", "is-active", timerName)
-output, err = cmd.CombinedOutput()
-active := err == nil && strings.TrimSpace(string(output)) == "active"
+	cmd = exec.Command("systemctl", "is-active", timerName)
+	output, err = cmd.CombinedOutput()
+	active := err == nil && strings.TrimSpace(string(output)) == "active"
 
-if enabled && active {
-return true, "Enabled & Active"
-} else if enabled {
-return true, "Enabled (Inactive)"
-}
-return false, "Disabled"
+	if enabled && active {
+		return true, "Enabled & Active"
+	} else if enabled {
+		return true, "Enabled (Inactive)"
+	}
+	return false, "Disabled"
 }
 
 // getStatusIcon returns an icon for timer status
 func getStatusIcon(enabled bool) string {
-if enabled {
-return "✓"
-}
-return "✗"
+	if enabled {
+		return "✓"
+	}
+	return "✗"
 }
 
 // executeTimerCommand executes a systemctl command for a timer
 // timerCommandMsg contains the result of a timer command
 type timerCommandMsg struct {
-success bool
-message string
+	success bool
+	message string
 }
 
 func (m Model) executeTimerCommand(action, timerName string) (tea.Model, tea.Cmd) {
-return m, runTimerCommand(action, timerName)
+	return m, runTimerCommand(action, timerName)
 }
 
 // executeTimerCommands executes commands for both timers
 func (m Model) executeTimerCommands(action string) (tea.Model, tea.Cmd) {
-return m, runTimerCommands(action)
+	return m, runTimerCommands(action)
 }
 
 // runTimerCommand executes systemctl command asynchronously
 func runTimerCommand(action, timerName string) tea.Cmd {
-return func() tea.Msg {
-var cmd *exec.Cmd
-switch action {
-case "enable":
-cmd = exec.Command("systemctl", "enable", "--now", timerName)
-case "disable":
-cmd = exec.Command("systemctl", "disable", "--now", timerName)
-}
+	return func() tea.Msg {
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
 
-if cmd != nil {
-if err := cmd.Run(); err != nil {
-return timerCommandMsg{
-success: false,
-message: fmt.Sprintf("Failed to %s %s: %v", action, timerName, err),
-}
-}
-return timerCommandMsg{
-success: true,
-message: fmt.Sprintf("Successfully %sd %s", action, timerName),
-}
-}
+		var cmd *exec.Cmd
+		switch action {
+		case "enable":
+			cmd = exec.Command("systemctl", "enable", "--now", timerName)
+		case "disable":
+			cmd = exec.Command("systemctl", "disable", "--now", timerName)
+		}
 
-return timerCommandMsg{
-success: false,
-message: "Invalid command",
-}
-}
+		if cmd != nil {
+			err := cmd.Run()
+			if auditLog != nil {
+				result := "success"
+				if err != nil {
+					result = "failed"
+				}
+				auditLog.LogSystemdOperation(action, timerName, result, err)
+			}
+
+			if err != nil {
+				return timerCommandMsg{
+					success: false,
+					message: fmt.Sprintf("Failed to %s %s: %v", action, timerName, err),
+				}
+			}
+			return timerCommandMsg{
+				success: true,
+				message: fmt.Sprintf("Successfully %sd %s", action, timerName),
+			}
+		}
+
+		return timerCommandMsg{
+			success: false,
+			message: "Invalid command",
+		}
+	}
 }
 
 // runTimerCommands executes systemctl commands for both timers
 func runTimerCommands(action string) tea.Cmd {
-return func() tea.Msg {
-var cmd *exec.Cmd
-switch action {
-case "enable":
-cmd = exec.Command("systemctl", "enable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
-case "disable":
-cmd = exec.Command("systemctl", "disable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
-}
+	return func() tea.Msg {
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
 
-if cmd != nil {
-if err := cmd.Run(); err != nil {
-return timerCommandMsg{
-success: false,
-message: fmt.Sprintf("Failed to %s timers: %v", action, err),
-}
-}
-return timerCommandMsg{
-success: true,
-message: fmt.Sprintf("Successfully %sd both timers", action),
-}
-}
+		if _, err := exec.LookPath("moonbit"); err != nil {
+			return timerCommandMsg{
+				success: false,
+				message: fmt.Sprintf("moonbit binary not found: %v", err),
+			}
+		}
 
-return timerCommandMsg{
-success: false,
-message: "Invalid command",
-}
-}
+		var cmd *exec.Cmd
+		timers := "moonbit-scan.timer, moonbit-clean.timer"
+		switch action {
+		case "enable":
+			cmd = exec.Command("systemctl", "enable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
+		case "disable":
+			cmd = exec.Command("systemctl", "disable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
+		}
+
+		if cmd != nil {
+			err := cmd.Run()
+			if auditLog != nil {
+				result := "success"
+				if err != nil {
+					result = "failed"
+				}
+				auditLog.LogSystemdOperation(action, timers, result, err)
+			}
+
+			if err != nil {
+				return timerCommandMsg{
+					success: false,
+					message: fmt.Sprintf("Failed to %s timers: %v", action, err),
+				}
+			}
+			return timerCommandMsg{
+				success: true,
+				message: fmt.Sprintf("Successfully %sd both timers", action),
+			}
+		}
+
+		return timerCommandMsg{
+			success: false,
+			message: "Invalid command",
+		}
+	}
 }

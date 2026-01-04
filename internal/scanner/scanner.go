@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -205,14 +206,14 @@ func (s *Scanner) scanPath(ctx context.Context, pathPattern string, stats *confi
 
 // WalkDirectory performs the actual directory walking
 func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *config.Category, progressCh chan<- ScanMsg) error {
-	// Check if path exists and is readable using our filesystem
 	if info, err := s.fs.Stat(rootPath); err != nil {
 		if os.IsNotExist(err) {
-			return nil // Skip non-existent paths silently
+			return nil
 		}
+		log.Printf("ERROR: Failed to stat path %s: %v", rootPath, err)
 		return err
 	} else if !info.IsDir() {
-		return nil // Skip non-directories
+		return nil
 	}
 
 	// Use our filesystem abstraction to walk directories
@@ -225,7 +226,8 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		}
 
 		if err != nil {
-			return nil // Skip files we can't access
+			log.Printf("WARN: Skipping inaccessible path %s: %v", path, err)
+			return nil
 		}
 
 		// Skip if matches ignore patterns (FIXED: was inverted)

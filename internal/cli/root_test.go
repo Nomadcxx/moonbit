@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Nomadcxx/moonbit/internal/session"
+	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -55,7 +57,7 @@ func TestHumanizeBytes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := humanizeBytes(tt.bytes)
+			result := utils.HumanizeBytes(tt.bytes)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -66,17 +68,19 @@ func TestSessionCachePath(t *testing.T) {
 	assert.NoError(t, err)
 
 	expected := filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
-	actual := getSessionCachePath()
+
+	sessionMgr, err := session.NewManager()
+	assert.NoError(t, err)
+	actual := sessionMgr.Path()
 
 	assert.Equal(t, expected, actual)
 }
 
 func TestSaveAndLoadSessionCache(t *testing.T) {
-	// This test verifies cache path format and directory creation
-	// We test with the actual cache location since it's user-specific
+	sessionMgr, err := session.NewManager()
+	assert.NoError(t, err)
 
-	// Get the cache path
-	cachePath := getSessionCachePath()
+	cachePath := sessionMgr.Path()
 	assert.NotEmpty(t, cachePath)
 
 	// Verify it's in the .cache directory
