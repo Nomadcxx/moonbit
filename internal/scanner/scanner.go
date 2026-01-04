@@ -208,11 +208,13 @@ func (s *Scanner) scanPath(ctx context.Context, pathPattern string, stats *confi
 func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *config.Category, progressCh chan<- ScanMsg) error {
 	if info, err := s.fs.Stat(rootPath); err != nil {
 		if os.IsNotExist(err) {
+			log.Printf("INFO: Path does not exist, skipping: %s", rootPath)
 			return nil
 		}
 		log.Printf("ERROR: Failed to stat path %s: %v", rootPath, err)
 		return err
 	} else if !info.IsDir() {
+		log.Printf("INFO: Path is not a directory, skipping: %s", rootPath)
 		return nil
 	}
 
@@ -226,7 +228,11 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		}
 
 		if err != nil {
-			log.Printf("WARN: Skipping inaccessible path %s: %v", path, err)
+			if os.IsPermission(err) {
+				log.Printf("WARN: Permission denied, skipping path %s", path)
+			} else {
+				log.Printf("WARN: Skipping inaccessible path %s: %v", path, err)
+			}
 			return nil
 		}
 

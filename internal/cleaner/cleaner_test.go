@@ -103,7 +103,7 @@ func TestPerformSafetyChecks(t *testing.T) {
 
 		err := c.performSafetyChecks(category, false)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "protected path")
+		assert.Contains(t, err.Error(), "protected")
 	})
 
 	t.Run("Size too large", func(t *testing.T) {
@@ -277,7 +277,7 @@ func TestDeleteFile(t *testing.T) {
 	t.Run("Protected path rejection", func(t *testing.T) {
 		err := c.deleteFile("/bin/ls", false)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "protected path")
+		assert.Contains(t, err.Error(), "protected")
 	})
 
 	t.Run("Nonexistent file", func(t *testing.T) {

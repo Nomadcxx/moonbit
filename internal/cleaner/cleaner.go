@@ -15,6 +15,7 @@ import (
 
 	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/config"
+	moonbiterrors "github.com/Nomadcxx/moonbit/internal/errors"
 )
 
 // Safety configuration for cleaning operations
@@ -118,23 +119,21 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 		}
 	}
 
-	// Clean files
 	filesDeleted := 0
+	filesFailed := 0
 	bytesFreed := uint64(0)
-	var errors []string
+	var errorMessages []string
 
 	for _, fileInfo := range category.Files {
-		// Check for cancellation
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// Send progress update
 		progressCh <- CleanMsg{
 			Progress: &CleanProgress{
-				FilesProcessed: filesDeleted,
+				FilesProcessed: filesDeleted + filesFailed,
 				BytesFreed:     bytesFreed,
 				CurrentFile:    fileInfo.Path,
 				TotalFiles:     len(category.Files),
@@ -143,13 +142,12 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 		}
 
 		if dryRun {
-			// Dry run - just count
 			filesDeleted++
 			bytesFreed += fileInfo.Size
 		} else {
-			// Actual cleaning
 			if err := c.deleteFile(fileInfo.Path, category.ShredEnabled); err != nil {
-				errors = append(errors, fmt.Sprintf("failed to delete %s: %v", fileInfo.Path, err))
+				filesFailed++
+				errorMessages = append(errorMessages, fmt.Sprintf("%s: %v", fileInfo.Path, err))
 				continue
 			}
 			filesDeleted++
@@ -159,11 +157,18 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 
 	duration := time.Since(start)
 
+	var cleanErr error
+	if filesFailed > 0 {
+		cleanErr = moonbiterrors.NewCleanFailedError(
+			category.Name,
+			len(category.Files),
+			filesDeleted,
+			filesFailed,
+			errorMessages,
+		)
+	}
+
 	if c.auditLog != nil {
-		var cleanErr error
-		if len(errors) > 0 {
-			cleanErr = fmt.Errorf("%d errors occurred", len(errors))
-		}
 		c.auditLog.LogCleanOperation(filesDeleted, bytesFreed, cleanErr)
 	}
 
@@ -175,8 +180,12 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 			Duration:      duration,
 			BackupCreated: backupPath != "",
 			BackupPath:    backupPath,
-			Errors:        errors,
+			Errors:        errorMessages,
 		},
+	}
+
+	if cleanErr != nil {
+		progressCh <- CleanMsg{Error: cleanErr}
 	}
 
 	return nil
@@ -184,26 +193,32 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 
 // DeleteFile performs actual file deletion with optional shredding
 func (c *Cleaner) deleteFile(path string, shredEnabled bool) error {
-	// Additional safety check
 	if c.isProtectedPath(path) {
-		return fmt.Errorf("attempted to delete protected path: %s", path)
+		return moonbiterrors.NewPathProtectedError(path, c.safetyConfig.ProtectedPaths)
 	}
 
-	// Get file info
 	info, err := os.Stat(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return moonbiterrors.NewFileNotFoundError(path, err)
+		}
+		if os.IsPermission(err) {
+			return moonbiterrors.NewPermissionDeniedError(path, err)
+		}
 		return fmt.Errorf("failed to stat file: %w", err)
 	}
 
-	// Shred if enabled (overwrite before deletion)
 	if shredEnabled && info.Size() > 0 {
 		if err := c.shredFile(path, info.Size()); err != nil {
 			return fmt.Errorf("failed to shred file: %w", err)
 		}
 	}
 
-	// Remove the file
-	return os.Remove(path)
+	err = os.Remove(path)
+	if err != nil && os.IsPermission(err) {
+		return moonbiterrors.NewPermissionDeniedError(path, err)
+	}
+	return err
 }
 
 // ShredFile overwrites a file with random data before deletion
@@ -256,26 +271,26 @@ func (c *Cleaner) shredFile(path string, size int64) error {
 	return nil
 }
 
-// Perform safety checks before cleaning
 func (c *Cleaner) performSafetyChecks(category *config.Category, dryRun bool) error {
-	// Check if category is safe to clean
 	if category.Risk == config.High && !dryRun {
 		if c.safetyConfig.SafeMode {
 			return fmt.Errorf("high-risk category '%s' requires manual confirmation", category.Name)
 		}
 	}
 
-	// Check total size
 	maxBytes := c.safetyConfig.MaxDeletionSize * 1024 * 1024
 	if category.Size > maxBytes {
-		return fmt.Errorf("category size %d bytes exceeds maximum allowed %d bytes",
-			category.Size, maxBytes)
+		return moonbiterrors.NewSafetyCheckFailedError(
+			"category size exceeds maximum allowed",
+			category.Name,
+			category.Size,
+			maxBytes,
+		)
 	}
 
-	// Check for protected paths
 	for _, fileInfo := range category.Files {
 		if c.isProtectedPath(fileInfo.Path) {
-			return fmt.Errorf("category contains protected path: %s", fileInfo.Path)
+			return moonbiterrors.NewPathProtectedError(fileInfo.Path, c.safetyConfig.ProtectedPaths)
 		}
 	}
 
@@ -306,15 +321,14 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 	return false
 }
 
-// Create backup before cleaning
 func (c *Cleaner) createBackup(category *config.Category) string {
 	timestamp := time.Now().Format("20060102_150405")
 
-	// Get XDG_DATA_HOME with fallback to ~/.local/share
 	dataHome := os.Getenv("XDG_DATA_HOME")
 	if dataHome == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
+			log.Printf("ERROR: Failed to get user home directory: %v", err)
 			return ""
 		}
 		dataHome = filepath.Join(homeDir, ".local", "share")
@@ -322,26 +336,28 @@ func (c *Cleaner) createBackup(category *config.Category) string {
 
 	backupDir := filepath.Join(dataHome, "moonbit", "backups")
 
-	// Create backup directory
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		mbErr := moonbiterrors.NewBackupFailedError(category.Name, err)
+		log.Printf("ERROR: %s", mbErr.UserMessage())
 		return ""
 	}
 
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s.backup",
 		sanitizeName(category.Name), timestamp))
 
-	// Create backup info file with metadata
 	if err := c.createBackupMetadata(backupPath, category, timestamp); err != nil {
+		mbErr := moonbiterrors.NewBackupFailedError(category.Name, err)
+		log.Printf("ERROR: %s", mbErr.UserMessage())
 		return ""
 	}
 
-	// Copy files to backup directory
 	backupFilesDir := backupPath + ".files"
 	if err := os.MkdirAll(backupFilesDir, 0755); err != nil {
+		mbErr := moonbiterrors.NewBackupFailedError(category.Name, err)
+		log.Printf("ERROR: %s", mbErr.UserMessage())
 		return ""
 	}
 
-	// Copy each file to backup, preserving relative structure
 	for _, file := range category.Files {
 		if err := c.backupFile(file.Path, backupFilesDir); err != nil {
 			log.Printf("ERROR: Failed to backup file %s: %v", file.Path, err)
@@ -374,6 +390,7 @@ func (c *Cleaner) createBackupMetadata(backupPath string, category *config.Categ
 
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
+		log.Printf("ERROR: Failed to marshal backup metadata for %s: %v", category.Name, err)
 		return err
 	}
 
@@ -400,17 +417,22 @@ func (c *Cleaner) backupFile(srcPath, backupDir string) error {
 	// Copy file
 	src, err := os.Open(srcPath)
 	if err != nil {
+		log.Printf("ERROR: Failed to open source file %s: %v", srcPath, err)
 		return err
 	}
 	defer src.Close()
 
 	dst, err := os.Create(dstPath)
 	if err != nil {
+		log.Printf("ERROR: Failed to create backup destination %s: %v", dstPath, err)
 		return err
 	}
 	defer dst.Close()
 
 	_, err = io.Copy(dst, src)
+	if err != nil {
+		log.Printf("ERROR: Failed to copy file %s to backup: %v", srcPath, err)
+	}
 	return err
 }
 
