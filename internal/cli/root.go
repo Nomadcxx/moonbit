@@ -154,6 +154,35 @@ func ScanAndSave() error {
 
 // ScanAndSaveWithMode runs a scan filtered by mode (quick/deep)
 func ScanAndSaveWithMode(mode string) error {
+	if err := displayScanHeader(mode); err != nil {
+		return err
+	}
+
+	cfg, s, err := initializeScanner()
+	if err != nil {
+		return err
+	}
+
+	categories, err := prepareScanCategories(mode, cfg)
+	if err != nil {
+		return err
+	}
+
+	totalSize, totalFiles, scanResults, err := scanAllCategories(s, categories)
+	if err != nil {
+		return err
+	}
+
+	if err := saveScanResults(totalSize, totalFiles, scanResults); err != nil {
+		return err
+	}
+
+	displayScanResults(totalFiles, totalSize)
+	return nil
+}
+
+// displayScanHeader shows the scan header with appropriate mode label
+func displayScanHeader(mode string) error {
 	modeLabel := "Comprehensive"
 	if mode == "quick" {
 		modeLabel = "Quick"
@@ -164,78 +193,117 @@ func ScanAndSaveWithMode(mode string) error {
 	fmt.Println(S.ASCIIHeader())
 	fmt.Println(S.Header(fmt.Sprintf("%s Scan", modeLabel)))
 	fmt.Println(S.Separator())
+	return nil
+}
 
+// initializeScanner loads config and creates a scanner instance
+func initializeScanner() (*config.Config, *scanner.Scanner, error) {
 	cfg, err := config.Load("")
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return nil, nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Create scanner
 	s := scanner.NewScanner(cfg)
+	return cfg, s, nil
+}
 
-	// Aggregate results from all selected categories
+// prepareScanCategories filters and prepares categories based on scan mode
+func prepareScanCategories(mode string, cfg *config.Config) ([]config.Category, error) {
+	availableCategories := detectAvailableCategories()
+	allCategories := append([]config.Category{}, cfg.Categories...)
+	allCategories = append(allCategories, availableCategories...)
+
+	// Filter by mode
+	var filteredCategories []config.Category
+	for _, category := range allCategories {
+		if mode == "quick" && !category.Selected {
+			continue // Quick mode: only Selected:true categories (safe, fast)
+		}
+		// Deep mode scans everything (no filter needed)
+		filteredCategories = append(filteredCategories, category)
+	}
+
+	return filteredCategories, nil
+}
+
+// scanAllCategories scans all provided categories and aggregates results
+func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64, int, config.Category, error) {
 	var totalSize uint64
 	var totalFiles int
 	var scanResults config.Category
 	scanResults.Name = "Total Cleanable"
 	scanResults.Files = []config.FileInfo{}
 
-	// Check available categories dynamically
-	availableCategories := detectAvailableCategories()
-
-	// Create combined category list
-	allCategories := append([]config.Category{}, cfg.Categories...)
-	allCategories = append(allCategories, availableCategories...)
-
-	for i, category := range allCategories {
-		// Filter by mode
-		if mode == "quick" && !category.Selected {
-			continue // Quick mode: only Selected:true categories (safe, fast)
-		}
-		// Deep mode scans everything (no filter needed)
-
-		// Check if this category path exists (for categories from config)
-		exists := false
-		for _, path := range category.Paths {
-			if _, err := os.Stat(path); err == nil {
-				exists = true
-				break
-			}
-		}
-
-		if exists || category.Name == "Thumbnail Cache" {
-			fmt.Printf("Scanning %s (%d/%d)...\n", category.Name, i+1, len(allCategories))
-
-			progressCh := make(chan scanner.ScanMsg, 10)
-			go s.ScanCategory(context.Background(), &category, progressCh)
-
-			// Collect results for this category
-			for msg := range progressCh {
-				if msg.Complete != nil {
-					fmt.Printf("  Found %d files (%s)\n",
-						msg.Complete.Stats.FileCount,
-						utils.HumanizeBytes(msg.Complete.Stats.Size))
-
-					// Add to totals
-					totalSize += msg.Complete.Stats.Size
-					totalFiles += msg.Complete.Stats.FileCount
-					scanResults.Files = append(scanResults.Files, msg.Complete.Stats.Files...)
-					break
-				}
-				if msg.Error != nil {
-					fmt.Printf("  Error: %v\n", msg.Error)
-					break
-				}
-			}
-		} else {
+	for i, category := range categories {
+		if !categoryPathExists(&category) {
 			fmt.Printf("Skipping %s (not found)\n", category.Name)
+			continue
+		}
+
+		fmt.Printf("Scanning %s (%d/%d)...\n", category.Name, i+1, len(categories))
+
+		stats, err := scanSingleCategory(s, &category)
+		if err != nil {
+			fmt.Printf("  Error: %v\n", err)
+			continue
+		}
+
+		if stats != nil {
+			var categorySize uint64
+			for _, file := range stats.Files {
+				categorySize += file.Size
+			}
+
+			fmt.Printf("  Found %d files (%s)\n",
+				len(stats.Files),
+				utils.HumanizeBytes(categorySize))
+
+			totalSize += categorySize
+			totalFiles += len(stats.Files)
+			scanResults.Files = append(scanResults.Files, stats.Files...)
 		}
 
 		// Small delay between scans
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Create session cache
+	return totalSize, totalFiles, scanResults, nil
+}
+
+// categoryPathExists checks if any path in the category exists
+func categoryPathExists(category *config.Category) bool {
+	// Special case for Thumbnail Cache (handled differently)
+	if category.Name == "Thumbnail Cache" {
+		return true
+	}
+
+	for _, path := range category.Paths {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// scanSingleCategory scans a single category and returns its stats
+func scanSingleCategory(s *scanner.Scanner, category *config.Category) (*config.Category, error) {
+	progressCh := make(chan scanner.ScanMsg, 10)
+	go s.ScanCategory(context.Background(), category, progressCh)
+
+	for msg := range progressCh {
+		if msg.Complete != nil {
+			return msg.Complete.Stats, nil
+		}
+		if msg.Error != nil {
+			return nil, msg.Error
+		}
+	}
+
+	return nil, fmt.Errorf("scan completed without results")
+}
+
+// saveScanResults creates and saves the session cache
+func saveScanResults(totalSize uint64, totalFiles int, scanResults config.Category) error {
 	cache := &config.SessionCache{
 		ScanResults: &scanResults,
 		TotalSize:   totalSize,
@@ -243,22 +311,25 @@ func ScanAndSaveWithMode(mode string) error {
 		ScannedAt:   time.Now(),
 	}
 
-	// Save to cache file
 	sessionMgr, err := session.NewManager()
 	if err != nil {
 		return fmt.Errorf("failed to create session manager: %w", err)
 	}
+
 	if err := sessionMgr.Save(cache); err != nil {
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 
+	return nil
+}
+
+// displayScanResults shows the final scan results summary
+func displayScanResults(totalFiles int, totalSize uint64) {
 	fmt.Println()
 	fmt.Println(S.Header("Scan Results"))
 	fmt.Println(S.Separator())
 	fmt.Printf("  %s %d\n", S.Bold("Files found:"), totalFiles)
 	fmt.Printf("  %s %s\n", S.Bold("Space available:"), S.Success(utils.HumanizeBytes(totalSize)))
-
-	return nil
 }
 
 // CleanSession executes the actual cleaning based on session cache
@@ -724,13 +795,161 @@ var duplicatesFindCmd = &cobra.Command{
 }
 
 var duplicatesCleanCmd = &cobra.Command{
-	Use:   "clean",
+	Use:   "clean [paths...]",
 	Short: "Remove duplicate files (interactive)",
-	Long:  "Interactively select and remove duplicate files found in the last scan",
+	Long:  "Interactively scan and remove duplicate files. Scans specified paths (or home directory) and allows you to select which duplicates to remove.",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("🚧 Interactive duplicate removal not yet implemented")
-		fmt.Println("💡 For now, use 'moonbit duplicates find' to see duplicates")
-		fmt.Println("   Manual removal recommended until interactive UI is complete")
+		paths := args
+		if len(paths) == 0 {
+			homeDir, _ := os.UserHomeDir()
+			paths = []string{homeDir}
+		}
+
+		minSize, _ := cmd.Flags().GetInt64("min-size")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		fmt.Println(S.Header("🔍 Scanning for duplicate files..."))
+		fmt.Printf("📁 Paths: %v\n", paths)
+		fmt.Printf("📏 Minimum size: %s\n", utils.HumanizeBytes(uint64(minSize)))
+		if dryRun {
+			fmt.Println(S.Warning("🔒 DRY-RUN mode: No files will be deleted\n"))
+		} else {
+			fmt.Println(S.Error("⚠️  LIVE mode: Files will be permanently deleted\n"))
+		}
+
+		opts := duplicates.ScanOptions{
+			Paths:   paths,
+			MinSize: minSize,
+		}
+
+		scanner := duplicates.NewScanner(opts)
+		progressCh := make(chan duplicates.ScanProgress, 10)
+
+		// Show progress
+		go func() {
+			for progress := range progressCh {
+				if progress.Phase != "" {
+					fmt.Printf("\r%s - %d files scanned (%s)",
+						progress.Phase,
+						progress.FilesScanned,
+						utils.HumanizeBytes(uint64(progress.BytesScanned)))
+				}
+			}
+		}()
+
+		result, err := scanner.Scan(progressCh)
+		if err != nil {
+			fmt.Printf("\n%s Error: %v\n", S.Error("❌"), err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("\n\n%s\n", S.Header("📊 Scan Results"))
+		fmt.Println(S.Separator())
+		fmt.Printf("Files scanned: %d\n", result.FilesScanned)
+		fmt.Printf("Duplicate groups: %d\n", len(result.Groups))
+		fmt.Printf("Duplicate files: %d\n", result.TotalDupes)
+		fmt.Printf("Wasted space: %s\n\n", utils.HumanizeBytes(uint64(result.WastedSpace)))
+
+		if len(result.Groups) == 0 {
+			fmt.Println(S.Success("✅ No duplicate files found."))
+			return
+		}
+
+		// Interactive selection
+		fmt.Println(S.Info("💡 For each duplicate group, the oldest file will be kept."))
+		fmt.Println(S.Info("   All other duplicates in the group will be removed.\n"))
+
+		var filesToRemove []string
+		totalSpaceToFree := int64(0)
+
+		for i, group := range result.Groups {
+			fmt.Printf("\n%s Group %d/%d: %d duplicates × %s = %s wasted\n",
+				S.Bold("📦"),
+				i+1,
+				len(result.Groups),
+				len(group.Files),
+				utils.HumanizeBytes(uint64(group.Size)),
+				utils.HumanizeBytes(uint64(group.TotalSize)))
+
+			// Show files (oldest first, keep first one)
+			groupFilesToRemove := []string{}
+			groupSpaceToFree := int64(0)
+			for j, file := range group.Files {
+				if j == 0 {
+					fmt.Printf("  %s %s %s\n", S.Success("✓ KEEP"), S.Muted("(oldest)"), file.Path)
+				} else {
+					fmt.Printf("  %s %s\n", S.Error("✗ REMOVE"), file.Path)
+					groupFilesToRemove = append(groupFilesToRemove, file.Path)
+					groupSpaceToFree += file.Size
+				}
+			}
+
+			// Ask for confirmation for each group
+			if !dryRun {
+				fmt.Printf("\n%s Remove %d duplicate(s) from this group? [y/N]: ", S.Warning("⚠️"), len(group.Files)-1)
+				var response string
+				fmt.Scanln(&response)
+
+				if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
+					fmt.Println(S.Muted("  Skipped this group."))
+					continue
+				}
+			}
+
+			// Add to removal list if confirmed (or if dry-run, add all)
+			filesToRemove = append(filesToRemove, groupFilesToRemove...)
+			totalSpaceToFree += groupSpaceToFree
+		}
+
+		if len(filesToRemove) == 0 {
+			fmt.Println(S.Info("\n💡 No files selected for removal."))
+			return
+		}
+
+		// Final confirmation
+		fmt.Printf("\n%s\n", S.Separator())
+		fmt.Printf("%s Summary:\n", S.Bold("📋"))
+		fmt.Printf("  Files to remove: %d\n", len(filesToRemove))
+		fmt.Printf("  Space to free: %s\n", utils.HumanizeBytes(uint64(totalSpaceToFree)))
+
+		if dryRun {
+			fmt.Printf("\n%s DRY-RUN: Would remove %d files (%s)\n",
+				S.Info("🔒"),
+				len(filesToRemove),
+				utils.HumanizeBytes(uint64(totalSpaceToFree)))
+			fmt.Println(S.Info("   Run without --dry-run to actually delete files."))
+			return
+		}
+
+		fmt.Printf("\n%s Remove %d duplicate file(s)? [y/N]: ", S.Error("⚠️"), len(filesToRemove))
+		var finalResponse string
+		fmt.Scanln(&finalResponse)
+
+		if strings.ToLower(finalResponse) != "y" && strings.ToLower(finalResponse) != "yes" {
+			fmt.Println(S.Muted("Cancelled. No files were removed."))
+			return
+		}
+
+		// Remove duplicates
+		fmt.Printf("\n%s Removing duplicate files...\n", S.Info("🗑️"))
+		removed, freedSpace, errors := duplicates.RemoveDuplicates(filesToRemove)
+
+		fmt.Printf("\n%s\n", S.Separator())
+		if len(errors) > 0 {
+			fmt.Printf("%s Completed with %d error(s):\n", S.Warning("⚠️"), len(errors))
+			for _, errMsg := range errors {
+				fmt.Printf("  %s\n", S.Error(errMsg))
+			}
+		}
+
+		if removed > 0 {
+			fmt.Printf("%s Successfully removed %d file(s)\n", S.Success("✅"), removed)
+			fmt.Printf("%s Freed space: %s\n", S.Success("💾"), utils.HumanizeBytes(uint64(freedSpace)))
+		}
+
+		if removed < len(filesToRemove) {
+			fmt.Printf("%s %d file(s) could not be removed\n", S.Warning("⚠️"), len(filesToRemove)-removed)
+		}
 	},
 }
 
@@ -955,6 +1174,8 @@ func init() {
 	pkgCmd.AddCommand(pkgKernelsCmd)
 
 	duplicatesFindCmd.Flags().Int64("min-size", 1024, "Minimum file size to consider (bytes)")
+	duplicatesCleanCmd.Flags().Int64("min-size", 1024, "Minimum file size to consider (bytes)")
+	duplicatesCleanCmd.Flags().Bool("dry-run", false, "Preview only, don't delete files")
 
 	pkgOrphansCmd.Flags().Bool("dry-run", true, "Preview orphaned packages without removing")
 	pkgKernelsCmd.Flags().Bool("dry-run", true, "Preview old kernels without removing")
