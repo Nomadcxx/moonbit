@@ -61,6 +61,7 @@ const (
 	ModeClean        ViewMode = "clean"
 	ModeComplete     ViewMode = "complete"
 	ModeSchedule     ViewMode = "schedule"
+	ModeDocker       ViewMode = "docker"
 )
 
 // CategoryInfo represents a cleanable category for UI
@@ -128,6 +129,7 @@ func NewModel() Model {
 			"Quick Scan (Safe caches only)",
 			"Deep Scan (All categories)",
 			"Review Results",
+			"Docker Cleanup",
 			"Schedule Scan & Clean",
 			"Exit",
 		},
@@ -215,6 +217,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentPhase = msg.message
 		// Stay in schedule mode and refresh
 		return m, nil
+	case dockerCompleteMsg:
+		return m.handleDockerComplete(msg)
 	}
 
 	// Update viewport if in relevant modes
@@ -304,9 +308,11 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 			return m.startScan()
 		case 2: // Review Results
 			return m.showResults()
-		case 3: // Schedule Scan & Clean
+		case 3: // Docker Cleanup
+			return m.showDockerMenu()
+		case 4: // Schedule Scan & Clean
 			return m.showSchedule()
-		case 4: // Exit
+		case 5: // Exit
 			return m, tea.Quit
 		}
 	case ModeResults:
@@ -363,6 +369,18 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 			m.mode = ModeWelcome
 			m.menuIndex = 0
 			m.currentPhase = ""
+			return m, nil
+		}
+	case ModeDocker:
+		switch m.menuIndex {
+		case 0: // Clean Unused Images
+			return m.executeDockerCleanup("images")
+		case 1: // Clean All Unused Resources
+			return m.executeDockerCleanup("all")
+		case 2: // Back
+			m.mode = ModeWelcome
+			m.menuIndex = 0
+			return m, nil
 		}
 	}
 
@@ -908,6 +926,9 @@ func (m Model) View() string {
 		borderColor = Accent
 	case ModeSchedule:
 		mainContent = m.renderSchedule()
+		borderColor = Secondary
+	case ModeDocker:
+		mainContent = m.renderDockerMenu()
 		borderColor = Secondary
 	}
 
@@ -1491,6 +1512,8 @@ func (m Model) getFooterText() string {
 		return "Press any key to continue"
 	case ModeSchedule:
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
+	case ModeDocker:
+		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	default:
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	}
@@ -1928,4 +1951,168 @@ func runTimerCommands(action string) tea.Cmd {
 			message: "Invalid command",
 		}
 	}
+}
+
+// showDockerMenu shows the Docker cleanup menu
+func (m Model) showDockerMenu() (tea.Model, tea.Cmd) {
+	m.mode = ModeDocker
+	m.menuIndex = 0
+	m.currentPhase = "" // Clear any previous status messages
+	return m, nil
+}
+
+// renderDockerMenu renders the Docker cleanup screen
+func (m Model) renderDockerMenu() string {
+	var content strings.Builder
+
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Bold(true).
+		Render("🐳 Docker Cleanup"))
+	content.WriteString("\n\n")
+
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Render("Clean unused Docker resources using Docker CLI"))
+	content.WriteString("\n\n")
+
+	// Menu options
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgSecondary).
+		Bold(true).
+		Render("Select an option:"))
+	content.WriteString("\n\n")
+
+	options := []string{
+		"Clean Unused Images",
+		"Clean All Unused Resources",
+		"← Back",
+	}
+
+	for i, option := range options {
+		var line string
+		if i == m.menuIndex {
+			line = lipgloss.NewStyle().
+				Foreground(Primary).
+				Bold(true).
+				Render(fmt.Sprintf("> %s", option))
+		} else {
+			line = lipgloss.NewStyle().
+				Foreground(FgPrimary).
+				Render(fmt.Sprintf("  %s", option))
+		}
+		content.WriteString(line)
+		content.WriteString("\n")
+	}
+
+	// Display status message if available
+	if m.currentPhase != "" {
+		content.WriteString("\n")
+		msgColor := Accent
+		if strings.Contains(m.currentPhase, "Failed") || strings.Contains(m.currentPhase, "❌") {
+			msgColor = Danger
+		} else if strings.Contains(m.currentPhase, "✅") {
+			msgColor = Accent
+		}
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(msgColor).
+			Render(m.currentPhase))
+	}
+
+	return content.String()
+}
+
+// dockerCompleteMsg contains the result of a Docker cleanup operation
+type dockerCompleteMsg struct {
+	success bool
+	message string
+}
+
+// executeDockerCleanup executes Docker cleanup command
+func (m Model) executeDockerCleanup(operation string) (tea.Model, tea.Cmd) {
+	m.currentPhase = "Running Docker cleanup..."
+	return m, runDockerCleanup(operation)
+}
+
+// runDockerCleanup runs Docker cleanup command asynchronously
+func runDockerCleanup(operation string) tea.Cmd {
+	return func() tea.Msg {
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
+
+		// Check if Docker is available
+		checkCmd := exec.Command("docker", "version")
+		if err := checkCmd.Run(); err != nil {
+			if auditLog != nil {
+				auditLog.LogDockerOperation("check", []string{}, "failed", err)
+			}
+			return dockerCompleteMsg{
+				success: false,
+				message: "❌ Docker is not installed or not running",
+			}
+		}
+
+		var cmd *exec.Cmd
+		var operationName string
+		var args []string
+
+		if operation == "images" {
+			operationName = "prune_images"
+			cmd = exec.Command("docker", "image", "prune", "-a", "-f")
+			args = []string{"-a", "-f"}
+		} else if operation == "all" {
+			operationName = "prune_all"
+			cmd = exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
+			args = []string{"-a", "--volumes", "-f"}
+		} else {
+			return dockerCompleteMsg{
+				success: false,
+				message: "❌ Invalid Docker operation",
+			}
+		}
+
+		// Capture output
+		var output strings.Builder
+		cmd.Stdout = &output
+		cmd.Stderr = &output
+
+		err := cmd.Run()
+		result := "success"
+		if err != nil {
+			result = "failed"
+		}
+
+		if auditLog != nil {
+			auditLog.LogDockerOperation(operationName, args, result, err)
+		}
+
+		if err != nil {
+			return dockerCompleteMsg{
+				success: false,
+				message: fmt.Sprintf("❌ Failed: %v", err),
+			}
+		}
+
+		outputStr := output.String()
+		if operation == "images" {
+			return dockerCompleteMsg{
+				success: true,
+				message: "✅ Docker images cleaned successfully!\n" + outputStr,
+			}
+		} else {
+			return dockerCompleteMsg{
+				success: true,
+				message: "✅ All unused Docker resources cleaned successfully!\n" + outputStr,
+			}
+		}
+	}
+}
+
+// handleDockerComplete processes Docker cleanup completion
+func (m Model) handleDockerComplete(msg dockerCompleteMsg) (tea.Model, tea.Cmd) {
+	m.currentPhase = msg.message
+	// Stay in Docker mode to show result
+	return m, nil
 }
