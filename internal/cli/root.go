@@ -161,9 +161,7 @@ func ScanAndSave() error {
 
 // ScanAndSaveWithMode runs a scan filtered by mode (quick/deep)
 func ScanAndSaveWithMode(mode string) error {
-	if err := displayScanHeader(mode); err != nil {
-		return err
-	}
+	displayScanHeader(mode)
 
 	cfg, s, err := initializeScanner()
 	if err != nil {
@@ -189,7 +187,7 @@ func ScanAndSaveWithMode(mode string) error {
 }
 
 // displayScanHeader shows the scan header with appropriate mode label
-func displayScanHeader(mode string) error {
+func displayScanHeader(mode string) {
 	modeLabel := "Comprehensive"
 	if mode == "quick" {
 		modeLabel = "Quick"
@@ -200,7 +198,6 @@ func displayScanHeader(mode string) error {
 	fmt.Println(S.ASCIIHeader())
 	fmt.Println(S.Header(fmt.Sprintf("%s Scan", modeLabel)))
 	fmt.Println(S.Separator())
-	return nil
 }
 
 // initializeScanner loads config and creates a scanner instance
@@ -724,7 +721,11 @@ var duplicatesFindCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		paths := args
 		if len(paths) == 0 {
-			homeDir, _ := os.UserHomeDir()
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to get home directory: %v\n", err)
+				os.Exit(1)
+			}
 			paths = []string{homeDir}
 		}
 
@@ -808,7 +809,11 @@ var duplicatesCleanCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		paths := args
 		if len(paths) == 0 {
-			homeDir, _ := os.UserHomeDir()
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to get home directory: %v\n", err)
+				os.Exit(1)
+			}
 			paths = []string{homeDir}
 		}
 
@@ -937,9 +942,28 @@ var duplicatesCleanCmd = &cobra.Command{
 			return
 		}
 
+		// Validate paths before deletion
+		var validatedPaths []string
+		for _, path := range filesToRemove {
+			if err := validation.ValidateFilePath(path); err != nil {
+				fmt.Printf("%s Skipping invalid path: %s (%v)\n", S.Warning("⚠️"), path, err)
+				continue
+			}
+			validatedPaths = append(validatedPaths, path)
+		}
+
+		if len(validatedPaths) == 0 {
+			fmt.Println(S.Error("❌ No valid paths to remove after validation."))
+			return
+		}
+
+		if len(validatedPaths) < len(filesToRemove) {
+			fmt.Printf("%s %d path(s) failed validation and were skipped.\n", S.Warning("⚠️"), len(filesToRemove)-len(validatedPaths))
+		}
+
 		// Remove duplicates
 		fmt.Printf("\n%s Removing duplicate files...\n", S.Info("🗑️"))
-		removed, freedSpace, errors := duplicates.RemoveDuplicates(filesToRemove)
+		removed, freedSpace, errors := duplicates.RemoveDuplicates(validatedPaths)
 
 		fmt.Printf("\n%s\n", S.Separator())
 		if len(errors) > 0 {
@@ -954,8 +978,8 @@ var duplicatesCleanCmd = &cobra.Command{
 			fmt.Printf("%s Freed space: %s\n", S.Success("💾"), utils.HumanizeBytes(uint64(freedSpace)))
 		}
 
-		if removed < len(filesToRemove) {
-			fmt.Printf("%s %d file(s) could not be removed\n", S.Warning("⚠️"), len(filesToRemove)-removed)
+		if removed < len(validatedPaths) {
+			fmt.Printf("%s %d file(s) could not be removed\n", S.Warning("⚠️"), len(validatedPaths)-removed)
 		}
 	},
 }
