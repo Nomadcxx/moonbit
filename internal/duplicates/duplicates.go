@@ -53,6 +53,25 @@ type ScanResult struct {
 	DirectoriesScanned int
 }
 
+// Constants for duplicate scanning
+const (
+	// DefaultHashWorkers is the default number of worker goroutines for parallel file hashing
+	// This balances CPU utilization and memory usage for duplicate detection
+	DefaultHashWorkers = 4
+
+	// DefaultMinSize is the default minimum file size (1KB) for duplicate detection
+	// Files smaller than this are ignored to avoid noise from tiny config files
+	DefaultMinSize = 1024 // 1KB
+
+	// DefaultMaxDepth is the default maximum directory traversal depth
+	// Prevents infinite recursion and limits scan scope
+	DefaultMaxDepth = 10
+
+	// ProgressUpdateInterval is the number of files to scan before sending a progress update
+	// Balances update frequency with channel overhead
+	ProgressUpdateInterval = 100
+)
+
 // Scanner finds duplicate files
 type Scanner struct {
 	opts ScanOptions
@@ -61,10 +80,10 @@ type Scanner struct {
 // NewScanner creates a new duplicate file scanner
 func NewScanner(opts ScanOptions) *Scanner {
 	if opts.MinSize == 0 {
-		opts.MinSize = 1024 // 1KB default minimum
+		opts.MinSize = DefaultMinSize
 	}
 	if opts.MaxDepth == 0 {
-		opts.MaxDepth = 10
+		opts.MaxDepth = DefaultMaxDepth
 	}
 	return &Scanner{opts: opts}
 }
@@ -118,7 +137,7 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 			filesScanned++
 			bytesScanned += info.Size()
 
-			if filesScanned%100 == 0 {
+			if filesScanned%ProgressUpdateInterval == 0 {
 				progressCh <- ScanProgress{
 					FilesScanned: filesScanned,
 					BytesScanned: bytesScanned,
@@ -154,8 +173,8 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 	results := make(chan map[string][]FileInfo, 100)
 	var wg sync.WaitGroup
 
-	// Start worker goroutines
-	numWorkers := 4
+	// Start worker goroutines for parallel hashing
+	numWorkers := DefaultHashWorkers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {

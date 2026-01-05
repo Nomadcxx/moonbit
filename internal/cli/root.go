@@ -26,6 +26,13 @@ var (
 	scanMode string // "quick", "deep", or "" (all)
 )
 
+// Constants for scan operations
+const (
+	// ScanDelayBetweenCategories is the delay between scanning different categories
+	// to prevent overwhelming the filesystem and provide smoother progress updates
+	ScanDelayBetweenCategories = 100 * time.Millisecond
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "moonbit",
 	Short: "MoonBit - System Cleaner for Linux",
@@ -263,8 +270,8 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 			scanResults.Files = append(scanResults.Files, stats.Files...)
 		}
 
-		// Small delay between scans
-		time.Sleep(100 * time.Millisecond)
+		// Small delay between scans to prevent overwhelming the filesystem
+		time.Sleep(ScanDelayBetweenCategories)
 	}
 
 	return totalSize, totalFiles, scanResults, nil
@@ -1173,8 +1180,8 @@ func init() {
 	pkgCmd.AddCommand(pkgOrphansCmd)
 	pkgCmd.AddCommand(pkgKernelsCmd)
 
-	duplicatesFindCmd.Flags().Int64("min-size", 1024, "Minimum file size to consider (bytes)")
-	duplicatesCleanCmd.Flags().Int64("min-size", 1024, "Minimum file size to consider (bytes)")
+	duplicatesFindCmd.Flags().Int64("min-size", int64(duplicates.DefaultMinSize), "Minimum file size to consider (bytes)")
+	duplicatesCleanCmd.Flags().Int64("min-size", int64(duplicates.DefaultMinSize), "Minimum file size to consider (bytes)")
 	duplicatesCleanCmd.Flags().Bool("dry-run", false, "Preview only, don't delete files")
 
 	pkgOrphansCmd.Flags().Bool("dry-run", true, "Preview orphaned packages without removing")
