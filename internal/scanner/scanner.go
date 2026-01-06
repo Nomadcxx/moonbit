@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
@@ -121,10 +122,22 @@ func NewScanner(cfg *config.Config) *Scanner {
 
 	filter := regexp.MustCompile(filterStr)
 
+	// Determine worker count: use config value, or auto-detect based on CPU count
+	workerCount := cfg.Scan.WorkerCount
+	if workerCount <= 0 {
+		workerCount = runtime.NumCPU()
+		if workerCount < 2 {
+			workerCount = 2 // Minimum 2 workers
+		}
+		if workerCount > 16 {
+			workerCount = 16 // Cap at 16 to avoid excessive goroutines
+		}
+	}
+
 	return &Scanner{
 		cfg:     cfg,
 		filter:  filter,
-		workers: 4, // Parallel workers
+		workers: workerCount,
 		fs:      &OsFileSystem{},
 	}
 }
@@ -143,10 +156,22 @@ func NewScannerWithFs(cfg *config.Config, fs FileSystem) *Scanner {
 
 	filter := regexp.MustCompile(filterStr)
 
+	// Determine worker count: use config value, or auto-detect based on CPU count
+	workerCount := cfg.Scan.WorkerCount
+	if workerCount <= 0 {
+		workerCount = runtime.NumCPU()
+		if workerCount < 2 {
+			workerCount = 2 // Minimum 2 workers
+		}
+		if workerCount > 16 {
+			workerCount = 16 // Cap at 16 to avoid excessive goroutines
+		}
+	}
+
 	return &Scanner{
 		cfg:     cfg,
 		filter:  filter,
-		workers: 4, // Parallel workers
+		workers: workerCount,
 		fs:      fs,
 	}
 }
@@ -261,8 +286,9 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 			stats.Size += uint64(info.Size())
 			stats.FileCount++
 
-			// Send progress update every 100 files
-			if stats.FileCount%100 == 0 {
+			// Send progress update periodically (every 100 files or every 10MB)
+			shouldUpdate := stats.FileCount%100 == 0 || stats.Size%10485760 == 0 // 10MB chunks
+			if shouldUpdate && stats.FileCount > 0 {
 				progressCh <- ScanMsg{
 					Progress: &ScanProgress{
 						Path:         path,

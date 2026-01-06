@@ -17,8 +17,10 @@ func TestNewScanner(t *testing.T) {
 			IgnorePatterns []string `toml:"ignore_patterns"`
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
+			WorkerCount:     4, // Explicit worker count for test determinism
 		},
 	}
 
@@ -116,8 +118,10 @@ func TestScannerFilterLogic(t *testing.T) {
 			IgnorePatterns []string `toml:"ignore_patterns"`
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{"node_modules", "\\.git", "\\.cache"},
+			WorkerCount:    0, // Auto-detect
 		},
 	}
 
@@ -140,8 +144,10 @@ func TestShouldIncludeFile(t *testing.T) {
 			IgnorePatterns []string `toml:"ignore_patterns"`
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{},
+			WorkerCount:    0, // Auto-detect
 		},
 	}
 
@@ -215,8 +221,10 @@ func TestNewScannerWithFs(t *testing.T) {
 			IgnorePatterns []string `toml:"ignore_patterns"`
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{"node_modules"},
+			WorkerCount:    0, // Auto-detect
 		},
 	}
 
@@ -237,8 +245,10 @@ func TestWalkDirectory_NonexistentPath(t *testing.T) {
 			IgnorePatterns []string `toml:"ignore_patterns"`
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{},
+			WorkerCount:    0, // Auto-detect
 		},
 	}
 

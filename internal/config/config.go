@@ -74,6 +74,7 @@ type Config struct {
 		IgnorePatterns []string `toml:"ignore_patterns"`
 		EnableAll      bool     `toml:"enable_all"`
 		DryRunDefault  bool     `toml:"dry_run_default"`
+		WorkerCount    int      `toml:"worker_count"` // Number of parallel workers (0 = auto-detect)
 	} `toml:"scan"`
 	Categories []Category `toml:"categories"`
 }
@@ -115,11 +116,13 @@ func DefaultConfig() *Config {
 			IgnorePatterns []string `toml:"ignore_patterns"`
 			EnableAll      bool     `toml:"enable_all"`
 			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
 		}{
 			MaxDepth:       3, // Deeper scanning for comprehensive detection
 			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
 			EnableAll:      true,
 			DryRunDefault:  true,
+			WorkerCount:    0, // 0 = auto-detect based on CPU count
 		},
 		Categories: []Category{
 			{
