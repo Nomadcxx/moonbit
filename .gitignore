@@ -134,3 +134,20 @@ moonbit-debug
 *.pkg.tar.zst
 *.tar.gz
 create_logo.py
+
+# Development and audit documents
+FIXES.md
+GAPS.md
+PHASE*.md
+*_AUDIT.md
+TEST_COVERAGE_*.md
+TESTING.md
+TROUBLESHOOTING.md
+session-ses_*.md
+*.md.backup
+
+# Build binaries (multi-platform)
+moonbit-*-amd64
+moonbit-*-arm64
+moonbit-darwin-*
+moonbit-linux-*
