@@ -1,7 +1,9 @@
 # Maintainer: Nomadcxx <noovie@gmail.com>
+# Contributor: Luis Martinez <luis dot martinez at disroot dot org>
+
 pkgname=moonbit
 pkgver=1.2.4
-pkgrel=1
+pkgrel=2
 pkgdesc="A modern system cleaner built in Go with a TUI and CLI"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Nomadcxx/moonbit"
@@ -15,13 +17,19 @@ source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Nomadcxx/${pkgname}/arc
 sha256sums=('f1c678581319e96f49c40d0e0ca5ea3710a2598d2e21ec1e1425f25fb469655f')
 install=${pkgname}.install
 
+prepare() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    export GOPATH="$srcdir"
+    go mod download -modcacherw
+}
+
 build() {
     cd "${srcdir}/${pkgname}-${pkgver}"
     export CGO_CPPFLAGS="${CPPFLAGS}"
     export CGO_CFLAGS="${CFLAGS}"
     export CGO_CXXFLAGS="${CXXFLAGS}"
     export CGO_LDFLAGS="${LDFLAGS}"
-    export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+    export GOFLAGS="-buildmode=pie -trimpath -ldflags=-linkmode=external -mod=readonly -modcacherw"
 
     go build -buildvcs=false -o moonbit cmd/main.go
 }
@@ -30,13 +38,13 @@ package() {
     cd "${srcdir}/${pkgname}-${pkgver}"
 
     # Install binary
-    install -Dm755 moonbit "${pkgdir}/usr/local/bin/moonbit"
+    install -Dm755 moonbit "${pkgdir}/usr/bin/moonbit"
 
     # Install systemd service and timer files
-    install -Dm644 systemd/moonbit-scan.service "${pkgdir}/etc/systemd/system/moonbit-scan.service"
-    install -Dm644 systemd/moonbit-scan.timer "${pkgdir}/etc/systemd/system/moonbit-scan.timer"
-    install -Dm644 systemd/moonbit-clean.service "${pkgdir}/etc/systemd/system/moonbit-clean.service"
-    install -Dm644 systemd/moonbit-clean.timer "${pkgdir}/etc/systemd/system/moonbit-clean.timer"
+    install -Dm644 systemd/moonbit-scan.service "${pkgdir}/usr/lib/systemd/system/moonbit-scan.service"
+    install -Dm644 systemd/moonbit-scan.timer "${pkgdir}/usr/lib/systemd/system/moonbit-scan.timer"
+    install -Dm644 systemd/moonbit-clean.service "${pkgdir}/usr/lib/systemd/system/moonbit-clean.service"
+    install -Dm644 systemd/moonbit-clean.timer "${pkgdir}/usr/lib/systemd/system/moonbit-clean.timer"
 
     # Install README
     install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
