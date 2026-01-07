@@ -755,6 +755,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 
 		ctx := context.Background()
 		c := cleaner.NewCleaner(cfg)
+		defer c.Close() // Ensure audit logger is closed and flushed
 
 		progressCh := make(chan cleaner.CleanMsg, 10)
 		go c.CleanCategory(ctx, cache.ScanResults, false, progressCh)

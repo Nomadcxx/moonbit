@@ -32,11 +32,12 @@ func init() {
 		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // User-only read/write
 	}
 
-	if err != nil || logFile == nil {
-		debugLog = log.New(os.Stderr, "[MOONBIT] ", log.Ldate|log.Ltime|log.Lshortfile)
-	} else {
+	// Only create debug logger if file was successfully opened
+	// Don't fallback to stderr to avoid console spam
+	if logFile != nil && err == nil {
 		debugLog = log.New(logFile, "[MOONBIT] ", log.Ldate|log.Ltime|log.Lshortfile)
 	}
+	// If file can't be opened, debugLog remains nil (silent)
 }
 
 // Color palette for MoonBit TUI (Eldritch theme)

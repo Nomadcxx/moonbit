@@ -94,6 +94,14 @@ func NewCleaner(cfg *config.Config) *Cleaner {
 	}
 }
 
+// Close closes the audit logger if it exists
+func (c *Cleaner) Close() error {
+	if c.auditLog != nil {
+		return c.auditLog.Close()
+	}
+	return nil
+}
+
 // CleanCategory cleans files from a specific category
 func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, dryRun bool, progressCh chan<- CleanMsg) error {
 	defer close(progressCh)

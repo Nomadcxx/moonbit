@@ -32,6 +32,26 @@ func (r RiskLevel) String() string {
 	}
 }
 
+// MarshalJSON implements json.Marshaler for RiskLevel
+func (r RiskLevel) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + r.String() + `"`), nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler for RiskLevel
+func (r *RiskLevel) UnmarshalJSON(data []byte) error {
+	// Remove quotes
+	s := string(data)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	parsed, err := ParseRiskLevel(s)
+	if err != nil {
+		return err
+	}
+	*r = parsed
+	return nil
+}
+
 // ParseRiskLevel parses a string into a RiskLevel
 func ParseRiskLevel(s string) (RiskLevel, error) {
 	switch s {
@@ -48,23 +68,23 @@ func ParseRiskLevel(s string) (RiskLevel, error) {
 
 // FileInfo represents information about a file
 type FileInfo struct {
-	Path    string
-	Size    uint64
-	ModTime string
+	Path    string `json:"path"`
+	Size    uint64 `json:"size"`
+	ModTime string `json:"mod_time"`
 }
 
 // Category represents a cleaning category
 type Category struct {
-	Name         string     `toml:"name"`
-	Paths        []string   `toml:"paths"`
-	Filters      []string   `toml:"filters"`
-	Risk         RiskLevel  `toml:"risk"`
-	Size         uint64     `toml:"size,omitempty"`
-	FileCount    int        `toml:"file_count,omitempty"`
-	Files        []FileInfo `toml:"files,omitempty"`
-	Selected     bool       `toml:"selected,omitempty"`
-	ShredEnabled bool       `toml:"shred,omitempty"`
-	MinAgeDays   int        `toml:"min_age_days,omitempty"` // Only clean files older than this many days
+	Name         string     `toml:"name" json:"name"`
+	Paths        []string   `toml:"paths" json:"paths,omitempty"`
+	Filters      []string   `toml:"filters" json:"filters,omitempty"`
+	Risk         RiskLevel  `toml:"risk" json:"risk"`
+	Size         uint64     `toml:"size,omitempty" json:"size,omitempty"`
+	FileCount    int        `toml:"file_count,omitempty" json:"file_count,omitempty"`
+	Files        []FileInfo `toml:"files,omitempty" json:"files,omitempty"`
+	Selected     bool       `toml:"selected,omitempty" json:"selected,omitempty"`
+	ShredEnabled bool       `toml:"shred,omitempty" json:"shred,omitempty"`
+	MinAgeDays   int        `toml:"min_age_days,omitempty" json:"min_age_days,omitempty"` // Only clean files older than this many days
 }
 
 // Config represents the main configuration
