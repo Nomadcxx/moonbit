@@ -1,0 +1,26 @@
+[Unit]
+Description=MoonBit System Cleaner Daemon
+Documentation=https://github.com/Nomadcxx/moonbit
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/moonbit daemon --log /var/log/moonbit/daemon.log --pid /var/run/moonbit.pid
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=30
+
+# Security hardening (matching existing service files)
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/cache/moonbit /var/cache /var/tmp /var/log/moonbit /var/run /root/.cache/moonbit /root/.local/share
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moonbit-daemon
+
+[Install]
+WantedBy=multi-user.target
