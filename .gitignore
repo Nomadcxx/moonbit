@@ -151,3 +151,4 @@ moonbit-*-amd64
 moonbit-*-arm64
 moonbit-darwin-*
 moonbit-linux-*
+.worktrees/
