@@ -359,13 +359,19 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		}
 	case ModeSchedule:
 		switch m.menuIndex {
-		case 0: // Enable Both Timers
-			m.currentPhase = "" // Clear previous messages
+		case 0: // Enable Daemon Mode
+			m.currentPhase = ""
+			return m.executeDaemonCommand("enable")
+		case 1: // Disable Daemon Mode
+			m.currentPhase = ""
+			return m.executeDaemonCommand("disable")
+		case 2: // Enable Both Timers
+			m.currentPhase = ""
 			return m.executeTimerCommands("enable")
-		case 1: // Disable Both Timers
+		case 3: // Disable Both Timers
 			m.currentPhase = ""
 			return m.executeTimerCommands("disable")
-		case 2: // Back
+		case 4: // Back
 			m.mode = ModeWelcome
 			m.menuIndex = 0
 			m.currentPhase = ""
@@ -1733,12 +1739,22 @@ func (m Model) renderSchedule() string {
 	// Check current timer status
 	scanEnabled, scanStatus := checkTimerStatus("moonbit-scan.timer")
 	cleanEnabled, cleanStatus := checkTimerStatus("moonbit-clean.timer")
+	daemonEnabled, daemonStatus := checkDaemonStatus()
 
 	// Display current status
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(FgSecondary).
 		Render("Current Status:"))
 	content.WriteString("\n\n")
+
+	// Daemon status
+	daemonStatusColor := FgMuted
+	if daemonEnabled {
+		daemonStatusColor = Accent
+	}
+	content.WriteString(fmt.Sprintf("  %s  Daemon Service: %s\n",
+		getStatusIcon(daemonEnabled),
+		lipgloss.NewStyle().Foreground(daemonStatusColor).Render(daemonStatus)))
 
 	// Scan timer status
 	scanStatusColor := FgMuted
@@ -1760,7 +1776,11 @@ func (m Model) renderSchedule() string {
 
 	content.WriteString("\n")
 
-	// Timer info
+	// Mode info
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgMuted).
+		Render("• Daemon Mode: Continuous long-running service"))
+	content.WriteString("\n")
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(FgMuted).
 		Render("• Scan Timer: Runs daily at 2 AM"))
@@ -1770,6 +1790,15 @@ func (m Model) renderSchedule() string {
 		Render("• Clean Timer: Runs weekly on Sunday at 3 AM"))
 	content.WriteString("\n\n")
 
+	// Warning if both daemon and timers are active
+	if daemonEnabled && (scanEnabled || cleanEnabled) {
+		content.WriteString(lipgloss.NewStyle().
+			Foreground(Danger).
+			Bold(true).
+			Render("⚠ Warning: Daemon and timers cannot run simultaneously!"))
+		content.WriteString("\n\n")
+	}
+
 	// Menu options
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(FgSecondary).
@@ -1778,6 +1807,8 @@ func (m Model) renderSchedule() string {
 	content.WriteString("\n\n")
 
 	options := []string{
+		"Enable Daemon Mode",
+		"Disable Daemon Mode",
 		"Enable Scan & Clean Timers",
 		"Disable Scan & Clean Timers",
 		"← Back",
@@ -1821,6 +1852,24 @@ func checkTimerStatus(timerName string) (bool, string) {
 	enabled := err == nil && strings.TrimSpace(string(output)) == "enabled"
 
 	cmd = exec.Command("systemctl", "is-active", timerName)
+	output, err = cmd.CombinedOutput()
+	active := err == nil && strings.TrimSpace(string(output)) == "active"
+
+	if enabled && active {
+		return true, "Enabled & Active"
+	} else if enabled {
+		return true, "Enabled (Inactive)"
+	}
+	return false, "Disabled"
+}
+
+// checkDaemonStatus checks if moonbit-daemon.service is enabled and active
+func checkDaemonStatus() (bool, string) {
+	cmd := exec.Command("systemctl", "is-enabled", "moonbit-daemon.service")
+	output, err := cmd.CombinedOutput()
+	enabled := err == nil && strings.TrimSpace(string(output)) == "enabled"
+
+	cmd = exec.Command("systemctl", "is-active", "moonbit-daemon.service")
 	output, err = cmd.CombinedOutput()
 	active := err == nil && strings.TrimSpace(string(output)) == "active"
 

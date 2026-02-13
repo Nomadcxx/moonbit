@@ -133,8 +133,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if m.step == stepWelcome && m.selectedOption < 1 {
 				m.selectedOption++
-			} else if m.step == stepScheduleSelect && m.scheduleIndex < 2 {
-				m.scheduleIndex++
+			} else if m.step == stepScheduleSelect {
+				schedules := []string{"daemon", "daily", "weekly", "manual"}
+				if m.scheduleIndex < len(schedules)-1 {
+					m.scheduleIndex++
+				}
 			}
 		case "enter":
 			if m.step == stepWelcome {
@@ -164,7 +167,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.step == stepScheduleSelect {
 				// Set schedule based on selection
-				schedules := []string{"daily", "weekly", "manual"}
+				schedules := []string{"daemon", "daily", "weekly", "manual"}
 				m.scheduleName = schedules[m.scheduleIndex]
 
 				// Start installation
@@ -319,6 +322,7 @@ func (m model) renderScheduleSelect() string {
 		name string
 		desc string
 	}{
+		{"daemon", "Long-running background service (systemd)"},
 		{"daily", "Scan daily at 2 AM, clean weekly on Sunday at 3 AM"},
 		{"weekly", "Scan and clean weekly on Sunday at 3 AM"},
 		{"manual", "No automation, run moonbit manually as needed"},
@@ -400,6 +404,8 @@ Press Enter to exit`
 
 	scheduleMsg := ""
 	switch m.scheduleName {
+	case "daemon":
+		scheduleMsg = "Daemon mode installed and started:\n  - Long-running background service (systemd)\n\n"
 	case "daily":
 		scheduleMsg = "Automated cleaning scheduled:\n  - Scan: Daily at 2 AM\n  - Clean: Weekly on Sunday at 3 AM\n\n"
 	case "weekly":
@@ -514,8 +520,8 @@ func installBinary(m *model) error {
 }
 
 func installSystemd(m *model) error {
-	if m.scheduleName == "manual" {
-		return nil // Skip systemd for manual mode
+	if m.scheduleName == "manual" || m.scheduleName == "daemon" {
+		return nil // Skip systemd for manual and daemon modes
 	}
 
 	// Copy systemd files
@@ -552,24 +558,31 @@ func installSystemd(m *model) error {
 }
 
 func configureSchedule(m *model) error {
-	if m.scheduleName == "manual" {
-		return nil // Skip configuration for manual mode
+	switch m.scheduleName {
+	case "manual":
+		return nil // No configuration needed for manual mode
+	case "daemon":
+		return nil // Daemon service file already installed, just needs enablement
+	default:
+		// For daily/weekly modes, timers will be enabled in enableService
+		return nil
 	}
-
-	// Schedules are already configured in the systemd files
-	// Daily = scan daily + clean weekly (default config)
-	// Weekly = only enable clean timer (which runs weekly)
-
-	return nil
 }
 
 func enableService(m *model) error {
-	if m.scheduleName == "manual" {
-		return nil // Skip enabling for manual mode
-	}
-
-	var timers []string
 	switch m.scheduleName {
+	case "manual":
+		return nil
+	case "daemon":
+		return enableDaemon()
+	default:
+		return enableTimers(m.scheduleName)
+	}
+}
+
+func enableTimers(scheduleName string) error {
+	var timers []string
+	switch scheduleName {
 	case "daily":
 		timers = []string{"moonbit-scan.timer", "moonbit-clean.timer"}
 	case "weekly":
@@ -586,6 +599,31 @@ func enableService(m *model) error {
 	return nil
 }
 
+func enableDaemon() error {
+	if _, err := os.Stat("systemd/moonbit-daemon.service"); err != nil {
+		return fmt.Errorf("daemon service file not found: %s (run installer from moonbit project root)", err)
+	}
+
+	target := "/etc/systemd/system/moonbit-daemon.service"
+	cmd := exec.Command("install", "-m", "644", "systemd/moonbit-daemon.service", target)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install daemon service: %v", err)
+	}
+
+	cmds := [][]string{
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "enable", "--now", "moonbit-daemon.service"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to run %v: %s: %w", args, output, err)
+		}
+	}
+
+	return nil
+}
+
 // Uninstall functions
 
 func disableService(m *model) error {
@@ -595,6 +633,10 @@ func disableService(m *model) error {
 		cmd := exec.Command("systemctl", "disable", "--now", timer)
 		_ = cmd.Run() // Ignore errors, timer might not exist
 	}
+
+	// Also disable daemon if it exists
+	cmd := exec.Command("systemctl", "disable", "--now", "moonbit-daemon.service")
+	_ = cmd.Run() // Ignore errors
 
 	return nil
 }
@@ -612,6 +654,7 @@ func removeSystemd(m *model) error {
 		"/etc/systemd/system/moonbit-scan.timer",
 		"/etc/systemd/system/moonbit-clean.service",
 		"/etc/systemd/system/moonbit-clean.timer",
+		"/etc/systemd/system/moonbit-daemon.service",
 	}
 
 	for _, file := range files {

@@ -2,39 +2,131 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/audit"
-	"github.com/Nomadcxx/moonbit/internal/config"
-	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/spf13/cobra"
 )
 
+func parseDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty duration string")
+	}
+
+	if strings.HasSuffix(s, "d") {
+		prefix := strings.TrimSuffix(s, "d")
+		days, err := strconv.ParseFloat(prefix, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid day duration %q: %w", s, err)
+		}
+		return time.Duration(days * float64(24*time.Hour)), nil
+	}
+
+	return time.ParseDuration(s)
+}
+
 var (
-	daemonScanInterval   string
-	daemonCleanInterval  string
-	daemonLogFile        string
-	daemonPidFile        string
+	daemonScanInterval  string
+	daemonCleanInterval string
+	daemonLogFile       string
+	daemonPidFile       string
 )
 
 // DaemonState tracks the running daemon state
 type DaemonState struct {
+	mu            sync.Mutex
 	StartTime     time.Time
 	LastScanTime  time.Time
 	LastCleanTime time.Time
 	ScanCount     int
 	CleanCount    int
 	FilesCleaned  int64
-	SpaceFreed   int64
-	logger       *audit.Logger
+	SpaceFreed    int64
+	logger        *audit.Logger
+}
+
+type daemonStats struct {
+	StartTime     time.Time
+	LastScanTime  time.Time
+	LastCleanTime time.Time
+	ScanCount     int
+	CleanCount    int
+	FilesCleaned  int64
+	SpaceFreed    int64
+}
+
+func (ds *DaemonState) setLastScanTime(t time.Time) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.LastScanTime = t
+}
+
+func (ds *DaemonState) incrementScanCount() {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.ScanCount++
+}
+
+func (ds *DaemonState) setLastCleanTime(t time.Time) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.LastCleanTime = t
+}
+
+func (ds *DaemonState) incrementCleanCount() {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.CleanCount++
+}
+
+func (ds *DaemonState) addFilesCleaned(n int64) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.FilesCleaned += n
+}
+
+func (ds *DaemonState) addSpaceFreed(n int64) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.SpaceFreed += n
+}
+
+func (ds *DaemonState) auditLogger() *audit.Logger {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	return ds.logger
+}
+
+func (ds *DaemonState) stats() daemonStats {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	return daemonStats{
+		StartTime:     ds.StartTime,
+		LastScanTime:  ds.LastScanTime,
+		LastCleanTime: ds.LastCleanTime,
+		ScanCount:     ds.ScanCount,
+		CleanCount:    ds.CleanCount,
+		FilesCleaned:  ds.FilesCleaned,
+		SpaceFreed:    ds.SpaceFreed,
+	}
 }
 
 var daemonState *DaemonState
+
+var opSem = make(chan struct{}, 1)
+
+var daemonOut io.Writer = os.Stdout
+var daemonErr io.Writer = os.Stderr
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -48,29 +140,48 @@ Examples:
   moonbit daemon --scan 30m         # Scan every 30 minutes
   moonbit daemon --clean 12h        # Clean every 12 hours
   moonbit daemon --scan 1h --clean 7d  # Custom intervals`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if !isRunningAsRoot() {
 			reexecWithSudo()
-			return
+			return nil
+		}
+
+		daemonOut = os.Stdout
+		daemonErr = os.Stderr
+		var logFile *os.File
+		if daemonLogFile != "" {
+			if err := os.MkdirAll(filepath.Dir(daemonLogFile), 0755); err != nil {
+				return fmt.Errorf("failed to create log directory %s: %w", filepath.Dir(daemonLogFile), err)
+			}
+			f, err := os.OpenFile(daemonLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to open log file %s: %w", daemonLogFile, err)
+			}
+			logFile = f
+			defer logFile.Close()
+			daemonOut = io.MultiWriter(os.Stdout, logFile)
+			daemonErr = io.MultiWriter(os.Stderr, logFile)
 		}
 
 		// Parse intervals
-		scanInterval, err := time.ParseDuration(daemonScanInterval)
+		scanInterval, err := parseDuration(daemonScanInterval)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid scan interval: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("invalid scan interval: %w", err)
 		}
 
-		cleanInterval, err := time.ParseDuration(daemonCleanInterval)
+		cleanInterval, err := parseDuration(daemonCleanInterval)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid clean interval: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("invalid clean interval: %w", err)
+		}
+
+		if err := checkTimerConflicts(); err != nil {
+			return err
 		}
 
 		// Setup logging
 		logger, err := audit.NewLogger()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to create audit logger: %v\n", err)
+			fmt.Fprintf(daemonErr, "Warning: Failed to create audit logger: %v\n", err)
 			logger = nil
 		}
 
@@ -81,27 +192,29 @@ Examples:
 
 		// Write PID file
 		if daemonPidFile != "" {
+			if err := cleanStalePidFile(daemonPidFile); err != nil {
+				return err
+			}
 			if err := writePidFile(daemonPidFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to write PID file: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("failed to write PID file: %w", err)
 			}
 			defer os.Remove(daemonPidFile)
 		}
 
-		fmt.Println(S.ASCIIHeader())
-		fmt.Println()
-		fmt.Println(S.Bold("MoonBit Daemon Started"))
-		fmt.Printf("  Scan interval:  %s\n", S.Success(scanInterval.String()))
-		fmt.Printf("  Clean interval: %s\n", S.Success(cleanInterval.String()))
-		fmt.Printf("  Log file:       %s\n", S.Muted(daemonLogFile))
-		fmt.Printf("  PID file:       %s\n", S.Muted(daemonPidFile))
-		fmt.Println()
-		fmt.Println(S.Muted("Press Ctrl+C to stop"))
-		fmt.Println()
+		fmt.Fprintln(daemonOut, S.ASCIIHeader())
+		fmt.Fprintln(daemonOut)
+		fmt.Fprintln(daemonOut, S.Bold("MoonBit Daemon Started"))
+		fmt.Fprintf(daemonOut, "  Scan interval:  %s\n", S.Success(scanInterval.String()))
+		fmt.Fprintf(daemonOut, "  Clean interval: %s\n", S.Success(cleanInterval.String()))
+		fmt.Fprintf(daemonOut, "  Log file:       %s\n", S.Muted(daemonLogFile))
+		fmt.Fprintf(daemonOut, "  PID file:       %s\n", S.Muted(daemonPidFile))
+		fmt.Fprintln(daemonOut)
+		fmt.Fprintln(daemonOut, S.Muted("Press Ctrl+C to stop"))
+		fmt.Fprintln(daemonOut)
 
 		// Log daemon start
-		if daemonState.logger != nil {
-			daemonState.logger.Log(audit.LogEntry{
+		if logger := daemonState.auditLogger(); logger != nil {
+			logger.Log(audit.LogEntry{
 				Operation: "daemon_start",
 				Args:      []string{scanInterval.String(), cleanInterval.String()},
 				Result:    "success",
@@ -131,19 +244,32 @@ Examples:
 				go performClean()
 
 			case sig := <-sigChan:
-				fmt.Printf("\n%s Received signal: %v\n", S.Warning("⚠"), sig)
-				fmt.Println(S.Bold("Shutting down daemon..."))
-				
-				if daemonState.logger != nil {
-					daemonState.logger.Log(audit.LogEntry{
+				fmt.Fprintf(daemonOut, "\n%s Received signal: %v\n", S.Warning("⚠"), sig)
+				fmt.Fprintln(daemonOut, S.Bold("Shutting down daemon..."))
+
+				stats := daemonState.stats()
+				uptime := time.Since(stats.StartTime).Round(time.Second)
+				fmt.Fprintf(daemonOut,
+					"%s Daemon statistics — uptime: %s, scans: %d, cleans: %d, files cleaned: %d, space freed: %s\n",
+					S.Bold("📊"),
+					uptime,
+					stats.ScanCount,
+					stats.CleanCount,
+					stats.FilesCleaned,
+					utils.HumanizeBytes(uint64(stats.SpaceFreed)),
+				)
+
+				if logger := daemonState.auditLogger(); logger != nil {
+					logger.Log(audit.LogEntry{
 						Operation: "daemon_stop",
 						Args:      []string{sig.String()},
-						Result:    fmt.Sprintf("scans=%d cleans=%d", daemonState.ScanCount, daemonState.CleanCount),
+						Result:    fmt.Sprintf("scans=%d cleans=%d", stats.ScanCount, stats.CleanCount),
 					})
+					logger.Close()
 				}
-				
-				fmt.Println(S.Success("✓ Daemon stopped"))
-				return
+
+				fmt.Fprintln(daemonOut, S.Success("✓ Daemon stopped"))
+				return nil
 			}
 		}
 	},
@@ -153,9 +279,9 @@ var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show daemon status",
 	Long:  "Display current status of the running moonbit daemon",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		pidFile := "/var/run/moonbit.pid"
-		
+
 		// Check if PID file exists
 		data, err := os.ReadFile(pidFile)
 		if err != nil {
@@ -179,26 +305,35 @@ var daemonStatusCmd = &cobra.Command{
 		fmt.Printf("  Uptime: %s\n", S.Muted("see logs for details"))
 		fmt.Println()
 		fmt.Println(S.Muted("View logs: journalctl -u moonbit-daemon -f"))
+		return nil
 	},
 }
 
 func performScan() {
-	now := time.Now()
-	daemonState.LastScanTime = now
-	daemonState.ScanCount++
+	select {
+	case opSem <- struct{}{}:
+		defer func() { <-opSem }()
+	default:
+		fmt.Fprintf(daemonOut, "%s Skipping scan — another operation in progress\n", S.Warning("⚠"))
+		return
+	}
 
-	fmt.Printf("\n%s [%s] Starting scheduled scan...\n", 
-		S.Bold("🔍"), 
+	now := time.Now()
+	daemonState.setLastScanTime(now)
+	daemonState.incrementScanCount()
+
+	fmt.Fprintf(daemonOut, "\n%s [%s] Starting scheduled scan...\n",
+		S.Bold("🔍"),
 		now.Format("2006-01-02 15:04:05"))
 
 	start := time.Now()
-	
+
 	// Run scan
 	if err := ScanAndSave(); err != nil {
-		fmt.Printf("%s Scan failed: %v\n", S.Error("✗"), err)
-		
-		if daemonState.logger != nil {
-			daemonState.logger.Log(audit.LogEntry{
+		fmt.Fprintf(daemonOut, "%s Scan failed: %v\n", S.Error("✗"), err)
+
+		if logger := daemonState.auditLogger(); logger != nil {
+			logger.Log(audit.LogEntry{
 				Timestamp: now,
 				Operation: "scheduled_scan",
 				Result:    "failed",
@@ -209,10 +344,10 @@ func performScan() {
 	}
 
 	duration := time.Since(start)
-	fmt.Printf("%s Scan completed in %s\n", S.Success("✓"), duration)
+	fmt.Fprintf(daemonOut, "%s Scan completed in %s\n", S.Success("✓"), duration)
 
-	if daemonState.logger != nil {
-		daemonState.logger.Log(audit.LogEntry{
+	if logger := daemonState.auditLogger(); logger != nil {
+		logger.Log(audit.LogEntry{
 			Timestamp: now,
 			Operation: "scheduled_scan",
 			Result:    "success",
@@ -221,11 +356,19 @@ func performScan() {
 }
 
 func performClean() {
-	now := time.Now()
-	daemonState.LastCleanTime = now
-	daemonState.CleanCount++
+	select {
+	case opSem <- struct{}{}:
+		defer func() { <-opSem }()
+	default:
+		fmt.Fprintf(daemonOut, "%s Skipping clean — another operation in progress\n", S.Warning("⚠"))
+		return
+	}
 
-	fmt.Printf("\n%s [%s] Starting scheduled clean...\n",
+	now := time.Now()
+	daemonState.setLastCleanTime(now)
+	daemonState.incrementCleanCount()
+
+	fmt.Fprintf(daemonOut, "\n%s [%s] Starting scheduled clean...\n",
 		S.Bold("🧹"),
 		now.Format("2006-01-02 15:04:05"))
 
@@ -233,10 +376,10 @@ func performClean() {
 
 	// Run clean
 	if err := CleanSession(true); err != nil {
-		fmt.Printf("%s Clean failed: %v\n", S.Error("✗"), err)
-		
-		if daemonState.logger != nil {
-			daemonState.logger.Log(audit.LogEntry{
+		fmt.Fprintf(daemonOut, "%s Clean failed: %v\n", S.Error("✗"), err)
+
+		if logger := daemonState.auditLogger(); logger != nil {
+			logger.Log(audit.LogEntry{
 				Timestamp: now,
 				Operation: "scheduled_clean",
 				Result:    "failed",
@@ -247,10 +390,10 @@ func performClean() {
 	}
 
 	duration := time.Since(start)
-	fmt.Printf("%s Clean completed in %s\n", S.Success("✓"), duration)
+	fmt.Fprintf(daemonOut, "%s Clean completed in %s\n", S.Success("✓"), duration)
 
-	if daemonState.logger != nil {
-		daemonState.logger.Log(audit.LogEntry{
+	if logger := daemonState.auditLogger(); logger != nil {
+		logger.Log(audit.LogEntry{
 			Timestamp: now,
 			Operation: "scheduled_clean",
 			Result:    "success",
@@ -259,8 +402,60 @@ func performClean() {
 }
 
 func writePidFile(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
 	pid := os.Getpid()
 	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", pid)), 0644)
+}
+
+func cleanStalePidFile(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read PID file %s: %w", path, err)
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		_ = os.Remove(path)
+		return nil
+	}
+
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil {
+		return fmt.Errorf("daemon already running with PID %d", pid)
+	} else if os.IsNotExist(err) {
+		_ = os.Remove(path)
+		return nil
+	} else {
+		return fmt.Errorf("failed to stat /proc/%d: %w", pid, err)
+	}
+}
+
+func checkTimerConflicts() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+
+	activeTimers := []string{}
+	for _, timer := range []string{"moonbit-scan.timer", "moonbit-clean.timer"} {
+		cmd := exec.Command("systemctl", "is-active", "--quiet", timer)
+		if err := cmd.Run(); err == nil {
+			activeTimers = append(activeTimers, timer)
+		}
+	}
+
+	if len(activeTimers) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"moonbit timers are active (%s) — disable them first with 'systemctl disable --now moonbit-scan.timer moonbit-clean.timer'",
+		strings.Join(activeTimers, ", "),
+	)
 }
 
 func init() {
