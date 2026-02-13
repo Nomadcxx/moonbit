@@ -1,4 +1,4 @@
-.PHONY: all build test clean install uninstall run dev help install-systemd uninstall-systemd installer
+.PHONY: all build test clean install uninstall run dev help install-systemd uninstall-systemd install-daemon uninstall-daemon installer
 
 BINARY_NAME=moonbit
 INSTALLER_NAME=moonbit-installer
@@ -82,6 +82,25 @@ uninstall-systemd:
 	sudo systemctl daemon-reload
 	@echo "Systemd files uninstalled"
 
+# Install daemon service (long-running mode)
+install-daemon: build
+	@echo "Installing moonbit daemon service..."
+	sudo cp $(BINARY_NAME) $(INSTALL_PATH)/
+	sudo chmod +x $(INSTALL_PATH)/$(BINARY_NAME)
+	sudo mkdir -p /var/log/moonbit
+	sudo cp systemd/moonbit-daemon.service $(SYSTEMD_PATH)/
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now moonbit-daemon.service
+	@echo "moonbit daemon installed and started"
+
+# Uninstall daemon service
+uninstall-daemon:
+	@echo "Uninstalling moonbit daemon..."
+	-sudo systemctl disable --now moonbit-daemon.service
+	-sudo rm -f $(SYSTEMD_PATH)/moonbit-daemon.service
+	sudo systemctl daemon-reload
+	@echo "moonbit daemon removed"
+
 # Run the application (interactive TUI mode)
 run: build
 	./$(BINARY_NAME)
@@ -144,6 +163,8 @@ help:
 	@echo "  uninstall      Remove binary from $(INSTALL_PATH)"
 	@echo "  install-systemd   Install systemd service/timer files"
 	@echo "  uninstall-systemd Remove systemd service/timer files"
+	@echo "  install-daemon Install daemon service (long-running mode)"
+	@echo "  uninstall-daemon  Remove daemon service"
 	@echo "  installer      Build the installer TUI"
 	@echo "  run            Build and run in TUI mode"
 	@echo "  dev            Build and run with sudo (for system paths)"
