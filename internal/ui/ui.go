@@ -1889,6 +1889,57 @@ func getStatusIcon(enabled bool) string {
 	return "✗"
 }
 
+// executeDaemonCommand executes a systemctl command for the daemon service
+func (m Model) executeDaemonCommand(action string) (tea.Model, tea.Cmd) {
+	return m, runDaemonCommand(action)
+}
+
+// runDaemonCommand executes systemctl command for moonbit-daemon.service asynchronously
+func runDaemonCommand(action string) tea.Cmd {
+	return func() tea.Msg {
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
+
+		serviceName := "moonbit-daemon.service"
+		var cmd *exec.Cmd
+		switch action {
+		case "enable":
+			cmd = exec.Command("systemctl", "enable", "--now", serviceName)
+		case "disable":
+			cmd = exec.Command("systemctl", "disable", "--now", serviceName)
+		}
+
+		if cmd != nil {
+			err := cmd.Run()
+			if auditLog != nil {
+				result := "success"
+				if err != nil {
+					result = "failed"
+				}
+				auditLog.LogSystemdOperation(action, serviceName, result, err)
+			}
+
+			if err != nil {
+				return timerCommandMsg{
+					success: false,
+					message: fmt.Sprintf("Failed to %s %s: %v", action, serviceName, err),
+				}
+			}
+			return timerCommandMsg{
+				success: true,
+				message: fmt.Sprintf("Successfully %sd %s", action, serviceName),
+			}
+		}
+
+		return timerCommandMsg{
+			success: false,
+			message: "Invalid command",
+		}
+	}
+}
+
 // executeTimerCommand executes a systemctl command for a timer
 // timerCommandMsg contains the result of a timer command
 type timerCommandMsg struct {
