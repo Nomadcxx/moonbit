@@ -19,7 +19,7 @@ fi
 # Check dependencies
 echo "Checking dependencies..."
 if ! command -v go &> /dev/null; then
-    echo "Error: Go is not installed. Please install Go 1.21+ first."
+    echo "Error: Go is not installed. Please install Go 1.24+ first."
     exit 1
 fi
 

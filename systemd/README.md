@@ -64,14 +64,14 @@ sudo systemctl start moonbit-clean.service
 
 ```bash
 # Check daemon status
-systemctl status moonbit-daemon
+systemctl status moonbit-daemon.service
 
 # View daemon logs
-journalctl -u moonbit-daemon -f
+journalctl -u moonbit-daemon.service -f
 
 # Manually stop/start
-sudo systemctl stop moonbit-daemon
-sudo systemctl start moonbit-daemon
+sudo systemctl stop moonbit-daemon.service
+sudo systemctl start moonbit-daemon.service
 ```
 
 ## Schedule Overview
@@ -85,7 +85,7 @@ Randomized delays prevent resource spikes if running on multiple systems.
 ### Daemon Mode
 - **Continuous**: Daemon runs 24/7
 - **Scan interval**: Configurable (default: 1 hour)
-- **Clean interval**: Configurable (default: 6 hours)
+- **Clean interval**: Configurable (default: 24 hours)
 
 ## Switching Between Modes
 
@@ -137,7 +137,7 @@ sudo systemctl edit moonbit-daemon
 
 And modify the `ExecStart` line:
 ```
-ExecStart=/usr/local/bin/moonbit daemon --scan 1h --clean 6h --log /var/log/moonbit/daemon.log
+ExecStart=/usr/local/bin/moonbit daemon --scan 1h --clean 24h --log /var/log/moonbit/daemon.log
 ```
 
 ## Disable
@@ -172,4 +172,3 @@ Services run with identical hardening:
 - Limited write access to cache/log directories
 
 Daemon additionally logs to `/var/log/moonbit/daemon.log` with appropriate permissions.
-
