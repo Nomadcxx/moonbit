@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 // RiskLevel represents the risk level of a cleaning category
@@ -68,23 +70,27 @@ func ParseRiskLevel(s string) (RiskLevel, error) {
 
 // FileInfo represents information about a file
 type FileInfo struct {
-	Path    string `json:"path"`
-	Size    uint64 `json:"size"`
-	ModTime string `json:"mod_time"`
+	Path             string    `json:"path"`
+	Size             uint64    `json:"size"`
+	ModTime          string    `json:"mod_time"`
+	CategoryName     string    `json:"category_name,omitempty"`
+	CategoryRisk     RiskLevel `json:"category_risk,omitempty"`
+	CategorySelected bool      `json:"category_selected,omitempty"`
 }
 
 // Category represents a cleaning category
 type Category struct {
-	Name         string     `toml:"name" json:"name"`
-	Paths        []string   `toml:"paths" json:"paths,omitempty"`
-	Filters      []string   `toml:"filters" json:"filters,omitempty"`
-	Risk         RiskLevel  `toml:"risk" json:"risk"`
-	Size         uint64     `toml:"size,omitempty" json:"size,omitempty"`
-	FileCount    int        `toml:"file_count,omitempty" json:"file_count,omitempty"`
-	Files        []FileInfo `toml:"files,omitempty" json:"files,omitempty"`
-	Selected     bool       `toml:"selected,omitempty" json:"selected,omitempty"`
-	ShredEnabled bool       `toml:"shred,omitempty" json:"shred,omitempty"`
-	MinAgeDays   int        `toml:"min_age_days,omitempty" json:"min_age_days,omitempty"` // Only clean files older than this many days
+	Name            string     `toml:"name" json:"name"`
+	Paths           []string   `toml:"paths" json:"paths,omitempty"`
+	Filters         []string   `toml:"filters" json:"filters,omitempty"`
+	ExcludePatterns []string   `toml:"exclude_patterns" json:"exclude_patterns,omitempty"`
+	Risk            RiskLevel  `toml:"risk" json:"risk"`
+	Size            uint64     `toml:"size,omitempty" json:"size,omitempty"`
+	FileCount       int        `toml:"file_count,omitempty" json:"file_count,omitempty"`
+	Files           []FileInfo `toml:"files,omitempty" json:"files,omitempty"`
+	Selected        bool       `toml:"selected,omitempty" json:"selected,omitempty"`
+	ShredEnabled    bool       `toml:"shred,omitempty" json:"shred,omitempty"`
+	MinAgeDays      int        `toml:"min_age_days,omitempty" json:"min_age_days,omitempty"` // Only clean files older than this many days
 }
 
 // Config represents the main configuration
@@ -109,22 +115,11 @@ type SessionCache struct {
 
 // getRealUserHome returns the actual user's home directory, even when running as root
 func getRealUserHome() string {
-	// When running with sudo, SUDO_USER contains the original user
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
-		// Try to get home from /etc/passwd or common patterns
-		userHome := "/home/" + sudoUser
-		if stat, err := os.Stat(userHome); err == nil && stat.IsDir() {
-			return userHome
-		}
-	}
-
-	// Fallback to HOME or os.UserHomeDir
-	if home := os.Getenv("HOME"); home != "" {
+	home, err := paths.HomeDir()
+	if err == nil {
 		return home
 	}
-
-	home, _ := os.UserHomeDir()
-	return home
+	return "/root"
 }
 
 // DefaultConfig returns a comprehensive configuration with real cleaning targets
@@ -182,12 +177,13 @@ func DefaultConfig() *Config {
 				ShredEnabled: false,
 			},
 			{
-				Name:         "User Cache",
-				Paths:        []string{userHome + "/.cache"},
-				Risk:         Low,
-				Selected:     true,
-				ShredEnabled: false,
-				Filters:      []string{`\.(tmp|temp|bak|backup)$`, `(^|/)(cache|thumbnails|browsers|applications|dotnet|gstreamer-1\.0|recently-used\.xbel)$`},
+				Name:            "User Cache",
+				Paths:           []string{userHome + "/.cache"},
+				Risk:            Low,
+				Selected:        true,
+				ShredEnabled:    false,
+				Filters:         []string{`\.(tmp|temp|bak|backup)$`, `(^|/)(cache|thumbnails|applications|dotnet|gstreamer-1\.0|recently-used\.xbel)$`},
+				ExcludePatterns: protectedCachePatterns(),
 			},
 			{
 				Name:         "System Temp",
@@ -203,27 +199,6 @@ func DefaultConfig() *Config {
 				Selected:     true,
 				ShredEnabled: false,
 				MinAgeDays:   30, // Only delete thumbnails older than 30 days
-			},
-			{
-				Name: "Browser Cache (Safe)",
-				Paths: []string{
-					userHome + "/.cache/mozilla",
-					userHome + "/.cache/firefox",
-					userHome + "/.mozilla/firefox/*/cache2",
-					userHome + "/.cache/zen",
-					userHome + "/.zen/*/cache2",
-					userHome + "/.cache/BraveSoftware",
-					userHome + "/.cache/BraveSoftware/Brave-Browser/Default/Cache",
-					userHome + "/.config/BraveSoftware/Brave-Browser/Default/Cache",
-					userHome + "/.cache/google-chrome",
-					userHome + "/.cache/google-chrome/Default/Cache",
-					userHome + "/.config/google-chrome/Default/Cache",
-					userHome + "/.cache/chromium",
-					userHome + "/.config/chromium/Default/Cache",
-				},
-				Risk:         Low,
-				Selected:     true,
-				ShredEnabled: false,
 			},
 			{
 				Name:         "System Logs",
@@ -274,13 +249,6 @@ func DefaultConfig() *Config {
 			{
 				Name:         "Mesa Shader Cache",
 				Paths:        []string{userHome + "/.cache/mesa_shader_cache"},
-				Risk:         Low,
-				Selected:     true,
-				ShredEnabled: false,
-			},
-			{
-				Name:         "WebKit Cache",
-				Paths:        []string{userHome + "/.cache/webkit", userHome + "/.cache/webkitgtk"},
 				Risk:         Low,
 				Selected:     true,
 				ShredEnabled: false,
@@ -403,18 +371,6 @@ func DefaultConfig() *Config {
 			},
 			// System caches
 			{
-				Name: "Flatpak Cache",
-				Paths: []string{
-					userHome + "/.var/app/*/cache",
-					userHome + "/.var/app/*/.cache",
-					userHome + "/.var/app/*/data/cache",
-				},
-				Risk:         Medium,
-				Selected:     false,
-				ShredEnabled: false,
-				Filters:      []string{`/cache/`, `/\.cache/`},
-			},
-			{
 				Name:         "Systemd Journal",
 				Paths:        []string{"/var/log/journal"},
 				Risk:         Medium,
@@ -424,6 +380,7 @@ func DefaultConfig() *Config {
 			},
 		},
 	}
+	cfg.Categories = append(cfg.Categories, AppCacheCategories(userHome)...)
 	return cfg
 }
 
@@ -433,11 +390,11 @@ func Load(path string) (*Config, error) {
 
 	if path == "" {
 		// Use default config path
-		homeDir, err := os.UserHomeDir()
+		configPath, err := paths.ConfigFile()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
+			return nil, fmt.Errorf("failed to determine config path: %w", err)
 		}
-		path = filepath.Join(homeDir, ".config", "moonbit", "config.toml")
+		path = configPath
 	}
 
 	// Check if file exists
@@ -453,8 +410,64 @@ func Load(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
+	cfg.Normalize()
 
 	return cfg, nil
+}
+
+func (cfg *Config) Normalize() {
+	deprecatedDefaults := map[string]bool{
+		"Browser Cache (Safe)": true,
+		"WebKit Cache":         true,
+		"Flatpak Cache":        true,
+	}
+
+	normalized := make([]Category, 0, len(cfg.Categories))
+	seen := make(map[string]bool)
+	for _, category := range cfg.Categories {
+		if deprecatedDefaults[category.Name] {
+			continue
+		}
+		if category.Name == "User Cache" {
+			category.ExcludePatterns = mergeStrings(category.ExcludePatterns, protectedCachePatterns())
+			for i, filter := range category.Filters {
+				category.Filters[i] = strings.ReplaceAll(filter, "browsers|", "")
+				category.Filters[i] = strings.ReplaceAll(category.Filters[i], "|browsers", "")
+			}
+		}
+		normalized = append(normalized, category)
+		seen[category.Name] = true
+	}
+
+	for _, category := range AppCacheCategories(getRealUserHome()) {
+		if seen[category.Name] {
+			continue
+		}
+		normalized = append(normalized, category)
+		seen[category.Name] = true
+	}
+
+	cfg.Categories = normalized
+}
+
+func mergeStrings(existing, additions []string) []string {
+	seen := make(map[string]bool, len(existing)+len(additions))
+	merged := make([]string, 0, len(existing)+len(additions))
+	for _, value := range existing {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		merged = append(merged, value)
+	}
+	for _, value := range additions {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		merged = append(merged, value)
+	}
+	return merged
 }
 
 // Save saves configuration to file

@@ -53,15 +53,16 @@ var asciiHeader = loadASCIIArt()
 type ViewMode string
 
 const (
-	ModeWelcome      ViewMode = "welcome"
-	ModeScanProgress ViewMode = "scan_progress"
-	ModeResults      ViewMode = "results"
-	ModeSelect       ViewMode = "select"
-	ModeConfirm      ViewMode = "confirm"
-	ModeClean        ViewMode = "clean"
-	ModeComplete     ViewMode = "complete"
-	ModeSchedule     ViewMode = "schedule"
-	ModeDocker       ViewMode = "docker"
+	ModeWelcome       ViewMode = "welcome"
+	ModeScanProgress  ViewMode = "scan_progress"
+	ModeResults       ViewMode = "results"
+	ModeSelect        ViewMode = "select"
+	ModeConfirm       ViewMode = "confirm"
+	ModeClean         ViewMode = "clean"
+	ModeComplete      ViewMode = "complete"
+	ModeSchedule      ViewMode = "schedule"
+	ModeDocker        ViewMode = "docker"
+	ModeDockerConfirm ViewMode = "docker_confirm"
 )
 
 // CategoryInfo represents a cleanable category for UI
@@ -113,12 +114,16 @@ type Model struct {
 	viewportReady    bool
 
 	// Settings
-	cfg *config.Config
+	cfg             *config.Config
+	dockerOperation string
 }
 
 // NewModel creates a new MoonBit model
 func NewModel() Model {
-	cfg := config.DefaultConfig()
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
 
 	return Model{
 		width:     80,
@@ -263,16 +268,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.menuIndex--
 		}
 	case "down":
-		// Calculate max index based on current mode
-		maxIndex := len(m.menuOptions) - 1
-		if m.mode == ModeSelect {
-			// categories + Select All + Clean + Back
-			maxIndex = len(m.categories) + 2
-		} else if m.mode == ModeConfirm {
-			// 2 options: Confirm & Clean, Cancel
-			maxIndex = 1
-		}
-
+		maxIndex := m.maxMenuIndex()
 		if m.menuIndex < maxIndex {
 			m.menuIndex++
 		}
@@ -293,6 +289,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) maxMenuIndex() int {
+	switch m.mode {
+	case ModeSelect:
+		return len(m.categories) + 2 // categories + Select All + Clean + Back
+	case ModeConfirm:
+		return 1 // Confirm & Clean, Cancel
+	case ModeSchedule:
+		return 4 // Enable daemon, disable daemon, enable timers, disable timers, back
+	case ModeDocker:
+		return 2 // Images, all resources, back
+	case ModeDockerConfirm:
+		return 1 // Confirm, cancel
+	default:
+		return len(m.menuOptions) - 1
+	}
 }
 
 // handleMenuSelect processes menu selection
@@ -380,14 +393,22 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 	case ModeDocker:
 		switch m.menuIndex {
 		case 0: // Clean Unused Images
-			return m.executeDockerCleanup("images")
+			return m.showDockerConfirm("images")
 		case 1: // Clean All Unused Resources
-			return m.executeDockerCleanup("all")
+			return m.showDockerConfirm("all")
 		case 2: // Back
 			m.mode = ModeWelcome
 			m.menuIndex = 0
 			return m, nil
 		}
+	case ModeDockerConfirm:
+		if m.menuIndex == 0 {
+			return m.executeDockerCleanup(m.dockerOperation)
+		}
+		m.mode = ModeDocker
+		m.menuIndex = 0
+		m.dockerOperation = ""
+		return m, nil
 	}
 
 	return m, nil
@@ -431,14 +452,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 			if scanMode == "quick" && !category.Selected {
 				continue
 			}
-			exists := false
-			for _, path := range category.Paths {
-				if _, err := os.Stat(path); err == nil {
-					exists = true
-					break
-				}
-			}
-			if exists {
+			if uiCategoryPathExists(category) {
 				totalCategories++
 			}
 		}
@@ -459,16 +473,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 				continue
 			}
 
-			// Check if category paths exist
-			exists := false
-			for _, path := range category.Paths {
-				if _, err := os.Stat(path); err == nil {
-					exists = true
-					break
-				}
-			}
-
-			if !exists {
+			if !uiCategoryPathExists(category) {
 				continue
 			}
 
@@ -601,6 +606,7 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 		// Otherwise, try to reconstruct from cache
 		// Group files by category name from config
 		categoryMap := make(map[string]*CategoryInfo)
+		sizeByCategory := make(map[string]uint64)
 
 		// Include ALL categories (matching scan behavior)
 		for _, cat := range m.cfg.Categories {
@@ -615,14 +621,22 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 		// Aggregate cache data
 		if cache.ScanResults != nil {
 			for _, file := range cache.ScanResults.Files {
-				// Try to match file to category by path
+				if file.CategoryName != "" {
+					if info, exists := categoryMap[file.CategoryName]; exists {
+						info.Files++
+						sizeByCategory[file.CategoryName] += file.Size
+						continue
+					}
+				}
+
+				// Fallback for old caches written before file-level category provenance.
 				matched := false
 				for _, cat := range m.cfg.Categories {
 					for _, path := range cat.Paths {
 						if strings.HasPrefix(file.Path, path) {
 							if info, exists := categoryMap[cat.Name]; exists {
 								info.Files++
-								// Parse existing size and add
+								sizeByCategory[cat.Name] += file.Size
 								matched = true
 								break
 							}
@@ -638,6 +652,7 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 		// Convert map to slice, only include non-zero categories
 		for _, info := range categoryMap {
 			if info.Files > 0 {
+				info.Size = utils.HumanizeBytes(sizeByCategory[info.Name])
 				m.categories = append(m.categories, *info)
 			}
 		}
@@ -716,7 +731,14 @@ func (m Model) buildFilteredCache() *config.SessionCache {
 	// Filter files based on enabled categories
 	var filteredFiles []config.FileInfo
 	for _, file := range m.scanResults.ScanResults.Files {
-		// Match file to category by checking if path starts with category path
+		if file.CategoryName != "" {
+			if enabledNames[file.CategoryName] {
+				filteredFiles = append(filteredFiles, file)
+			}
+			continue
+		}
+
+		// Fallback for old caches written before file-level category provenance.
 		for _, configCat := range m.cfg.Categories {
 			if !enabledNames[configCat.Name] {
 				continue
@@ -747,6 +769,24 @@ func (m Model) buildFilteredCache() *config.SessionCache {
 		TotalFiles: len(filteredFiles),
 		ScannedAt:  m.scanResults.ScannedAt,
 	}
+}
+
+func uiCategoryPathExists(category config.Category) bool {
+	for _, pathPattern := range category.Paths {
+		if _, err := os.Stat(pathPattern); err == nil {
+			return true
+		}
+		matches, err := filepath.Glob(pathPattern)
+		if err != nil {
+			continue
+		}
+		for _, match := range matches {
+			if _, err := os.Stat(match); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // runCleanCmd executes cleaning using the cleaner package
@@ -810,6 +850,9 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 		m.cleanError = ""
 		m.cleanFilesDeleted = msg.FilesDeleted
 		m.cleanBytesFreed = msg.BytesFreed
+		if sessionMgr, err := session.NewManager(); err == nil {
+			_ = sessionMgr.Clear()
+		}
 		if msg.Error != "" {
 			m.currentPhase = fmt.Sprintf("Cleaned %d files (%s) with some errors: %s",
 				msg.FilesDeleted, utils.HumanizeBytes(msg.BytesFreed), msg.Error)
@@ -937,6 +980,9 @@ func (m Model) View() string {
 	case ModeDocker:
 		mainContent = m.renderDockerMenu()
 		borderColor = Secondary
+	case ModeDockerConfirm:
+		mainContent = m.renderDockerConfirm()
+		borderColor = Danger
 	}
 
 	// Bordered panel (not centered yet)
@@ -1521,6 +1567,8 @@ func (m Model) getFooterText() string {
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	case ModeDocker:
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
+	case ModeDockerConfirm:
+		return "↑/↓ Navigate  |  Enter Select  |  Esc Cancel"
 	default:
 		return "↑/↓ Navigate  |  Enter Select  |  Esc Back  |  Q Quit"
 	}
@@ -2058,7 +2106,15 @@ func runTimerCommands(action string) tea.Cmd {
 func (m Model) showDockerMenu() (tea.Model, tea.Cmd) {
 	m.mode = ModeDocker
 	m.menuIndex = 0
+	m.dockerOperation = ""
 	m.currentPhase = "" // Clear any previous status messages
+	return m, nil
+}
+
+func (m Model) showDockerConfirm(operation string) (tea.Model, tea.Cmd) {
+	m.mode = ModeDockerConfirm
+	m.menuIndex = 0
+	m.dockerOperation = operation
 	return m, nil
 }
 
@@ -2123,6 +2179,44 @@ func (m Model) renderDockerMenu() string {
 	return content.String()
 }
 
+func (m Model) renderDockerConfirm() string {
+	var content strings.Builder
+
+	detail := "This will remove unused Docker images."
+	if m.dockerOperation == "all" {
+		detail = "This will remove unused Docker images, containers, build cache, and volumes."
+	}
+
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(Danger).
+		Bold(true).
+		Render("Confirm Docker Cleanup"))
+	content.WriteString("\n\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgPrimary).
+		Render(detail))
+	content.WriteString("\n\n")
+
+	options := []string{"Confirm Cleanup", "Cancel"}
+	for i, option := range options {
+		var line string
+		if i == m.menuIndex {
+			line = lipgloss.NewStyle().
+				Foreground(Danger).
+				Bold(true).
+				Render(fmt.Sprintf("> %s", option))
+		} else {
+			line = lipgloss.NewStyle().
+				Foreground(FgPrimary).
+				Render(fmt.Sprintf("  %s", option))
+		}
+		content.WriteString(line)
+		content.WriteString("\n")
+	}
+
+	return content.String()
+}
+
 // dockerCompleteMsg contains the result of a Docker cleanup operation
 type dockerCompleteMsg struct {
 	success bool
@@ -2132,6 +2226,8 @@ type dockerCompleteMsg struct {
 // executeDockerCleanup executes Docker cleanup command
 func (m Model) executeDockerCleanup(operation string) (tea.Model, tea.Cmd) {
 	m.currentPhase = "Running Docker cleanup..."
+	m.mode = ModeDocker
+	m.menuIndex = 0
 	return m, runDockerCleanup(operation)
 }
 

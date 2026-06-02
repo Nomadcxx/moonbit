@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -16,17 +17,9 @@ func init() {
 	var logFile *os.File
 	var err error
 
-	// Try XDG_CACHE_HOME first, then fallback to ~/.cache
-	cacheHome := os.Getenv("XDG_CACHE_HOME")
-	if cacheHome == "" {
-		homeDir, homeErr := os.UserHomeDir()
-		if homeErr == nil {
-			cacheHome = filepath.Join(homeDir, ".cache")
-		}
-	}
-
-	if cacheHome != "" {
-		logDir := filepath.Join(cacheHome, "moonbit")
+	cacheFile, pathErr := paths.CacheFile()
+	if pathErr == nil {
+		logDir := filepath.Dir(cacheFile)
 		os.MkdirAll(logDir, 0700) // User-only permissions
 		logPath := filepath.Join(logDir, "debug.log")
 		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // User-only read/write

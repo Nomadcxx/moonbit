@@ -5,7 +5,13 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/moonbit scan
+Environment=HOME=/root
+Environment=XDG_CONFIG_HOME=/var/lib/moonbit/config
+Environment=XDG_CACHE_HOME=/var/cache
+Environment=XDG_DATA_HOME=/var/lib
+StateDirectory=moonbit
+CacheDirectory=moonbit
+ExecStart=/usr/local/bin/moonbit scan --mode quick --no-prompt
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=moonbit-scan
@@ -15,7 +21,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/cache/moonbit /root/.cache/moonbit
+ReadWritePaths=/var/cache/moonbit /var/lib/moonbit
 
 [Install]
 WantedBy=multi-user.target

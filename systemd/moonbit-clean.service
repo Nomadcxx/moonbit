@@ -7,8 +7,15 @@ After=moonbit-scan.service
 
 [Service]
 Type=oneshot
+Environment=HOME=/root
+Environment=XDG_CONFIG_HOME=/var/lib/moonbit/config
+Environment=XDG_CACHE_HOME=/var/cache
+Environment=XDG_DATA_HOME=/var/lib
+StateDirectory=moonbit
+CacheDirectory=moonbit
 # Run with --force to actually clean (not dry-run)
-ExecStart=/usr/local/bin/moonbit clean --force
+ExecStartPre=/usr/local/bin/moonbit scan --mode quick
+ExecStart=/usr/local/bin/moonbit clean --force --mode quick
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=moonbit-clean
@@ -18,7 +25,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/cache /var/tmp /var/log /root/.cache /root/.local/share
+ReadWritePaths=/var/cache /var/tmp /var/log /var/lib/moonbit /root/.cache /root/.local/share
 
 [Install]
 WantedBy=multi-user.target

@@ -5,6 +5,13 @@ After=network.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
+Environment=XDG_CONFIG_HOME=/var/lib/moonbit/config
+Environment=XDG_CACHE_HOME=/var/cache
+Environment=XDG_DATA_HOME=/var/lib
+StateDirectory=moonbit
+CacheDirectory=moonbit
+LogsDirectory=moonbit
 ExecStart=/usr/local/bin/moonbit daemon --log /var/log/moonbit/daemon.log --pid /var/run/moonbit.pid
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=on-failure
@@ -15,7 +22,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/cache/moonbit /var/cache /var/tmp /var/log/moonbit /var/run /root/.cache/moonbit /root/.local/share
+ReadWritePaths=/var/cache/moonbit /var/cache /var/tmp /var/log/moonbit /var/run /var/lib/moonbit /root/.cache/moonbit /root/.local/share
 
 # Logging
 StandardOutput=journal

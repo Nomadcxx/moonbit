@@ -3,11 +3,13 @@ package scanner
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewScanner(t *testing.T) {
@@ -20,7 +22,7 @@ func TestNewScanner(t *testing.T) {
 			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
-			WorkerCount:     4, // Explicit worker count for test determinism
+			WorkerCount:    4, // Explicit worker count for test determinism
 		},
 	}
 
@@ -137,6 +139,185 @@ func TestScannerFilterLogic(t *testing.T) {
 	assert.False(t, s.filter.MatchString("/tmp/test.log"))
 }
 
+func TestScanCategoryWithNoIgnorePatternsIncludesFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	testFile := tempDir + "/cache.tmp"
+	assert.NoError(t, os.WriteFile(testFile, []byte("cache data"), 0644))
+
+	cfg := &config.Config{
+		Scan: struct {
+			MaxDepth       int      `toml:"max_depth"`
+			IgnorePatterns []string `toml:"ignore_patterns"`
+			EnableAll      bool     `toml:"enable_all"`
+			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
+		}{
+			IgnorePatterns: []string{},
+			WorkerCount:    1,
+		},
+	}
+
+	s := NewScanner(cfg)
+	category := &config.Category{
+		Name:  "Temp Cache",
+		Paths: []string{tempDir},
+		Risk:  config.Low,
+	}
+	progressCh := make(chan ScanMsg, 10)
+
+	go s.ScanCategory(context.Background(), category, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		if msg.Error != nil {
+			t.Fatalf("scan returned error: %v", msg.Error)
+		}
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+
+	require.NotNil(t, complete)
+	require.Equal(t, 1, complete.Stats.FileCount)
+	assert.Equal(t, testFile, complete.Stats.Files[0].Path)
+}
+
+func TestScanCategoryIncludesSingleFilePath(t *testing.T) {
+	tempDir := t.TempDir()
+	testFile := tempDir + "/recently-used.xbel"
+	assert.NoError(t, os.WriteFile(testFile, []byte("recent file data"), 0644))
+
+	cfg := &config.Config{
+		Scan: struct {
+			MaxDepth       int      `toml:"max_depth"`
+			IgnorePatterns []string `toml:"ignore_patterns"`
+			EnableAll      bool     `toml:"enable_all"`
+			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
+		}{},
+	}
+
+	s := NewScanner(cfg)
+	category := &config.Category{
+		Name:  "Recent Files",
+		Paths: []string{testFile},
+		Risk:  config.Medium,
+	}
+	progressCh := make(chan ScanMsg, 10)
+
+	go s.ScanCategory(context.Background(), category, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		if msg.Error != nil {
+			t.Fatalf("scan returned error: %v", msg.Error)
+		}
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+
+	require.NotNil(t, complete)
+	require.Equal(t, 1, complete.Stats.FileCount)
+	assert.Equal(t, testFile, complete.Stats.Files[0].Path)
+}
+
+func TestScanCategoryRecordsFileCategoryProvenance(t *testing.T) {
+	tempDir := t.TempDir()
+	testFile := filepath.Join(tempDir, "cache.bin")
+	assert.NoError(t, os.WriteFile(testFile, []byte("cache data"), 0644))
+
+	cfg := &config.Config{
+		Scan: struct {
+			MaxDepth       int      `toml:"max_depth"`
+			IgnorePatterns []string `toml:"ignore_patterns"`
+			EnableAll      bool     `toml:"enable_all"`
+			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
+		}{
+			IgnorePatterns: []string{},
+			WorkerCount:    1,
+		},
+	}
+
+	s := NewScanner(cfg)
+	category := &config.Category{
+		Name:     "Cursor Cache",
+		Paths:    []string{tempDir},
+		Risk:     config.Low,
+		Selected: true,
+	}
+	progressCh := make(chan ScanMsg, 10)
+
+	go s.ScanCategory(context.Background(), category, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		if msg.Error != nil {
+			t.Fatalf("scan returned error: %v", msg.Error)
+		}
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+
+	require.NotNil(t, complete)
+	require.Len(t, complete.Stats.Files, 1)
+	assert.Equal(t, "Cursor Cache", complete.Stats.Files[0].CategoryName)
+	assert.Equal(t, config.Low, complete.Stats.Files[0].CategoryRisk)
+	assert.True(t, complete.Stats.Files[0].CategorySelected)
+}
+
+func TestAppCacheCategoryExcludesSteamFlatpakCache(t *testing.T) {
+	home := t.TempDir()
+	normalCacheFile := filepath.Join(home, ".var", "app", "org.example.App", "cache", "tmp", "normal.tmp")
+	steamCacheFile := filepath.Join(home, ".var", "app", "com.valvesoftware.Steam", "cache", "tmp", "steam.tmp")
+	assert.NoError(t, os.MkdirAll(filepath.Dir(normalCacheFile), 0755))
+	assert.NoError(t, os.MkdirAll(filepath.Dir(steamCacheFile), 0755))
+	assert.NoError(t, os.WriteFile(normalCacheFile, []byte("normal"), 0644))
+	assert.NoError(t, os.WriteFile(steamCacheFile, []byte("steam"), 0644))
+
+	var flatpak config.Category
+	for _, category := range config.AppCacheCategories(filepath.ToSlash(home)) {
+		if category.Name == "Flatpak App Caches" {
+			flatpak = category
+			break
+		}
+	}
+	require.NotEmpty(t, flatpak.Name)
+
+	cfg := &config.Config{
+		Scan: struct {
+			MaxDepth       int      `toml:"max_depth"`
+			IgnorePatterns []string `toml:"ignore_patterns"`
+			EnableAll      bool     `toml:"enable_all"`
+			DryRunDefault  bool     `toml:"dry_run_default"`
+			WorkerCount    int      `toml:"worker_count"`
+		}{
+			IgnorePatterns: []string{},
+			WorkerCount:    1,
+		},
+	}
+	s := NewScanner(cfg)
+	progressCh := make(chan ScanMsg, 10)
+
+	go s.ScanCategory(context.Background(), &flatpak, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		if msg.Error != nil {
+			t.Fatalf("scan returned error: %v", msg.Error)
+		}
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+
+	require.NotNil(t, complete)
+	require.Len(t, complete.Stats.Files, 1)
+	assert.Equal(t, filepath.ToSlash(normalCacheFile), filepath.ToSlash(complete.Stats.Files[0].Path))
+}
+
 func TestShouldIncludeFile(t *testing.T) {
 	cfg := &config.Config{
 		Scan: struct {
@@ -193,6 +374,19 @@ func TestShouldIncludeFile(t *testing.T) {
 	categoryWithAge := &config.Category{MinAgeDays: 30} // Only files older than 30 days
 	assert.True(t, s.shouldIncludeFile("/tmp/old.txt", oldFile, categoryWithAge))
 	assert.False(t, s.shouldIncludeFile("/tmp/new.txt", newFile, categoryWithAge))
+
+	// Test 7: Path-aware filters should match files inside filtered directories
+	pathFilteredCategory := &config.Category{Filters: []string{`/cache/`}}
+	assert.True(t, s.shouldIncludeFile("/tmp/app/cache/data.bin", fileInfo3, pathFilteredCategory))
+
+	// Test 8: Category exclude patterns should override matching filters
+	categoryWithExcludes := &config.Category{
+		Filters:         []string{`\.tmp$`},
+		ExcludePatterns: []string{`(?i)/steam/`, `(?i)/huggingface/`},
+	}
+	assert.False(t, s.shouldIncludeFile("/tmp/app/Steam/cache/file.tmp", fileInfo3, categoryWithExcludes))
+	assert.False(t, s.shouldIncludeFile("/tmp/app/huggingface/cache/file.tmp", fileInfo3, categoryWithExcludes))
+	assert.True(t, s.shouldIncludeFile("/tmp/app/normal/cache/file.tmp", fileInfo3, categoryWithExcludes))
 }
 
 // mockFileInfo implements os.FileInfo for testing
@@ -236,7 +430,6 @@ func TestNewScannerWithFs(t *testing.T) {
 	assert.Equal(t, fs, s.fs)
 	assert.NotNil(t, s.filter)
 }
-
 
 func TestWalkDirectory_NonexistentPath(t *testing.T) {
 	cfg := &config.Config{

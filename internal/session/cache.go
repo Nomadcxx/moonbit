@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 // Manager handles session cache operations
@@ -16,12 +17,10 @@ type Manager struct {
 
 // NewManager creates a new session cache manager
 func NewManager() (*Manager, error) {
-	homeDir, err := os.UserHomeDir()
+	cachePath, err := paths.CacheFile()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+		return nil, fmt.Errorf("failed to determine session cache path: %w", err)
 	}
-
-	cachePath := filepath.Join(homeDir, ".cache", "moonbit", "scan_results.json")
 	return &Manager{cachePath: cachePath}, nil
 }
 

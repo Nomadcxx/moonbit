@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/duplicates"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/ui"
@@ -22,8 +24,13 @@ import (
 )
 
 var (
-	dryRun   bool
-	scanMode string // "quick", "deep", or "" (all)
+	dryRun            bool
+	cleanForce        bool
+	scanNoPrompt      bool
+	listCategories    bool
+	includeCategories []string
+	excludeCategories []string
+	scanMode          string // "quick", "deep", or "" (all)
 )
 
 // Constants for scan operations
@@ -62,11 +69,6 @@ var scanCmd = &cobra.Command{
 	Short: "Scan system for cleanable files",
 	Long:  "Scan the system for cleanable files and cache locations",
 	Run: func(cmd *cobra.Command, args []string) {
-		if !isRunningAsRoot() {
-			reexecWithSudo()
-			return
-		}
-
 		if scanMode != "" {
 			if err := validation.ValidateMode(scanMode); err != nil {
 				fmt.Fprintf(os.Stderr, "Invalid scan mode: %v\n", err)
@@ -74,9 +76,25 @@ var scanCmd = &cobra.Command{
 			}
 		}
 
+		if listCategories {
+			if err := ListCategories(scanMode); err != nil {
+				fmt.Fprintf(os.Stderr, "List categories failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
+		if !isRunningAsRoot() {
+			reexecWithSudo()
+			return
+		}
+
 		if err := ScanAndSave(); err != nil {
 			fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
 			os.Exit(1)
+		}
+		if scanNoPrompt {
+			return
 		}
 
 		fmt.Println()
@@ -100,7 +118,10 @@ var scanCmd = &cobra.Command{
 var cleanCmd = &cobra.Command{
 	Use:   "clean",
 	Short: "Clean files from last scan",
-	Long:  "Clean files discovered in the last scan\n\nBy default, files are DELETED. Use --dry-run to preview first.",
+	Long:  "Clean files discovered in the last scan\n\nBy default, this previews what would be deleted. Use --force to actually delete files.",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return applyCleanFlags(cmd)
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		if !isRunningAsRoot() && !dryRun {
 			reexecWithSudo()
@@ -112,6 +133,32 @@ var cleanCmd = &cobra.Command{
 			os.Exit(1)
 		}
 	},
+}
+
+func applyCleanFlags(cmd *cobra.Command) error {
+	mode, err := cmd.Flags().GetString("mode")
+	if err != nil {
+		return fmt.Errorf("failed to read mode flag: %w", err)
+	}
+	if err := validation.ValidateMode(mode); err != nil {
+		return err
+	}
+
+	force, err := cmd.Flags().GetBool("force")
+	if err != nil {
+		return fmt.Errorf("failed to read force flag: %w", err)
+	}
+	if force {
+		dryRun = false
+		return nil
+	}
+
+	preview, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return fmt.Errorf("failed to read dry-run flag: %w", err)
+	}
+	dryRun = preview
+	return nil
 }
 
 // isRunningAsRoot checks if the current process has root privileges
@@ -172,6 +219,10 @@ func ScanAndSaveWithMode(mode string) error {
 	if err != nil {
 		return err
 	}
+	categories, err = applyCategorySelection(categories, includeCategories, excludeCategories)
+	if err != nil {
+		return err
+	}
 
 	totalSize, totalFiles, scanResults, err := scanAllCategories(s, categories)
 	if err != nil {
@@ -184,6 +235,36 @@ func ScanAndSaveWithMode(mode string) error {
 
 	displayScanResults(totalFiles, totalSize)
 	return nil
+}
+
+func ListCategories(mode string) error {
+	cfg, err := config.Load("")
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	categories, err := prepareScanCategories(mode, cfg)
+	if err != nil {
+		return err
+	}
+	categories, err = applyCategorySelection(categories, includeCategories, excludeCategories)
+	if err != nil {
+		return err
+	}
+
+	writeCategoryList(os.Stdout, categories)
+	return nil
+}
+
+func writeCategoryList(out io.Writer, categories []config.Category) {
+	fmt.Fprintln(out, S.Header("Categories"))
+	fmt.Fprintln(out, S.Separator())
+	for _, category := range categories {
+		selected := "deep"
+		if category.Selected {
+			selected = "quick"
+		}
+		fmt.Fprintf(out, "%s\t%s\t%s\n", category.Name, category.Risk.String(), selected)
+	}
 }
 
 // displayScanHeader shows the scan header with appropriate mode label
@@ -202,6 +283,10 @@ func displayScanHeader(mode string) {
 
 // initializeScanner loads config and creates a scanner instance
 func initializeScanner() (*config.Config, *scanner.Scanner, error) {
+	if configPath, err := paths.ConfigFile(); err == nil {
+		fmt.Printf("Using config: %s\n", configPath)
+	}
+
 	cfg, err := config.Load("")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load config: %w", err)
@@ -232,8 +317,10 @@ func prepareScanCategories(mode string, cfg *config.Config) ([]config.Category, 
 
 // scanAllCategories scans all provided categories and aggregates results
 func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64, int, config.Category, error) {
+	started := time.Now()
 	var totalSize uint64
 	var totalFiles int
+	var categoriesScanned int
 	var scanResults config.Category
 	scanResults.Name = "Total Cleanable"
 	scanResults.Files = []config.FileInfo{}
@@ -246,7 +333,9 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 
 		fmt.Printf("Scanning %s (%d/%d)...\n", category.Name, i+1, len(categories))
 
+		categoryStarted := time.Now()
 		stats, err := scanSingleCategory(s, &category)
+		categoryDuration := time.Since(categoryStarted)
 		if err != nil {
 			fmt.Printf("  Error: %v\n", err)
 			continue
@@ -258,12 +347,11 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 				categorySize += file.Size
 			}
 
-			fmt.Printf("  Found %d files (%s)\n",
-				len(stats.Files),
-				utils.HumanizeBytes(categorySize))
+			fmt.Println(formatScanCategoryResult(len(stats.Files), categorySize, categoryDuration))
 
 			totalSize += categorySize
 			totalFiles += len(stats.Files)
+			categoriesScanned++
 			scanResults.Files = append(scanResults.Files, stats.Files...)
 		}
 
@@ -271,7 +359,22 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 		time.Sleep(ScanDelayBetweenCategories)
 	}
 
+	fmt.Println(formatScanSummary(categoriesScanned, totalFiles, totalSize, time.Since(started)))
 	return totalSize, totalFiles, scanResults, nil
+}
+
+func formatScanCategoryResult(files int, size uint64, duration time.Duration) string {
+	return fmt.Sprintf("  Found %d files (%s) in %s", files, utils.HumanizeBytes(size), duration.Round(100*time.Millisecond))
+}
+
+func formatScanSummary(categoriesScanned int, files int, bytes uint64, duration time.Duration) string {
+	return fmt.Sprintf(
+		"Scan summary: categories_scanned=%d files=%d bytes=%d duration=%s",
+		categoriesScanned,
+		files,
+		bytes,
+		duration.Round(100*time.Millisecond),
+	)
 }
 
 // categoryPathExists checks if any path in the category exists
@@ -284,6 +387,15 @@ func categoryPathExists(category *config.Category) bool {
 	for _, path := range category.Paths {
 		if _, err := os.Stat(path); err == nil {
 			return true
+		}
+		matches, err := filepath.Glob(path)
+		if err != nil {
+			continue
+		}
+		for _, match := range matches {
+			if _, err := os.Stat(match); err == nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -324,6 +436,7 @@ func saveScanResults(totalSize uint64, totalFiles int, scanResults config.Catego
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 
+	fmt.Printf("Saved scan cache: %s\n", sessionMgr.Path())
 	return nil
 }
 
@@ -354,9 +467,13 @@ func CleanSession(dryRun bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create session manager: %w", err)
 	}
+	fmt.Printf("Using scan cache: %s\n", sessionMgr.Path())
 	cache, err := sessionMgr.Load()
 	if err != nil {
 		return fmt.Errorf("no scan results found - run scan first: %w", err)
+	}
+	if cache.ScanResults == nil {
+		return fmt.Errorf("invalid scan results: missing scan result details")
 	}
 
 	if cache.TotalFiles == 0 {
@@ -377,6 +494,15 @@ func CleanSession(dryRun bool) error {
 			fmt.Printf("No files to clean in %s mode.\n", scanMode)
 			return nil
 		}
+	}
+
+	cache, err = filterCacheByCategorySelection(cache, includeCategories, excludeCategories)
+	if err != nil {
+		return err
+	}
+	if cache.TotalFiles == 0 {
+		fmt.Println("No files to clean after category filters.")
+		return nil
 	}
 
 	c := cleaner.NewCleaner(cfg)
@@ -455,6 +581,7 @@ func CleanSession(dryRun bool) error {
 				fmt.Printf("      - %s\n", err)
 			}
 		}
+		return fmt.Errorf("cleaning incomplete: %d file(s) could not be deleted", len(errors))
 	}
 
 	fmt.Printf("   ⚡ Scan data cleared\n")
@@ -471,10 +598,15 @@ func detectAvailableCategories() []config.Category {
 	var categories []config.Category
 
 	// Check for thumbnails directory
-	if _, err := os.Stat(os.Getenv("HOME") + "/.cache/thumbnails"); err == nil {
+	homeDir, err := paths.HomeDir()
+	if err != nil {
+		return categories
+	}
+	thumbnailPath := filepath.Join(homeDir, ".cache", "thumbnails")
+	if _, err := os.Stat(thumbnailPath); err == nil {
 		categories = append(categories, config.Category{
 			Name:     "Thumbnail Cache",
-			Paths:    []string{os.Getenv("HOME") + "/.cache/thumbnails"},
+			Paths:    []string{thumbnailPath},
 			Risk:     config.Low,
 			Selected: true,
 		})
@@ -497,11 +629,13 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 		return cache // No filtering
 	}
 
-	// Build map of category paths to risk levels
+	// Build fallback metadata for cache files created before file-level provenance existed.
 	riskByPath := make(map[string]config.RiskLevel)
+	selectedByPath := make(map[string]bool)
 	for _, cat := range cfg.Categories {
 		for _, path := range cat.Paths {
 			riskByPath[path] = cat.Risk
+			selectedByPath[path] = cat.Selected
 		}
 	}
 
@@ -510,17 +644,22 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 	var filteredSize uint64
 
 	for _, file := range cache.ScanResults.Files {
-		// Find which category this file belongs to
-		risk := config.Low // Default to Low
-		for catPath, catRisk := range riskByPath {
-			if strings.HasPrefix(file.Path, catPath) {
-				risk = catRisk
-				break
+		risk := file.CategoryRisk
+		selected := file.CategorySelected
+		if file.CategoryName == "" {
+			risk = config.Low
+			selected = true
+			for catPath, catRisk := range riskByPath {
+				if strings.HasPrefix(file.Path, catPath) {
+					risk = catRisk
+					selected = selectedByPath[catPath]
+					break
+				}
 			}
 		}
 
 		// Apply mode filter
-		if mode == "quick" && risk != config.Low {
+		if mode == "quick" && (risk != config.Low || !selected) {
 			continue // Quick mode: only Low risk
 		}
 		// Deep mode includes everything
@@ -540,6 +679,114 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 		TotalFiles: len(filteredFiles),
 		ScannedAt:  cache.ScannedAt,
 	}
+}
+
+func applyCategorySelection(categories []config.Category, includes, excludes []string) ([]config.Category, error) {
+	includeSet := normalizedNameSet(includes)
+	excludeSet := normalizedNameSet(excludes)
+	knownNames := make(map[string]string, len(categories))
+	for _, category := range categories {
+		knownNames[normalizeCategoryName(category.Name)] = category.Name
+	}
+
+	for name := range includeSet {
+		if _, exists := knownNames[name]; !exists {
+			return nil, fmt.Errorf("unknown category: %s", name)
+		}
+	}
+	for name := range excludeSet {
+		if _, exists := knownNames[name]; !exists {
+			return nil, fmt.Errorf("unknown category: %s", name)
+		}
+	}
+
+	var selected []config.Category
+	for _, category := range categories {
+		name := normalizeCategoryName(category.Name)
+		if len(includeSet) > 0 && !includeSet[name] {
+			continue
+		}
+		if excludeSet[name] {
+			continue
+		}
+		selected = append(selected, category)
+	}
+	return selected, nil
+}
+
+func filterCacheByCategorySelection(cache *config.SessionCache, includes, excludes []string) (*config.SessionCache, error) {
+	if len(includes) == 0 && len(excludes) == 0 {
+		return cache, nil
+	}
+	if cache == nil || cache.ScanResults == nil {
+		return cache, nil
+	}
+
+	knownNames := make(map[string]string)
+	for _, file := range cache.ScanResults.Files {
+		if file.CategoryName == "" {
+			continue
+		}
+		knownNames[normalizeCategoryName(file.CategoryName)] = file.CategoryName
+	}
+	if len(knownNames) == 0 && len(cache.ScanResults.Files) > 0 {
+		return nil, fmt.Errorf("category filters require scan cache category metadata; run moonbit scan again")
+	}
+
+	includeSet := normalizedNameSet(includes)
+	excludeSet := normalizedNameSet(excludes)
+	for name := range includeSet {
+		if _, exists := knownNames[name]; !exists {
+			return nil, fmt.Errorf("unknown category in scan cache: %s", name)
+		}
+	}
+	for name := range excludeSet {
+		if _, exists := knownNames[name]; !exists {
+			return nil, fmt.Errorf("unknown category in scan cache: %s", name)
+		}
+	}
+
+	var filteredFiles []config.FileInfo
+	var filteredSize uint64
+	for _, file := range cache.ScanResults.Files {
+		name := normalizeCategoryName(file.CategoryName)
+		if len(includeSet) > 0 && !includeSet[name] {
+			continue
+		}
+		if excludeSet[name] {
+			continue
+		}
+		filteredFiles = append(filteredFiles, file)
+		filteredSize += file.Size
+	}
+
+	return &config.SessionCache{
+		ScanResults: &config.Category{
+			Name:      cache.ScanResults.Name,
+			Files:     filteredFiles,
+			FileCount: len(filteredFiles),
+			Size:      filteredSize,
+		},
+		TotalSize:  filteredSize,
+		TotalFiles: len(filteredFiles),
+		ScannedAt:  cache.ScannedAt,
+	}, nil
+}
+
+func normalizedNameSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		normalized := normalizeCategoryName(name)
+		if normalized == "" {
+			continue
+		}
+		set[normalized] = true
+	}
+	return set
+}
+
+func normalizeCategoryName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 var backupCmd = &cobra.Command{
@@ -578,13 +825,12 @@ var backupRestoreCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		backupName := args[0]
 
-		// Get full backup path
-		dataHome := os.Getenv("XDG_DATA_HOME")
-		if dataHome == "" {
-			homeDir, _ := os.UserHomeDir()
-			dataHome = filepath.Join(homeDir, ".local", "share")
+		backupDir, err := paths.DataDir("backups")
+		if err != nil {
+			fmt.Printf("❌ Failed to determine backup directory: %v\n", err)
+			return
 		}
-		backupPath := filepath.Join(dataHome, "moonbit", "backups", backupName)
+		backupPath := filepath.Join(backupDir, backupName)
 
 		fmt.Printf("🔄 Restoring backup: %s\n", backupName)
 
@@ -1044,8 +1290,18 @@ func removeOrphanedPackages(dryRun bool) {
 		fmt.Println("📦 Detected: Pacman (Arch/Manjaro)")
 		listCmd = exec.Command("pacman", "-Qtdq")
 		if !dryRun {
-			fmt.Println("\n🗑️  Running: sudo pacman -Rns $(pacman -Qtdq)")
-			removeCmd = exec.Command("sudo", "pacman", "-Rns", "$(pacman -Qtdq)")
+			output, err := exec.Command("pacman", "-Qtdq").Output()
+			if err != nil || len(strings.Fields(string(output))) == 0 {
+				fmt.Println("\n✅ No orphaned packages found")
+				if auditLog != nil {
+					auditLog.LogPackageOperation("remove_orphans", []string{}, "success", nil)
+				}
+				return
+			}
+			orphans := strings.Fields(string(output))
+			fmt.Printf("\n🗑️  Running: sudo pacman -Rns %s\n", strings.Join(orphans, " "))
+			removeArgs := append([]string{"pacman", "-Rns"}, orphans...)
+			removeCmd = exec.Command("sudo", removeArgs...)
 		}
 	} else if _, err := exec.LookPath("apt"); err == nil {
 		fmt.Println("📦 Detected: APT (Debian/Ubuntu)")
@@ -1063,9 +1319,14 @@ func removeOrphanedPackages(dryRun bool) {
 		}
 	} else if _, err := exec.LookPath("zypper"); err == nil {
 		fmt.Println("📦 Detected: Zypper (openSUSE)")
+		listCmd = exec.Command("zypper", "packages", "--orphaned")
 		if !dryRun {
-			fmt.Println("\n🗑️  Running: sudo zypper packages --orphaned")
-			removeCmd = exec.Command("sudo", "zypper", "remove", "--clean-deps", "-y")
+			fmt.Println("\n⚠️  Automatic zypper orphan removal is not implemented yet.")
+			fmt.Println("   Review the orphan list above and remove packages manually.")
+			if auditLog != nil {
+				auditLog.LogPackageOperation("remove_orphans", []string{}, "failed", fmt.Errorf("automatic zypper orphan removal not implemented"))
+			}
+			return
 		}
 	} else {
 		fmt.Println("❌ No supported package manager found")
@@ -1231,9 +1492,16 @@ func init() {
 
 	// Scan mode flags
 	scanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Scan mode: 'quick' (safe caches only) or 'deep' (all categories)")
+	scanCmd.Flags().BoolVar(&scanNoPrompt, "no-prompt", false, "Do not prompt to clean after scanning")
+	scanCmd.Flags().BoolVar(&listCategories, "list-categories", false, "List categories selected by the current filters and exit")
+	scanCmd.Flags().StringSliceVar(&includeCategories, "include-category", nil, "Only include categories by name (repeat or comma-separate)")
+	scanCmd.Flags().StringSliceVar(&excludeCategories, "exclude-category", nil, "Exclude categories by name (repeat or comma-separate)")
 
-	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Preview only, don't delete files")
+	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview only, don't delete files")
+	cleanCmd.Flags().BoolVarP(&cleanForce, "force", "f", false, "Actually delete files")
 	cleanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Clean mode: 'quick' (safe caches only) or 'deep' (all categories)")
+	cleanCmd.Flags().StringSliceVar(&includeCategories, "include-category", nil, "Only clean categories by name (repeat or comma-separate)")
+	cleanCmd.Flags().StringSliceVar(&excludeCategories, "exclude-category", nil, "Exclude categories by name (repeat or comma-separate)")
 }
 
 func Execute() {

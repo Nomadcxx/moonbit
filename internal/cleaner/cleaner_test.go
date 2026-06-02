@@ -231,6 +231,29 @@ func TestCleanCategoryWithRealFiles(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+func TestCleanCategoryReturnsPartialFailure(t *testing.T) {
+	cfg := config.DefaultConfig()
+	c := NewCleaner(cfg)
+
+	tempDir := t.TempDir()
+	missingFile := filepath.Join(tempDir, "missing.txt")
+
+	category := &config.Category{
+		Name: "Partial Failure",
+		Files: []config.FileInfo{
+			{Path: missingFile, Size: 10},
+		},
+		Size: 10,
+		Risk: config.Low,
+	}
+
+	progressCh := make(chan CleanMsg, 10)
+	err := c.CleanCategory(context.Background(), category, false, progressCh)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed")
+}
+
 func TestCleanProgressStruct(t *testing.T) {
 	progress := CleanProgress{
 		FilesProcessed: 10,
@@ -512,4 +535,27 @@ func TestRestoreBackup(t *testing.T) {
 	restoredContent, err := os.ReadFile(testFile)
 	assert.NoError(t, err)
 	assert.Equal(t, content, restoredContent)
+}
+
+func TestRestoreBackupReturnsErrorForMissingBackupFile(t *testing.T) {
+	tempDir := t.TempDir()
+	backupPath := filepath.Join(tempDir, "broken.backup")
+
+	category := &config.Category{
+		Name: "Broken",
+		Files: []config.FileInfo{
+			{Path: filepath.Join(tempDir, "restore-target.txt"), Size: 12},
+		},
+		Size: 12,
+	}
+
+	cfg := config.DefaultConfig()
+	c := NewCleaner(cfg)
+	require.NoError(t, c.createBackupMetadata(backupPath, category, "20260602_120000"))
+	require.NoError(t, os.MkdirAll(backupPath+".files", 0755))
+
+	err := RestoreBackup(backupPath)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "restore incomplete")
 }

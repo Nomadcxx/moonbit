@@ -21,6 +21,18 @@ func TestNewManager(t *testing.T) {
 	assert.Contains(t, manager.cachePath, "scan_results.json")
 }
 
+func TestNewManagerWithoutHomeEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("MOONBIT_HOME", tmpDir)
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	manager, err := NewManager()
+
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(tmpDir, ".cache", "moonbit", "scan_results.json"), manager.Path())
+}
+
 func TestManager_Path(t *testing.T) {
 	manager, err := NewManager()
 	require.NoError(t, err)

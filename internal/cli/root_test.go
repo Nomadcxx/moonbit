@@ -1,41 +1,290 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/utils"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCleanCommandFlags(t *testing.T) {
-	// Save original dryRun value
+	dryRunFlag := cleanCmd.Flags().Lookup("dry-run")
+	if assert.NotNil(t, dryRunFlag, "clean command should expose --dry-run") {
+		assert.Equal(t, "true", dryRunFlag.DefValue, "clean should preview by default")
+	}
+
+	forceFlag := cleanCmd.Flags().Lookup("force")
+	if assert.NotNil(t, forceFlag, "clean command should expose documented --force flag") {
+		assert.Equal(t, "false", forceFlag.DefValue)
+	}
+}
+
+func TestScanCommandNoPromptFlag(t *testing.T) {
+	noPromptFlag := scanCmd.Flags().Lookup("no-prompt")
+	if assert.NotNil(t, noPromptFlag, "scan command should expose --no-prompt for automation") {
+		assert.Equal(t, "false", noPromptFlag.DefValue)
+	}
+}
+
+func TestSystemdScanServiceUsesQuickNoPrompt(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "systemd", "moonbit-scan.service"))
+	require.NoError(t, err)
+
+	unit := string(data)
+	assert.Contains(t, unit, "ExecStart=/usr/local/bin/moonbit scan --mode quick --no-prompt")
+	assert.False(t, strings.Contains(unit, "ExecStart=/usr/local/bin/moonbit scan\n"))
+}
+
+func TestApplyCleanFlags(t *testing.T) {
 	originalDryRun := dryRun
-	defer func() { dryRun = originalDryRun }()
+	originalScanMode := scanMode
+	defer func() {
+		dryRun = originalDryRun
+		scanMode = originalScanMode
+		cleanCmd.Flags().Set("dry-run", "true")
+		cleanCmd.Flags().Set("force", "false")
+		cleanCmd.Flags().Set("mode", "")
+	}()
 
-	// Test 1: Default behavior (dry-run should be true)
-	dryRun = true
-	assert.True(t, dryRun, "dry-run should be true by default")
+	cleanCmd.Flags().Set("dry-run", "true")
+	cleanCmd.Flags().Set("force", "false")
+	assert.NoError(t, applyCleanFlags(cleanCmd))
+	assert.True(t, dryRun, "clean should remain dry-run when --force is absent")
 
-	// Test 2: Simulate force flag being set
-	// In the actual command, PreRun would be called by cobra
-	// We test the logic directly
-	dryRun = true
-	forceFlag := true
-	if forceFlag {
-		dryRun = false
+	cleanCmd.Flags().Set("force", "true")
+	assert.NoError(t, applyCleanFlags(cleanCmd))
+	assert.False(t, dryRun, "--force should switch clean into live deletion mode")
+
+	cleanCmd.Flags().Set("mode", "quik")
+	assert.Error(t, applyCleanFlags(cleanCmd), "invalid clean mode should be rejected")
+}
+
+func TestCleanSessionRejectsMalformedCache(t *testing.T) {
+	originalScanMode := scanMode
+	defer func() { scanMode = originalScanMode }()
+	scanMode = ""
+
+	t.Setenv("HOME", t.TempDir())
+
+	sessionMgr, err := session.NewManager()
+	assert.NoError(t, err)
+
+	cache := &config.SessionCache{
+		ScanResults: nil,
+		TotalSize:   1024,
+		TotalFiles:  1,
+		ScannedAt:   time.Now(),
 	}
-	assert.False(t, dryRun, "dry-run should be false when force is set")
+	data, err := json.Marshal(cache)
+	assert.NoError(t, err)
+	assert.NoError(t, os.MkdirAll(filepath.Dir(sessionMgr.Path()), 0700))
+	assert.NoError(t, os.WriteFile(sessionMgr.Path(), data, 0600))
 
-	// Test 3: Force flag not set
-	dryRun = true
-	forceFlag = false
-	if forceFlag {
-		dryRun = false
+	err = CleanSession(true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid scan results")
+}
+
+func TestCleanSessionPreservesCacheOnPartialFailure(t *testing.T) {
+	originalScanMode := scanMode
+	defer func() { scanMode = originalScanMode }()
+	scanMode = ""
+
+	t.Setenv("HOME", t.TempDir())
+
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name: "Test",
+			Files: []config.FileInfo{
+				{Path: filepath.Join(t.TempDir(), "missing.tmp"), Size: 10},
+			},
+			Size:      10,
+			FileCount: 1,
+			Risk:      config.Low,
+		},
+		TotalSize:  10,
+		TotalFiles: 1,
+		ScannedAt:  time.Now(),
 	}
-	assert.True(t, dryRun, "dry-run should remain true when force is not set")
+	require.NoError(t, sessionMgr.Save(cache))
+
+	err = CleanSession(false)
+
+	require.Error(t, err)
+	assert.True(t, sessionMgr.Exists(), "failed clean should keep cache for retry")
+}
+
+func TestFilterCacheByModeUsesFileCategoryProvenance(t *testing.T) {
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name: "All",
+			Files: []config.FileInfo{
+				{
+					Path:             "/tmp/app/cache/safe.bin",
+					Size:             10,
+					CategoryName:     "Safe App Cache",
+					CategoryRisk:     config.Low,
+					CategorySelected: true,
+				},
+				{
+					Path:             "/tmp/app/cache/deep.bin",
+					Size:             20,
+					CategoryName:     "Deep App Cache",
+					CategoryRisk:     config.Medium,
+					CategorySelected: false,
+				},
+			},
+			Size:      30,
+			FileCount: 2,
+		},
+		TotalSize:  30,
+		TotalFiles: 2,
+		ScannedAt:  time.Now(),
+	}
+	cfg := &config.Config{
+		Categories: []config.Category{
+			{Name: "Broad Low Risk Path", Paths: []string{"/tmp/app"}, Risk: config.Low, Selected: true},
+		},
+	}
+
+	filtered := filterCacheByMode(cache, cfg, "quick")
+
+	require.NotNil(t, filtered.ScanResults)
+	require.Len(t, filtered.ScanResults.Files, 1)
+	assert.Equal(t, "/tmp/app/cache/safe.bin", filtered.ScanResults.Files[0].Path)
+	assert.Equal(t, uint64(10), filtered.TotalSize)
+	assert.Equal(t, 1, filtered.TotalFiles)
+}
+
+func TestCategoryPathExistsMatchesGlobPaths(t *testing.T) {
+	tempDir := t.TempDir()
+	cacheDir := filepath.Join(tempDir, "app", "cache")
+	assert.NoError(t, os.MkdirAll(cacheDir, 0755))
+
+	category := &config.Category{
+		Name:  "Glob Cache",
+		Paths: []string{filepath.Join(tempDir, "*", "cache")},
+	}
+
+	assert.True(t, categoryPathExists(category))
+}
+
+func TestApplyCategorySelectionIncludesAndExcludesByName(t *testing.T) {
+	categories := []config.Category{
+		{Name: "Pacman Cache", Selected: true},
+		{Name: "opencode Caches", Selected: false},
+		{Name: "Bottles Prefix Temp", Selected: false},
+	}
+
+	selected, err := applyCategorySelection(categories, []string{"opencode caches", "Bottles Prefix Temp"}, []string{"bottles prefix temp"})
+
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+	assert.Equal(t, "opencode Caches", selected[0].Name)
+}
+
+func TestApplyCategorySelectionRejectsUnknownNames(t *testing.T) {
+	categories := []config.Category{{Name: "Pacman Cache"}}
+
+	_, err := applyCategorySelection(categories, []string{"Nope Cache"}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown category")
+}
+
+func TestFilterCacheByCategorySelectionUsesProvenance(t *testing.T) {
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name: "All",
+			Files: []config.FileInfo{
+				{Path: "/tmp/opencode.log", Size: 10, CategoryName: "opencode Caches"},
+				{Path: "/tmp/lutris.log", Size: 20, CategoryName: "Lutris App Cache Logs"},
+			},
+			Size:      30,
+			FileCount: 2,
+		},
+		TotalSize:  30,
+		TotalFiles: 2,
+		ScannedAt:  time.Now(),
+	}
+
+	filtered, err := filterCacheByCategorySelection(cache, []string{"opencode caches"}, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, filtered.ScanResults)
+	require.Len(t, filtered.ScanResults.Files, 1)
+	assert.Equal(t, "/tmp/opencode.log", filtered.ScanResults.Files[0].Path)
+	assert.Equal(t, uint64(10), filtered.TotalSize)
+	assert.Equal(t, 1, filtered.TotalFiles)
+}
+
+func TestFilterCacheByCategorySelectionRejectsOldCacheWithoutProvenance(t *testing.T) {
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name:  "All",
+			Files: []config.FileInfo{{Path: "/tmp/old-cache-file", Size: 10}},
+		},
+		TotalSize:  10,
+		TotalFiles: 1,
+		ScannedAt:  time.Now(),
+	}
+
+	_, err := filterCacheByCategorySelection(cache, []string{"Pacman Cache"}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "run moonbit scan again")
+}
+
+func TestScanAndCleanExposeCategorySelectionFlags(t *testing.T) {
+	for _, cmd := range []*cobra.Command{scanCmd, cleanCmd} {
+		assert.NotNil(t, cmd.Flags().Lookup("include-category"))
+		assert.NotNil(t, cmd.Flags().Lookup("exclude-category"))
+	}
+	assert.NotNil(t, scanCmd.Flags().Lookup("list-categories"))
+}
+
+func TestScanOutputFormatIncludesDurationAndSummary(t *testing.T) {
+	assert.Contains(t, formatScanCategoryResult(3, 4096, 1500*time.Millisecond), "3 files")
+	assert.Contains(t, formatScanCategoryResult(3, 4096, 1500*time.Millisecond), "4.0 KB")
+	assert.Contains(t, formatScanCategoryResult(3, 4096, 1500*time.Millisecond), "1.5s")
+
+	summary := formatScanSummary(4, 3, 4096, 2*time.Second)
+	assert.Contains(t, summary, "Scan summary:")
+	assert.Contains(t, summary, "categories_scanned=4")
+	assert.Contains(t, summary, "files=3")
+	assert.Contains(t, summary, "bytes=4096")
+	assert.Contains(t, summary, "duration=2s")
+}
+
+func TestListCategoriesOutputsRiskAndSelectionScope(t *testing.T) {
+	categories := []config.Category{
+		{Name: "Quick Cache", Risk: config.Low, Selected: true},
+		{Name: "Deep Cache", Risk: config.Medium, Selected: false},
+	}
+	var out bytes.Buffer
+
+	writeCategoryList(&out, categories)
+
+	output := out.String()
+	assert.Contains(t, output, "Quick Cache")
+	assert.Contains(t, output, "Low")
+	assert.Contains(t, output, "quick")
+	assert.Contains(t, output, "Deep Cache")
+	assert.Contains(t, output, "Medium")
+	assert.Contains(t, output, "deep")
 }
 
 func TestHumanizeBytes(t *testing.T) {

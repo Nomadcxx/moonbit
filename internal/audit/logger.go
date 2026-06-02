@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 type Logger struct {
@@ -24,12 +26,10 @@ type LogEntry struct {
 }
 
 func NewLogger() (*Logger, error) {
-	homeDir, err := os.UserHomeDir()
+	logDir, err := paths.DataDir("logs")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, fmt.Errorf("failed to determine log directory: %w", err)
 	}
-
-	logDir := filepath.Join(homeDir, ".local", "share", "moonbit", "logs")
 	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}

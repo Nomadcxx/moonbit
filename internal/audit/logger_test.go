@@ -2,6 +2,7 @@ package audit
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -33,6 +34,19 @@ func TestNewLogger(t *testing.T) {
 
 	// Cleanup
 	logger.Close()
+}
+
+func TestNewLoggerWithoutHomeEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("MOONBIT_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	logger, err := NewLogger()
+	require.NoError(t, err)
+	defer logger.Close()
+
+	assert.Equal(t, filepath.Join(tmpDir, ".local", "share", "moonbit", "logs", "audit.log"), logger.filePath)
 }
 
 func TestLogger_Log(t *testing.T) {

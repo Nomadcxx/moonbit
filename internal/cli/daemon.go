@@ -29,10 +29,21 @@ func parseDuration(s string) (time.Duration, error) {
 		if err != nil {
 			return 0, fmt.Errorf("invalid day duration %q: %w", s, err)
 		}
-		return time.Duration(days * float64(24*time.Hour)), nil
+		duration := time.Duration(days * float64(24*time.Hour))
+		if duration <= 0 {
+			return 0, fmt.Errorf("duration must be positive: %s", s)
+		}
+		return duration, nil
 	}
 
-	return time.ParseDuration(s)
+	duration, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("duration must be positive: %s", s)
+	}
+	return duration, nil
 }
 
 var (
@@ -127,6 +138,7 @@ var opSem = make(chan struct{}, 1)
 
 var daemonOut io.Writer = os.Stdout
 var daemonErr io.Writer = os.Stderr
+var daemonCleanSession = CleanSession
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -375,7 +387,7 @@ func performClean() {
 	start := time.Now()
 
 	// Run clean
-	if err := CleanSession(true); err != nil {
+	if err := daemonCleanSession(false); err != nil {
 		fmt.Fprintf(daemonOut, "%s Clean failed: %v\n", S.Error("✗"), err)
 
 		if logger := daemonState.auditLogger(); logger != nil {

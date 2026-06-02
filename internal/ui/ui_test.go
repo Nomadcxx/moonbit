@@ -1,13 +1,17 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/utils"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewModel(t *testing.T) {
@@ -19,6 +23,41 @@ func TestNewModel(t *testing.T) {
 	assert.Equal(t, 0, model.menuIndex)
 	assert.NotNil(t, model.cfg)
 	assert.Len(t, model.menuOptions, 6, "Should have 6 menu options (Quick Scan, Deep Scan, Review Results, Docker Cleanup, Schedule, Exit)")
+}
+
+func TestNewModelLoadsUserConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	configDir := filepath.Join(configHome, "moonbit")
+	assert.NoError(t, os.MkdirAll(configDir, 0755))
+	configPath := filepath.Join(configDir, "config.toml")
+	configData := []byte(`
+[scan]
+max_depth = 3
+ignore_patterns = []
+enable_all = true
+dry_run_default = true
+worker_count = 0
+
+[[categories]]
+name = "Custom Cache"
+paths = ["/tmp/custom-cache"]
+risk = 0
+selected = true
+`)
+	assert.NoError(t, os.WriteFile(configPath, configData, 0644))
+
+	model := NewModel()
+
+	var foundCustom bool
+	for _, category := range model.cfg.Categories {
+		if category.Name == "Custom Cache" {
+			foundCustom = true
+			break
+		}
+	}
+	assert.True(t, foundCustom)
 }
 
 func TestViewModes(t *testing.T) {
@@ -85,6 +124,81 @@ func TestUpdateSelectedCount(t *testing.T) {
 	assert.Equal(t, 3, model.selectedCount)
 }
 
+func TestMenuBoundsForShortMenus(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     ViewMode
+		maxIndex int
+	}{
+		{"Schedule", ModeSchedule, 4},
+		{"Docker", ModeDocker, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := NewModel()
+			model.mode = tt.mode
+
+			var updated tea.Model = model
+			for i := 0; i < 8; i++ {
+				updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyDown})
+			}
+
+			result := updated.(Model)
+			assert.Equal(t, tt.maxIndex, result.menuIndex)
+		})
+	}
+}
+
+func TestDockerMenuRequiresConfirmation(t *testing.T) {
+	model := NewModel()
+	model.mode = ModeDocker
+	model.menuIndex = 0
+
+	updated, cmd := model.handleMenuSelect()
+
+	result := updated.(Model)
+	assert.Nil(t, cmd)
+	assert.Equal(t, ModeDockerConfirm, result.mode)
+	assert.Equal(t, "images", result.dockerOperation)
+}
+
+func TestDockerConfirmCancelReturnsToDockerMenu(t *testing.T) {
+	model := NewModel()
+	model.mode = ModeDockerConfirm
+	model.menuIndex = 1
+	model.dockerOperation = "all"
+
+	updated, cmd := model.handleMenuSelect()
+
+	result := updated.(Model)
+	assert.Nil(t, cmd)
+	assert.Equal(t, ModeDocker, result.mode)
+	assert.Equal(t, "", result.dockerOperation)
+}
+
+func TestHandleCleanCompleteClearsSessionCache(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	sessionMgr, err := session.NewManager()
+	assert.NoError(t, err)
+	assert.NoError(t, sessionMgr.Save(&config.SessionCache{
+		ScanResults: &config.Category{Name: "Test"},
+		ScannedAt:   time.Now(),
+	}))
+
+	model := NewModel()
+	updated, cmd := model.handleCleanComplete(cleanCompleteMsg{
+		Success:      true,
+		FilesDeleted: 1,
+		BytesFreed:   10,
+	})
+
+	assert.Nil(t, cmd)
+	assert.Equal(t, ModeComplete, updated.(Model).mode)
+	assert.False(t, sessionMgr.Exists())
+}
+
 func TestParseScanResultsWithCategories(t *testing.T) {
 	model := NewModel()
 
@@ -129,6 +243,49 @@ func TestParseScanResultsWithCache(t *testing.T) {
 
 	// Should create at least one category
 	assert.NotEmpty(t, model.categories)
+
+	var pacman CategoryInfo
+	for _, category := range model.categories {
+		if category.Name == "Pacman Cache" {
+			pacman = category
+			break
+		}
+	}
+	assert.Equal(t, "Pacman Cache", pacman.Name)
+	assert.Equal(t, 1, pacman.Files)
+	assert.Equal(t, "1.0 KB", pacman.Size)
+}
+
+func TestParseScanResultsWithCacheUsesCategoryProvenance(t *testing.T) {
+	model := NewModel()
+	model.cfg = &config.Config{
+		Categories: []config.Category{
+			{Name: "Flatpak App Caches", Paths: []string{"/home/user/.var/app/*/cache"}, Risk: config.Medium},
+		},
+	}
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name: "Total",
+			Files: []config.FileInfo{
+				{
+					Path:             "/home/user/.var/app/org.example.App/cache/tmp/cache.bin",
+					Size:             4096,
+					CategoryName:     "Flatpak App Caches",
+					CategoryRisk:     config.Medium,
+					CategorySelected: false,
+				},
+			},
+		},
+		TotalSize:  4096,
+		TotalFiles: 1,
+	}
+
+	model.parseScanResults(cache, nil)
+
+	require.Len(t, model.categories, 1)
+	assert.Equal(t, "Flatpak App Caches", model.categories[0].Name)
+	assert.Equal(t, 1, model.categories[0].Files)
+	assert.Equal(t, "4.0 KB", model.categories[0].Size)
 }
 
 func TestParseScanResultsEmpty(t *testing.T) {
@@ -139,6 +296,51 @@ func TestParseScanResultsEmpty(t *testing.T) {
 
 	assert.Empty(t, model.categories)
 	assert.Equal(t, 0, model.selectedCount)
+}
+
+func TestBuildFilteredCacheUsesCategoryProvenance(t *testing.T) {
+	model := NewModel()
+	model.cfg = &config.Config{
+		Categories: []config.Category{
+			{Name: "Safe Cache", Paths: []string{"/broad"}, Risk: config.Low, Selected: true},
+			{Name: "Deep Cache", Paths: []string{"/broad"}, Risk: config.Medium, Selected: false},
+		},
+	}
+	model.categories = []CategoryInfo{
+		{Name: "Safe Cache", Enabled: true},
+		{Name: "Deep Cache", Enabled: false},
+	}
+	model.scanResults = &config.SessionCache{
+		ScanResults: &config.Category{
+			Name: "Total",
+			Files: []config.FileInfo{
+				{Path: "/not-under-config/safe.tmp", Size: 10, CategoryName: "Safe Cache", CategoryRisk: config.Low, CategorySelected: true},
+				{Path: "/broad/deep.tmp", Size: 20, CategoryName: "Deep Cache", CategoryRisk: config.Medium, CategorySelected: false},
+			},
+		},
+		ScannedAt: time.Now(),
+	}
+
+	filtered := model.buildFilteredCache()
+
+	require.NotNil(t, filtered)
+	require.NotNil(t, filtered.ScanResults)
+	require.Len(t, filtered.ScanResults.Files, 1)
+	assert.Equal(t, "/not-under-config/safe.tmp", filtered.ScanResults.Files[0].Path)
+	assert.Equal(t, uint64(10), filtered.TotalSize)
+}
+
+func TestUICategoryPathExistsMatchesGlobPaths(t *testing.T) {
+	tempDir := t.TempDir()
+	cacheDir := filepath.Join(tempDir, "app", "cache")
+	assert.NoError(t, os.MkdirAll(cacheDir, 0755))
+
+	category := config.Category{
+		Name:  "Glob Cache",
+		Paths: []string{filepath.Join(tempDir, "*", "cache")},
+	}
+
+	assert.True(t, uiCategoryPathExists(category))
 }
 
 func TestCalculateSelectedSize(t *testing.T) {

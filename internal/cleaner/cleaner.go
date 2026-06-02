@@ -16,6 +16,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	moonbiterrors "github.com/Nomadcxx/moonbit/internal/errors"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 // Safety configuration for cleaning operations
@@ -196,7 +197,7 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 		progressCh <- CleanMsg{Error: cleanErr}
 	}
 
-	return nil
+	return cleanErr
 }
 
 // DeleteFile performs actual file deletion with optional shredding
@@ -332,17 +333,11 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 func (c *Cleaner) createBackup(category *config.Category) string {
 	timestamp := time.Now().Format("20060102_150405")
 
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			log.Printf("ERROR: Failed to get user home directory: %v", err)
-			return ""
-		}
-		dataHome = filepath.Join(homeDir, ".local", "share")
+	backupDir, err := paths.DataDir("backups")
+	if err != nil {
+		log.Printf("ERROR: Failed to determine backup directory: %v", err)
+		return ""
 	}
-
-	backupDir := filepath.Join(dataHome, "moonbit", "backups")
 
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		mbErr := moonbiterrors.NewBackupFailedError(category.Name, err)
@@ -461,6 +456,7 @@ func RestoreBackup(backupPath string) error {
 	}
 
 	backupFilesDir := backupPath + ".files"
+	var restoreErrors []string
 
 	// Restore each file
 	for _, file := range metadata.Files {
@@ -468,26 +464,34 @@ func RestoreBackup(backupPath string) error {
 		srcPath := filepath.Join(backupFilesDir, hash[:16])
 
 		if _, err := os.Stat(srcPath); err != nil {
-			log.Printf("ERROR: Backup file not found for %s: %v", file.Path, err)
+			msg := fmt.Sprintf("backup file not found for %s: %v", file.Path, err)
+			log.Printf("ERROR: %s", msg)
+			restoreErrors = append(restoreErrors, msg)
 			continue
 		}
 
 		targetDir := filepath.Dir(file.Path)
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			log.Printf("ERROR: Failed to create target directory %s: %v", targetDir, err)
+			msg := fmt.Sprintf("failed to create target directory %s: %v", targetDir, err)
+			log.Printf("ERROR: %s", msg)
+			restoreErrors = append(restoreErrors, msg)
 			continue
 		}
 
 		src, err := os.Open(srcPath)
 		if err != nil {
-			log.Printf("ERROR: Failed to open backup file %s: %v", srcPath, err)
+			msg := fmt.Sprintf("failed to open backup file %s: %v", srcPath, err)
+			log.Printf("ERROR: %s", msg)
+			restoreErrors = append(restoreErrors, msg)
 			continue
 		}
 
 		dst, err := os.Create(file.Path)
 		if err != nil {
 			src.Close()
-			log.Printf("ERROR: Failed to create target file %s: %v", file.Path, err)
+			msg := fmt.Sprintf("failed to create target file %s: %v", file.Path, err)
+			log.Printf("ERROR: %s", msg)
+			restoreErrors = append(restoreErrors, msg)
 			continue
 		}
 
@@ -497,9 +501,15 @@ func RestoreBackup(backupPath string) error {
 
 		if copyErr != nil {
 			os.Remove(file.Path)
-			log.Printf("ERROR: Failed to copy file %s to %s: %v", srcPath, file.Path, copyErr)
+			msg := fmt.Sprintf("failed to copy file %s to %s: %v", srcPath, file.Path, copyErr)
+			log.Printf("ERROR: %s", msg)
+			restoreErrors = append(restoreErrors, msg)
 			continue
 		}
+	}
+
+	if len(restoreErrors) > 0 {
+		return fmt.Errorf("restore incomplete: %d file(s) failed: %s", len(restoreErrors), strings.Join(restoreErrors, "; "))
 	}
 
 	return nil
@@ -507,16 +517,10 @@ func RestoreBackup(backupPath string) error {
 
 // ListBackups returns a list of available backups
 func ListBackups() ([]string, error) {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		dataHome = filepath.Join(homeDir, ".local", "share")
+	backupDir, err := paths.DataDir("backups")
+	if err != nil {
+		return nil, err
 	}
-
-	backupDir := filepath.Join(dataHome, "moonbit", "backups")
 
 	// Check if backup directory exists
 	if _, err := os.Stat(backupDir); os.IsNotExist(err) {

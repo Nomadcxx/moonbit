@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/karrick/godirwalk"
 	"github.com/spf13/afero"
 )
@@ -110,18 +112,6 @@ type Scanner struct {
 
 // NewScanner creates a new scanner instance
 func NewScanner(cfg *config.Config) *Scanner {
-	// Compile filter patterns
-	filterStr := "("
-	for i, pattern := range cfg.Scan.IgnorePatterns {
-		if i > 0 {
-			filterStr += "|"
-		}
-		filterStr += pattern
-	}
-	filterStr += ")"
-
-	filter := regexp.MustCompile(filterStr)
-
 	// Determine worker count: use config value, or auto-detect based on CPU count
 	workerCount := cfg.Scan.WorkerCount
 	if workerCount <= 0 {
@@ -136,7 +126,7 @@ func NewScanner(cfg *config.Config) *Scanner {
 
 	return &Scanner{
 		cfg:     cfg,
-		filter:  filter,
+		filter:  compileIgnoreFilter(cfg.Scan.IgnorePatterns),
 		workers: workerCount,
 		fs:      &OsFileSystem{},
 	}
@@ -144,18 +134,6 @@ func NewScanner(cfg *config.Config) *Scanner {
 
 // NewScannerWithFs creates a new scanner instance with a specific filesystem
 func NewScannerWithFs(cfg *config.Config, fs FileSystem) *Scanner {
-	// Compile filter patterns
-	filterStr := "("
-	for i, pattern := range cfg.Scan.IgnorePatterns {
-		if i > 0 {
-			filterStr += "|"
-		}
-		filterStr += pattern
-	}
-	filterStr += ")"
-
-	filter := regexp.MustCompile(filterStr)
-
 	// Determine worker count: use config value, or auto-detect based on CPU count
 	workerCount := cfg.Scan.WorkerCount
 	if workerCount <= 0 {
@@ -170,10 +148,23 @@ func NewScannerWithFs(cfg *config.Config, fs FileSystem) *Scanner {
 
 	return &Scanner{
 		cfg:     cfg,
-		filter:  filter,
+		filter:  compileIgnoreFilter(cfg.Scan.IgnorePatterns),
 		workers: workerCount,
 		fs:      fs,
 	}
+}
+
+func compileIgnoreFilter(patterns []string) *regexp.Regexp {
+	cleaned := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if pattern != "" {
+			cleaned = append(cleaned, pattern)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return regexp.MustCompile("(" + strings.Join(cleaned, "|") + ")")
 }
 
 // ScanCategory scans a specific category
@@ -186,7 +177,7 @@ func (s *Scanner) ScanCategory(ctx context.Context, category *config.Category, p
 	stats.Files = []config.FileInfo{} // Reset files for fresh scan
 	stats.Size = 0
 	stats.FileCount = 0
-	stats.Selected = true // Mark as selected for scanning
+	stats.Selected = category.Selected
 
 	// Process each path in the category
 	for _, pathPattern := range category.Paths {
@@ -240,7 +231,9 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		log.Printf("ERROR: Failed to stat path %s: %v", rootPath, err)
 		return err
 	} else if !info.IsDir() {
-		// Silently skip non-directories (normal for wildcard patterns)
+		if s.shouldIncludeFile(rootPath, info, stats) {
+			addFileToStats(stats, rootPath, info)
+		}
 		return nil
 	}
 
@@ -263,9 +256,16 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		}
 
 		// Skip if matches ignore patterns (FIXED: was inverted)
-		if s.filter.MatchString(path) {
+		if s.filter != nil && s.filter.MatchString(path) {
 			if info.IsDir() {
 				return filepath.SkipDir // Skip entire directory if it matches ignore pattern
+			}
+			return nil
+		}
+
+		if matchesAnyPattern(categoryExcludePatterns(stats), path) {
+			if info.IsDir() {
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -277,15 +277,7 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 
 		// Process file based on category filters
 		if s.shouldIncludeFile(path, info, stats) {
-			fileEntry := config.FileInfo{
-				Path:    path,
-				Size:    uint64(info.Size()),
-				ModTime: info.ModTime().Format(time.RFC3339),
-			}
-
-			stats.Files = append(stats.Files, fileEntry)
-			stats.Size += uint64(info.Size())
-			stats.FileCount++
+			addFileToStats(stats, path, info)
 
 			// Send progress update periodically (every 100 files or every 10MB)
 			shouldUpdate := stats.FileCount%100 == 0 || stats.Size%10485760 == 0 // 10MB chunks
@@ -305,10 +297,36 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 	})
 }
 
+func addFileToStats(stats *config.Category, path string, info os.FileInfo) {
+	cleanPath := filepath.Clean(path)
+	for _, existing := range stats.Files {
+		if filepath.Clean(existing.Path) == cleanPath {
+			return
+		}
+	}
+
+	fileEntry := config.FileInfo{
+		Path:             path,
+		Size:             uint64(info.Size()),
+		ModTime:          info.ModTime().Format(time.RFC3339),
+		CategoryName:     stats.Name,
+		CategoryRisk:     stats.Risk,
+		CategorySelected: stats.Selected,
+	}
+
+	stats.Files = append(stats.Files, fileEntry)
+	stats.Size += uint64(info.Size())
+	stats.FileCount++
+}
+
 // ShouldIncludeFile determines if a file should be included based on filters
 func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, category *config.Category) bool {
 	// Skip directories for now (focus on files)
 	if info.IsDir() {
+		return false
+	}
+
+	if matchesAnyPattern(categoryExcludePatterns(category), path) {
 		return false
 	}
 
@@ -325,11 +343,15 @@ func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, category *con
 	if len(category.Filters) > 0 {
 		// File must match at least one filter to be included
 		for _, filter := range category.Filters {
-			matched, err := regexp.MatchString(filter, filepath.Base(path))
+			matchedBase, err := regexp.MatchString(filter, filepath.Base(path))
 			if err != nil {
 				continue // Skip invalid patterns
 			}
-			if matched {
+			matchedPath, err := regexp.MatchString(filter, filepath.ToSlash(path))
+			if err != nil {
+				continue
+			}
+			if matchedBase || matchedPath {
 				return true // File matches this filter, include it
 			}
 		}
@@ -339,6 +361,30 @@ func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, category *con
 
 	// No filters specified, include all files
 	return true
+}
+
+func categoryExcludePatterns(category *config.Category) []string {
+	if category == nil {
+		return nil
+	}
+	return category.ExcludePatterns
+}
+
+func matchesAnyPattern(patterns []string, path string) bool {
+	path = filepath.ToSlash(path)
+	for _, pattern := range patterns {
+		if pattern == "" {
+			continue
+		}
+		matched, err := regexp.MatchString(pattern, path)
+		if err != nil {
+			continue
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // ExpandPathPattern expands path patterns with wildcards
@@ -359,11 +405,15 @@ func expandPathPattern(pattern string) ([]string, error) {
 
 // GetDefaultPaths returns typical system cleanup paths
 func GetDefaultPaths() []string {
+	homeDir, err := paths.HomeDir()
+	if err != nil {
+		homeDir = "/root"
+	}
 	return []string{
 		"/tmp",
 		"/var/tmp",
-		os.Getenv("HOME") + "/.cache",
-		os.Getenv("HOME") + "/.thumbnails",
+		filepath.Join(homeDir, ".cache"),
+		filepath.Join(homeDir, ".thumbnails"),
 		"/var/cache/pacman/pkg",
 	}
 }
