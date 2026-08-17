@@ -25,7 +25,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/cache /var/tmp /var/log /var/lib/moonbit /root/.cache /root/.local/share
+ReadWritePaths=/var/cache /var/tmp /var/log /var/lib/moonbit
 
 [Install]
 WantedBy=multi-user.target

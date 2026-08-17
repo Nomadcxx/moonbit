@@ -12,7 +12,7 @@ Environment=XDG_DATA_HOME=/var/lib
 StateDirectory=moonbit
 CacheDirectory=moonbit
 LogsDirectory=moonbit
-ExecStart=/usr/local/bin/moonbit daemon --log /var/log/moonbit/daemon.log --pid /var/run/moonbit.pid
+ExecStart=/usr/local/bin/moonbit daemon --log /var/log/moonbit/daemon.log --pid /run/moonbit/moonbit.pid
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=on-failure
 RestartSec=30
@@ -22,7 +22,9 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/cache/moonbit /var/cache /var/tmp /var/log/moonbit /var/run /var/lib/moonbit /root/.cache/moonbit /root/.local/share
+RuntimeDirectory=moonbit
+RuntimeDirectoryMode=0755
+ReadWritePaths=/var/cache/moonbit /var/cache /var/tmp /var/log/moonbit /var/lib/moonbit
 
 # Logging
 StandardOutput=journal

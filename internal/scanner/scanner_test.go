@@ -393,12 +393,24 @@ func TestShouldIncludeFile(t *testing.T) {
 type mockFileInfo struct {
 	name    string
 	isDir   bool
+	mode    os.FileMode
 	modTime time.Time
 }
 
-func (m *mockFileInfo) Name() string      { return m.name }
-func (m *mockFileInfo) Size() int64       { return 1024 }
-func (m *mockFileInfo) Mode() os.FileMode { return 0644 }
+func (m *mockFileInfo) Name() string { return m.name }
+func (m *mockFileInfo) Size() int64  { return 1024 }
+
+// Mode must agree with IsDir the way a real os.FileInfo does; the scanner relies
+// on Mode().IsRegular() to reject anything that is not a plain file.
+func (m *mockFileInfo) Mode() os.FileMode {
+	if m.mode != 0 {
+		return m.mode
+	}
+	if m.isDir {
+		return os.ModeDir | 0755
+	}
+	return 0644
+}
 func (m *mockFileInfo) ModTime() time.Time {
 	if m.modTime.IsZero() {
 		return time.Now()

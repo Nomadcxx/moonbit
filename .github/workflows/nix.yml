@@ -1,0 +1,56 @@
+name: Nix
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/nix.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nix.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Check flake
+        run: nix flake check --print-build-logs
+
+      - name: Build
+        run: nix build .#moonbit --print-build-logs
+
+      - name: Smoke test
+        run: |
+          ./result/bin/moonbit --version
+          ./result/bin/moonbit --help > /dev/null
+          ./result/bin/moonbit scan --list-categories > /dev/null
+
+      - name: Verify systemd units point at the store path
+        run: |
+          # The tracked units carry the from-source /usr/local/bin path; the
+          # derivation must rewrite them to the built binary.
+          if grep -q '/usr/local/bin/moonbit' result/lib/systemd/system/*.service; then
+            echo "systemd units still reference /usr/local/bin"
+            exit 1
+          fi
+          grep -q "$(readlink -f result)/bin/moonbit" result/lib/systemd/system/moonbit-scan.service

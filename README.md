@@ -31,15 +31,62 @@ yay -S moonbit
 paru -S moonbit
 ```
 
+### Debian / Ubuntu / Fedora
+
+Prebuilt packages are attached to every [release](https://github.com/Nomadcxx/moonbit/releases/latest):
+
+```bash
+# Debian 13 (also Ubuntu 25.x)
+sudo apt install ./moonbit_<version>_debian13_amd64.deb
+
+# Ubuntu 24.04
+sudo apt install ./moonbit_<version>_ubuntu24.04_amd64.deb
+
+# Fedora 42+
+sudo dnf install ./moonbit-<version>-1.fedora42.x86_64.rpm
+```
+
+These install to `/usr/bin/moonbit`.
+
+### Static binary (any distro)
+
+Static, dependency-free binaries for `linux/amd64` and `linux/arm64` are attached
+to each release alongside a `SHA256SUMS` file:
+
+```bash
+curl -fsSLO https://github.com/Nomadcxx/moonbit/releases/latest/download/moonbit-linux-amd64
+curl -fsSLO https://github.com/Nomadcxx/moonbit/releases/latest/download/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+sudo install -Dm755 moonbit-linux-amd64 /usr/local/bin/moonbit
+```
+
 ### Quick Install Script
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Nomadcxx/moonbit/main/install.sh | sudo bash
 ```
 
+**Requirements:** `go` (1.24+), `git`, `make`. Installs to `/usr/local/bin/moonbit`.
+
+### Nix / NixOS
+
+```bash
+# Run without installing
+nix run github:Nomadcxx/moonbit
+
+# Build from a clone
+git clone https://github.com/Nomadcxx/moonbit.git
+cd moonbit
+nix build
+./result/bin/moonbit --help
+```
+
+The derivation also installs the systemd units under
+`$out/lib/systemd/system`, with `ExecStart` rewritten to the store path.
+
 ### Manual Build
 
-**Requirements:** Go 1.24+
+**Requirements:** Go 1.24+, `make`
 
 ```bash
 git clone https://github.com/Nomadcxx/moonbit.git
@@ -110,6 +157,14 @@ MoonBit intentionally avoids high-risk cleanup classes by default. Browser cache
 `moonbit clean` is a dry-run unless `--force` is provided. System-wide scans and cleans may require sudo depending on the selected categories and your local sudo policy.
 
 ## Automated Cleaning
+
+> **Scope:** automation cleans **system-wide paths only** and never touches any
+> user's home directory. The units run as root with `HOME=/root` and
+> `ProtectHome=read-only`, so home-relative categories (User Cache, Thumbnails,
+> Trash, npm, pip, cargo, ...) resolve under `/root`. On a desktop this means
+> automation will not reclaim your user caches -- run `moonbit scan && moonbit
+> clean --force` from your own session for those, or use a `systemctl --user`
+> unit. See [systemd/README.md](systemd/README.md).
 
 MoonBit includes two mutually exclusive automation modes:
 

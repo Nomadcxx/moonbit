@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          diff=$(gofmt -l ./cmd ./internal)
+          if [ -n "$diff" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      # Scanner and cleaner are concurrent; the race detector is the only thing
+      # that catches regressions there.
+      - name: Test (race)
+        run: go test -race ./...
+
+      - name: Guard against committed build artifacts
+        run: |
+          # Binaries were previously committed and shipped inside the AUR source
+          # tarball. Fail the build rather than let that recur.
+          offenders=$(git ls-files | while read -r f; do
+            [ -f "$f" ] || continue
+            case "$(file -b --mime-type "$f")" in
+              application/x-executable|application/x-sharedlib|application/x-pie-executable)
+                echo "$f" ;;
+            esac
+          done)
+          if [ -n "$offenders" ]; then
+            echo "Executable files are tracked in git:"
+            echo "$offenders"
+            exit 1
+          fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Pinned so toolchain drift cannot silently break linting the way it
+          # did locally (v1.64.8 built against go1.25 vs a go1.26 toolchain).
+          version: v2.1.6
+          args: --timeout=5m
+
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck install.sh

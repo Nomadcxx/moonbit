@@ -8,6 +8,17 @@ moonbit
 moonbit-installer
 moonbit-test
 
+# Build outputs. These were previously committed and shipped inside the AUR
+# source tarball (PKGBUILD sources the GitHub archive of the tag), so they must
+# stay untracked. `main` and `installer` are what `go build` emits without -o.
+/main
+/installer
+/moonbit-demo
+
+# makepkg output tree
+pkg/
+src/
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -136,6 +147,7 @@ moonbit-debug
 create_logo.py
 
 # Development and audit documents
+AUDIT-*.md
 FIXES.md
 GAPS.md
 PHASE*.md
@@ -152,3 +164,7 @@ moonbit-*-arm64
 moonbit-darwin-*
 moonbit-linux-*
 .worktrees/
+
+# nix build output
+/result
+/result-*

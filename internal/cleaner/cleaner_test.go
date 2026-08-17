@@ -294,21 +294,22 @@ func TestDeleteFile(t *testing.T) {
 		testFile := filepath.Join(tempDir, "test.txt")
 		os.WriteFile(testFile, []byte("test"), 0644)
 
-		err := c.deleteFile(testFile, false)
+		freed, err := c.deleteFile(testFile, false)
 		assert.NoError(t, err)
+		assert.Equal(t, uint64(4), freed, "should report the bytes actually reclaimed")
 
 		_, err = os.Stat(testFile)
 		assert.True(t, os.IsNotExist(err))
 	})
 
 	t.Run("Protected path rejection", func(t *testing.T) {
-		err := c.deleteFile("/bin/ls", false)
+		_, err := c.deleteFile("/bin/ls", false)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "protected")
 	})
 
 	t.Run("Nonexistent file", func(t *testing.T) {
-		err := c.deleteFile("/tmp/nonexistent.txt", false)
+		_, err := c.deleteFile("/tmp/nonexistent.txt", false)
 		assert.Error(t, err)
 	})
 }

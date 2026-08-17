@@ -7,6 +7,32 @@ Automated system cleaning with systemd. Two operational modes available:
 
 ⚠️ **Important:** Timer and daemon modes are mutually exclusive. Enable only ONE mode at a time.
 
+## Scope: what automation does and does not clean
+
+**Timer and daemon modes clean system-wide paths only. They never touch any
+user's home directory.**
+
+The units run as root with `Environment=HOME=/root` and no `SUDO_USER`, so every
+home-relative category (User Cache, Thumbnails, Trash, npm, pip, cargo, gradle,
+go-build, fontconfig, mesa, and the per-application caches) resolves under
+`/root`, not under `/home/<you>`. `ProtectHome=read-only` enforces this at the
+kernel level: even a misconfigured unit cannot write to a real user's home.
+
+This is deliberate. A system service reaching into users' home directories to
+delete files is the wrong shape for the job -- it cannot know which caches are in
+use by a live session, and it would run as root over user-writable directories.
+
+**Consequence:** on a desktop, automation will not reclaim the caches that
+typically consume the most space. Those live in your home directory. Clean them
+from your own session:
+
+```bash
+moonbit scan && moonbit clean --force
+```
+
+If you want that on a schedule, use a *user* systemd unit running in your own
+session (`systemctl --user`), not the system units here.
+
 ## Installation
 
 ### Option A: Timer Mode (Default)

@@ -487,6 +487,18 @@ func CleanSession(dryRun bool) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Re-derive the delete list from config before anything acts on it. The cache
+	// is user-writable and consumed as root, so its paths are claims to verify,
+	// not instructions to follow.
+	cache, err = revalidateSessionCache(cache, cfg)
+	if err != nil {
+		return err
+	}
+	if cache.TotalFiles == 0 {
+		fmt.Println("No files to clean: nothing in the scan cache could be verified against the current config.")
+		return nil
+	}
+
 	// Filter cache by mode if specified
 	if scanMode != "" {
 		cache = filterCacheByMode(cache, cfg, scanMode)
@@ -595,24 +607,7 @@ func CleanSession(dryRun bool) error {
 
 // detectAvailableCategories dynamically finds available cleaning targets
 func detectAvailableCategories() []config.Category {
-	var categories []config.Category
-
-	// Check for thumbnails directory
-	homeDir, err := paths.HomeDir()
-	if err != nil {
-		return categories
-	}
-	thumbnailPath := filepath.Join(homeDir, ".cache", "thumbnails")
-	if _, err := os.Stat(thumbnailPath); err == nil {
-		categories = append(categories, config.Category{
-			Name:     "Thumbnail Cache",
-			Paths:    []string{thumbnailPath},
-			Risk:     config.Low,
-			Selected: true,
-		})
-	}
-
-	return categories
+	return config.DynamicCategories()
 }
 
 func clearSessionCache() error {
@@ -621,6 +616,25 @@ func clearSessionCache() error {
 		return err
 	}
 	return sessionMgr.Clear()
+}
+
+// revalidateSessionCache verifies the on-disk scan cache against config and
+// reports what it discarded. Returns an error only when the cache as a whole is
+// unusable (stale, unverifiable); individual bad entries are dropped.
+func revalidateSessionCache(cache *config.SessionCache, cfg *config.Config) (*config.SessionCache, error) {
+	verified, report, err := validation.RevalidateCache(
+		cache, config.AuthoritativeCategories(cfg), validation.CacheOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	if report.TotalDropped() > 0 {
+		fmt.Printf("%s %d of %d scanned files no longer verify against config and will be skipped (%s)\n",
+			S.Warning("Note:"), report.TotalDropped(),
+			report.TotalDropped()+report.Accepted, report.Summary())
+	}
+
+	return verified, nil
 }
 
 // filterCacheByMode filters cached files based on clean mode
@@ -674,6 +688,7 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 			Files:     filteredFiles,
 			FileCount: len(filteredFiles),
 			Size:      filteredSize,
+			Risk:      cache.ScanResults.Risk,
 		},
 		TotalSize:  filteredSize,
 		TotalFiles: len(filteredFiles),
@@ -766,6 +781,7 @@ func filterCacheByCategorySelection(cache *config.SessionCache, includes, exclud
 			Files:     filteredFiles,
 			FileCount: len(filteredFiles),
 			Size:      filteredSize,
+			Risk:      cache.ScanResults.Risk,
 		},
 		TotalSize:  filteredSize,
 		TotalFiles: len(filteredFiles),
@@ -840,6 +856,103 @@ var backupRestoreCmd = &cobra.Command{
 		}
 
 		fmt.Println("✅ Backup restored successfully!")
+	},
+}
+
+var journalCmd = &cobra.Command{
+	Use:   "journal",
+	Short: "Manage the systemd journal",
+	Long: "Reclaim systemd journal space using journalctl's supported vacuum interface.\n\n" +
+		"MoonBit deliberately does not delete files under /var/log/journal directly: journald\n" +
+		"mmaps its active journal files, so unlinking them corrupts the journal, loses rotation\n" +
+		"state, and reclaims nothing until journald restarts.",
+}
+
+var journalVacuumCmd = &cobra.Command{
+	Use:   "vacuum",
+	Short: "Reclaim systemd journal space",
+	Long:  "Runs journalctl --vacuum-size / --vacuum-time to shrink the journal safely",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		size, _ := cmd.Flags().GetString("size")
+		age, _ := cmd.Flags().GetString("time")
+		// Mirror `clean`: preview by default, --force applies.
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		if force, _ := cmd.Flags().GetBool("force"); force {
+			dryRun = false
+		}
+
+		if size == "" && age == "" {
+			return fmt.Errorf("specify --size (e.g. 500M) or --time (e.g. 14d)")
+		}
+
+		if _, err := exec.LookPath("journalctl"); err != nil {
+			return fmt.Errorf("journalctl not found; this system does not use systemd-journald")
+		}
+
+		auditLog, _ := audit.NewLogger()
+		if auditLog != nil {
+			defer auditLog.Close()
+		}
+
+		fmt.Println(S.Header("Systemd Journal"))
+		fmt.Println(S.Separator())
+
+		usage := exec.Command("journalctl", "--disk-usage")
+		usage.Stdout = os.Stdout
+		usage.Stderr = os.Stderr
+		usage.Run()
+
+		var vacuumArgs []string
+		if size != "" {
+			vacuumArgs = append(vacuumArgs, "--vacuum-size="+size)
+		}
+		if age != "" {
+			vacuumArgs = append(vacuumArgs, "--vacuum-time="+age)
+		}
+
+		if dryRun {
+			var invocation []string
+			if size != "" {
+				invocation = append(invocation, "--size="+size)
+			}
+			if age != "" {
+				invocation = append(invocation, "--time="+age)
+			}
+			fmt.Printf("\nDRY RUN - would run: journalctl %s\n", strings.Join(vacuumArgs, " "))
+			fmt.Println("\n💡 Use --force to actually vacuum the journal:")
+			fmt.Printf("   moonbit journal vacuum %s --force\n", strings.Join(invocation, " "))
+			return nil
+		}
+
+		if !isRunningAsRoot() {
+			reexecWithSudo()
+		}
+
+		fmt.Printf("\n🗑️  Running: journalctl %s\n", strings.Join(vacuumArgs, " "))
+		vacuum := exec.Command("journalctl", vacuumArgs...)
+		vacuum.Stdout = os.Stdout
+		vacuum.Stderr = os.Stderr
+		err := vacuum.Run()
+
+		if auditLog != nil {
+			result := "success"
+			if err != nil {
+				result = "failed"
+			}
+			auditLog.LogSystemdOperation("journal_vacuum", strings.Join(vacuumArgs, " "), result, err)
+		}
+		if err != nil {
+			return fmt.Errorf("journal vacuum failed: %w", err)
+		}
+
+		fmt.Println()
+		usageAfter := exec.Command("journalctl", "--disk-usage")
+		usageAfter.Stdout = os.Stdout
+		usageAfter.Stderr = os.Stderr
+		usageAfter.Run()
+
+		fmt.Println(S.Success("✅ Journal vacuumed"))
+		return nil
 	},
 }
 
@@ -1450,11 +1563,18 @@ func init() {
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(dockerCmd)
+	rootCmd.AddCommand(journalCmd)
 	rootCmd.AddCommand(duplicatesCmd)
 	rootCmd.AddCommand(pkgCmd)
 
 	backupCmd.AddCommand(backupListCmd)
 	backupCmd.AddCommand(backupRestoreCmd)
+
+	journalCmd.AddCommand(journalVacuumCmd)
+	journalVacuumCmd.Flags().String("size", "", "Shrink journal to this size (e.g. 500M, 1G)")
+	journalVacuumCmd.Flags().String("time", "", "Drop journal entries older than this (e.g. 14d, 1month)")
+	journalVacuumCmd.Flags().Bool("dry-run", true, "Preview only (default); pass --force to apply")
+	journalVacuumCmd.Flags().Bool("force", false, "Actually vacuum the journal")
 
 	dockerCmd.AddCommand(dockerImagesCmd)
 	dockerCmd.AddCommand(dockerAllCmd)
@@ -1504,7 +1624,23 @@ func init() {
 	cleanCmd.Flags().StringSliceVar(&excludeCategories, "exclude-category", nil, "Exclude categories by name (repeat or comma-separate)")
 }
 
+// SetVersion wires build metadata injected via -ldflags into the root command,
+// so `moonbit --version` reports what was actually built.
+func SetVersion(version, buildTime string) {
+	if version == "" {
+		version = "dev"
+	}
+	if buildTime != "" {
+		rootCmd.Version = fmt.Sprintf("%s (built %s)", version, buildTime)
+	} else {
+		rootCmd.Version = version
+	}
+}
+
 func Execute() {
+	if rootCmd.Version == "" {
+		rootCmd.Version = "dev"
+	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

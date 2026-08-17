@@ -68,6 +68,21 @@ func ParseRiskLevel(s string) (RiskLevel, error) {
 	}
 }
 
+// CleanAction selects how a category reclaims space.
+//
+// Unlinking a file a daemon still holds open is the wrong technique: the inode
+// survives until the last descriptor closes, so no space is reclaimed, and the
+// writer is left with a handle to a file that no longer has a name. Truncation
+// reclaims the space immediately and leaves the writer working.
+type CleanAction string
+
+const (
+	// ActionDelete unlinks the file. The default.
+	ActionDelete CleanAction = ""
+	// ActionTruncate truncates the file to zero length, leaving it in place.
+	ActionTruncate CleanAction = "truncate"
+)
+
 // FileInfo represents information about a file
 type FileInfo struct {
 	Path             string    `json:"path"`
@@ -76,6 +91,11 @@ type FileInfo struct {
 	CategoryName     string    `json:"category_name,omitempty"`
 	CategoryRisk     RiskLevel `json:"category_risk,omitempty"`
 	CategorySelected bool      `json:"category_selected,omitempty"`
+	// CategoryShred and CategoryAction are set by the revalidation gate from the
+	// configured category, never trusted from the on-disk cache.
+	// See internal/validation/cache.go.
+	CategoryShred  bool        `json:"-"`
+	CategoryAction CleanAction `json:"-"`
 }
 
 // Category represents a cleaning category
@@ -90,12 +110,19 @@ type Category struct {
 	Files           []FileInfo `toml:"files,omitempty" json:"files,omitempty"`
 	Selected        bool       `toml:"selected,omitempty" json:"selected,omitempty"`
 	ShredEnabled    bool       `toml:"shred,omitempty" json:"shred,omitempty"`
-	MinAgeDays      int        `toml:"min_age_days,omitempty" json:"min_age_days,omitempty"` // Only clean files older than this many days
+	// Action selects delete (default) or truncate. Truncate is required for files
+	// a running daemon holds open -- see CleanAction.
+	Action     CleanAction `toml:"action,omitempty" json:"action,omitempty"`
+	MinAgeDays int         `toml:"min_age_days,omitempty" json:"min_age_days,omitempty"` // Only clean files older than this many days
 }
 
 // Config represents the main configuration
 type Config struct {
 	Scan struct {
+		// MaxDepth is DEPRECATED and currently has no effect: the scanner never
+		// reads it. Traversal is bounded by each category's configured Paths and
+		// by scan.ignore_patterns, not by depth. Kept so existing config files
+		// continue to parse. Do not document it as a working safety limit.
 		MaxDepth       int      `toml:"max_depth"`
 		IgnorePatterns []string `toml:"ignore_patterns"`
 		EnableAll      bool     `toml:"enable_all"`
@@ -122,6 +149,41 @@ func getRealUserHome() string {
 	return "/root"
 }
 
+// DynamicCategories returns cleaning targets detected at runtime rather than
+// declared in config. They must be included anywhere the authoritative category
+// set is needed, or files scanned from them will fail revalidation.
+func DynamicCategories() []Category {
+	var categories []Category
+
+	home, err := paths.HomeDir()
+	if err != nil {
+		return categories
+	}
+
+	thumbnailPath := filepath.Join(home, ".cache", "thumbnails")
+	if _, err := os.Stat(thumbnailPath); err == nil {
+		categories = append(categories, Category{
+			Name:     "Thumbnail Cache",
+			Paths:    []string{thumbnailPath},
+			Risk:     Low,
+			Selected: true,
+		})
+	}
+
+	return categories
+}
+
+// AuthoritativeCategories is the full set of categories a cached scan result may
+// legitimately have come from: those declared in config plus those detected at
+// runtime. This is the trust anchor for cache revalidation.
+func AuthoritativeCategories(cfg *Config) []Category {
+	if cfg == nil {
+		return DynamicCategories()
+	}
+	all := append([]Category{}, cfg.Categories...)
+	return append(all, DynamicCategories()...)
+}
+
 // DefaultConfig returns a comprehensive configuration with real cleaning targets
 func DefaultConfig() *Config {
 	userHome := getRealUserHome()
@@ -133,7 +195,7 @@ func DefaultConfig() *Config {
 			DryRunDefault  bool     `toml:"dry_run_default"`
 			WorkerCount    int      `toml:"worker_count"`
 		}{
-			MaxDepth:       3, // Deeper scanning for comprehensive detection
+			MaxDepth:       3, // DEPRECATED: not enforced by the scanner (see Config.Scan.MaxDepth)
 			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
 			EnableAll:      true,
 			DryRunDefault:  true,
@@ -201,12 +263,26 @@ func DefaultConfig() *Config {
 				MinAgeDays:   30, // Only delete thumbnails older than 30 days
 			},
 			{
+				// Rotated artefacts only. The previous filters (`\.log$`, `^syslog`,
+				// `^messages`) matched the *active* files rsyslog and friends hold
+				// open: unlinking those reclaims nothing until the daemon restarts,
+				// breaks the writer, and silently stops logging. Risk is Medium
+				// because this is the one category that can break system logging --
+				// Low would put it in the quick/automated path.
 				Name:         "System Logs",
 				Paths:        []string{"/var/log"},
-				Risk:         Low,
-				Selected:     true,
+				Risk:         Medium,
+				Selected:     false,
 				ShredEnabled: false,
-				Filters:      []string{`\.(log|old|backup)$`, `^syslog`, `^messages`, `^daemon\.log`},
+				Filters: []string{
+					`\.\d+$`,      // logrotate: messages.1
+					`\.\d+\.gz$`,  // logrotate compressed: messages.1.gz
+					`\.gz$`,       // compressed rotations
+					`\.old$`,      // *.old
+					`\.log\.\d`,   // foo.log.1
+					`-\d{8}$`,     // dated rotations: foo-20260818
+					`-\d{8}\.gz$`, // dated + compressed
+				},
 			},
 			{
 				Name:         "Recent Files",
@@ -362,22 +438,23 @@ func DefaultConfig() *Config {
 				ShredEnabled: false,
 			},
 			{
+				// dockerd holds each container's *-json.log open for the container's
+				// whole lifetime. Deleting it frees nothing while the container runs
+				// and breaks `docker logs` until restart, so truncate instead.
 				Name:         "Docker Container Logs",
 				Paths:        []string{"/var/lib/docker/containers"},
 				Risk:         Medium,
 				Selected:     false,
 				ShredEnabled: false,
+				Action:       ActionTruncate,
 				Filters:      []string{`\.log$`},
 			},
-			// System caches
-			{
-				Name:         "Systemd Journal",
-				Paths:        []string{"/var/log/journal"},
-				Risk:         Medium,
-				Selected:     false,
-				ShredEnabled: false,
-				Filters:      []string{`\.journal$`},
-			},
+			// NOTE: there is deliberately no "Systemd Journal" category here.
+			// journald mmaps its active journal files; unlinking them corrupts the
+			// journal, loses rotation state, and reclaims nothing until journald
+			// restarts. Use `moonbit journal vacuum` instead, which drives
+			// `journalctl --vacuum-*` -- the supported interface. This mirrors the
+			// Docker categories shelling out to `docker system prune`.
 		},
 	}
 	cfg.Categories = append(cfg.Categories, AppCacheCategories(userHome)...)

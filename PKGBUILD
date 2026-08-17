@@ -23,21 +23,31 @@ build() {
     export CGO_LDFLAGS="${LDFLAGS}"
     export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
 
-    go build -buildvcs=false -o moonbit cmd/main.go
+    # Carry version metadata into the binary so `moonbit --version` is accurate
+    # for package builds too, not just `make build`.
+    go build -buildvcs=false \
+        -ldflags "-X main.Version=${pkgver}-${pkgrel} -X main.BuildTime=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)" \
+        -o moonbit cmd/main.go
 }
 
 package() {
     cd "${srcdir}/${pkgname}-${pkgver}"
 
-    # Install binary
-    install -Dm755 moonbit "${pkgdir}/usr/local/bin/moonbit"
+    # Packaged files belong in /usr/bin. /usr/local is reserved for the local
+    # admin -- a pacman-managed file there collides with the from-source
+    # installer, which correctly installs to /usr/local/bin.
+    install -Dm755 moonbit "${pkgdir}/usr/bin/moonbit"
 
-    # Install systemd service and timer files
-    install -Dm644 systemd/moonbit-scan.service "${pkgdir}/etc/systemd/system/moonbit-scan.service"
-    install -Dm644 systemd/moonbit-scan.timer "${pkgdir}/etc/systemd/system/moonbit-scan.timer"
-    install -Dm644 systemd/moonbit-clean.service "${pkgdir}/etc/systemd/system/moonbit-clean.service"
-    install -Dm644 systemd/moonbit-clean.timer "${pkgdir}/etc/systemd/system/moonbit-clean.timer"
-    install -Dm644 systemd/moonbit-daemon.service "${pkgdir}/etc/systemd/system/moonbit-daemon.service"
+    # Install systemd service and timer files. The units ship with
+    # ExecStart=/usr/local/bin/moonbit for the from-source install path, so
+    # rewrite them to match where this package actually puts the binary.
+    for unit in moonbit-scan.service moonbit-scan.timer \
+                moonbit-clean.service moonbit-clean.timer \
+                moonbit-daemon.service; do
+        install -Dm644 "systemd/${unit}" "${pkgdir}/etc/systemd/system/${unit}"
+        sed -i 's|/usr/local/bin/moonbit|/usr/bin/moonbit|g' \
+            "${pkgdir}/etc/systemd/system/${unit}"
+    done
 
     # Create log and run directories
     install -dm755 "${pkgdir}/var/log/moonbit"

@@ -287,15 +287,34 @@ Examples:
 	},
 }
 
+// DefaultPidFile lives under /run/moonbit, which the unit creates via
+// RuntimeDirectory=moonbit. /var/run is a compat symlink to /run and needed an
+// explicit ReadWritePaths entry to be writable under ProtectSystem=strict.
+const DefaultPidFile = "/run/moonbit/moonbit.pid"
+
+// LegacyPidFile is the pre-1.5 location, still checked by `daemon status` so a
+// daemon started by an older unit is still found.
+const LegacyPidFile = "/var/run/moonbit.pid"
+
 var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show daemon status",
 	Long:  "Display current status of the running moonbit daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		pidFile := "/var/run/moonbit.pid"
+		pidFile, _ := cmd.Flags().GetString("pid")
+		if pidFile == "" {
+			pidFile = DefaultPidFile
+		}
 
-		// Check if PID file exists
+		// Check if PID file exists. Fall back to the pre-1.5 location so a daemon
+		// started by an older unit is still reported correctly.
 		data, err := os.ReadFile(pidFile)
+		if err != nil && pidFile == DefaultPidFile {
+			if legacy, legacyErr := os.ReadFile(LegacyPidFile); legacyErr == nil {
+				data, err = legacy, nil
+				pidFile = LegacyPidFile
+			}
+		}
 		if err != nil {
 			fmt.Println(S.Error("✗ Daemon is not running"))
 			fmt.Println(S.Muted("  No PID file found at " + pidFile))
@@ -477,5 +496,6 @@ func init() {
 	daemonCmd.Flags().StringVar(&daemonScanInterval, "scan", "1h", "Scan interval (e.g., 30m, 1h, 2h)")
 	daemonCmd.Flags().StringVar(&daemonCleanInterval, "clean", "24h", "Clean interval (e.g., 12h, 24h, 7d)")
 	daemonCmd.Flags().StringVar(&daemonLogFile, "log", "/var/log/moonbit/daemon.log", "Log file path")
-	daemonCmd.Flags().StringVar(&daemonPidFile, "pid", "/var/run/moonbit.pid", "PID file path")
+	daemonCmd.Flags().StringVar(&daemonPidFile, "pid", DefaultPidFile, "PID file path")
+	daemonStatusCmd.Flags().String("pid", DefaultPidFile, "PID file path to check")
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/utils"
+	"github.com/Nomadcxx/moonbit/internal/validation"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -799,12 +800,27 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			}
 		}
 
+		// Same gate as the CLI path: the cache is user-writable and this runs as
+		// root, so re-derive the delete list from config before deleting anything.
+		verified, report, err := validation.RevalidateCache(
+			cache, config.AuthoritativeCategories(cfg), validation.CacheOptions{})
+		if err != nil {
+			return cleanCompleteMsg{Success: false, Error: err.Error()}
+		}
+		if verified.TotalFiles == 0 {
+			return cleanCompleteMsg{
+				Success: false,
+				Error:   "nothing in the scan cache could be verified against the current config",
+			}
+		}
+		skipped := report.TotalDropped()
+
 		ctx := context.Background()
 		c := cleaner.NewCleaner(cfg)
 		defer c.Close() // Ensure audit logger is closed and flushed
 
 		progressCh := make(chan cleaner.CleanMsg, 10)
-		go c.CleanCategory(ctx, cache.ScanResults, false, progressCh)
+		go c.CleanCategory(ctx, verified.ScanResults, false, progressCh)
 
 		var deletedFiles int
 		var deletedBytes uint64
@@ -830,6 +846,14 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 		errorMsg := ""
 		if len(errors) > 0 {
 			errorMsg = fmt.Sprintf("%d files failed to delete", len(errors))
+		}
+		if skipped > 0 {
+			note := fmt.Sprintf("%d scanned files skipped (no longer verify against config)", skipped)
+			if errorMsg == "" {
+				errorMsg = note
+			} else {
+				errorMsg += "; " + note
+			}
 		}
 
 		return cleanCompleteMsg{

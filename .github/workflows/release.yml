@@ -2,61 +2,188 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
-  # Dry run: builds the binaries, skips release creation
+    tags: ['v*']
+  # Dry runs: build + package + install-verify, skip release creation
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'nfpm.yaml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  package:
+    name: Package (${{ matrix.distro }})
     runs-on: ubuntu-latest
-
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: "ubuntu:24.04"
+            distro: ubuntu24.04
+            pkgmgr: apt
+            packager: deb
+          - image: "debian:13"        # also serves Ubuntu 25.x
+            distro: debian13
+            pkgmgr: apt
+            packager: deb
+          - image: "fedora:42"
+            distro: fedora42
+            pkgmgr: dnf
+            packager: rpm
     steps:
+      - name: Install toolchain (apt)
+        if: matrix.pkgmgr == 'apt'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            curl ca-certificates git make golang-go
+
+      - name: Install toolchain (dnf)
+        if: matrix.pkgmgr == 'dnf'
+        run: dnf install -y -q curl git make golang
+
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=0.0.0-dev
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build static binaries
+      - name: Build
         env:
-          CGO_ENABLED: "0"
-          GOOS: linux
-          GOARCH: amd64
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
           mkdir -p dist
-          go build -buildvcs=false -ldflags "-s -w" -o dist/moonbit ./cmd
+          # CGO_ENABLED=0 gives a static binary, so the package carries no
+          # shared-library dependencies and the same build works on every distro.
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags "-s -w -X main.Version=v${VERSION} -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o dist/moonbit ./cmd/main.go
 
-      - name: Generate checksums
+      - name: Smoke test
         run: |
-          cd dist
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
+          ./dist/moonbit --version
+          ./dist/moonbit --help > /dev/null
+          ./dist/moonbit scan --list-categories > /dev/null
 
-      - name: Upload artifacts
+      - name: Stage systemd units
+        run: |
+          # Packaged units must point at /usr/bin, where the package installs the
+          # binary; the tracked units target the from-source /usr/local/bin.
+          mkdir -p dist/systemd
+          cp systemd/*.service systemd/*.timer dist/systemd/
+          sed -i 's|/usr/local/bin/moonbit|/usr/bin/moonbit|g' dist/systemd/*
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz" \
+            | tar -xz -C /usr/local/bin nfpm
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+          ARCH: amd64
+        shell: bash
+        run: |
+          if [ "${{ matrix.packager }}" = "deb" ]; then
+            PKGFILE="moonbit_${VERSION}_${{ matrix.distro }}_amd64.deb"
+          else
+            PKGFILE="moonbit-${VERSION}-1.${{ matrix.distro }}.x86_64.rpm"
+          fi
+          nfpm package --config nfpm.yaml --packager ${{ matrix.packager }} --target "$PKGFILE"
+          echo "PKGFILE=$PKGFILE" >> "$GITHUB_ENV"
+
+      - name: Verify package installs
+        run: |
+          if [ "${{ matrix.pkgmgr }}" = "apt" ]; then
+            apt-get install -y "./$PKGFILE"
+          else
+            dnf install -y "./$PKGFILE"
+          fi
+          /usr/bin/moonbit --version
+          # The units must point at the packaged binary, not /usr/local/bin.
+          grep -q 'ExecStart=/usr/bin/moonbit' /usr/lib/systemd/system/moonbit-scan.service
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moonbit-binaries
-          path: dist/
+          name: moonbit-${{ matrix.distro }}
+          path: |
+            *.deb
+            *.rpm
 
-      - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  binaries:
+    name: Static binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists; nothing to do"
-            exit 0
-          fi
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --verify-tag \
-            --latest \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          VERSION="${GITHUB_REF_NAME}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64; do
+            GOOS="${target%/*}"; GOARCH="${target#*/}"
+            env GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
+              -o "dist/moonbit-${GOOS}-${GOARCH}" ./cmd/main.go
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moonbit-static-binaries
+          path: dist/moonbit-*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum *.deb *.rpm moonbit-linux-* > SHA256SUMS
+
+      - name: Source tarball checksum for PKGBUILD
+        run: |
+          # Paste this into PKGBUILD/.SRCINFO sha256sums for the AUR update.
+          curl -fsSL -o source.tar.gz \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_REF_NAME}.tar.gz"
+          echo "::notice title=PKGBUILD sha256sums::$(sha256sum source.tar.gz | awk '{print $1}')"
+          rm -f source.tar.gz
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            *.deb
+            *.rpm
+            moonbit-linux-*
+            SHA256SUMS
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

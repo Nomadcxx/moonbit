@@ -396,8 +396,25 @@ func (m model) renderComplete() string {
 
 	// Success
 	if m.uninstallMode {
+		// Be explicit about what was NOT removed. Backups can hold the only
+		// remaining copy of files moonbit deleted, so keeping them is correct --
+		// but "moonbit has been removed" overstated what happened.
 		return `Uninstall complete.
-moonbit has been removed.
+
+Removed:
+  /usr/local/bin/moonbit, /usr/bin/moonbit
+  /etc/systemd/system/moonbit-*.{service,timer}
+
+Kept (may hold the only copy of deleted files, or your config):
+  /var/log/moonbit           audit log
+  /var/lib/moonbit           daemon state
+  ~/.config/moonbit          configuration
+  ~/.cache/moonbit           scan cache
+  ~/.local/share/moonbit     backups of previously deleted files
+
+To remove those too:
+  sudo rm -rf /var/log/moonbit /var/lib/moonbit
+  rm -rf ~/.config/moonbit ~/.cache/moonbit ~/.local/share/moonbit
 
 Press Enter to exit`
 	}
@@ -469,12 +486,18 @@ func checkPrivileges(m *model) error {
 func checkDependencies(m *model) error {
 	missing := []string{}
 
-	// Check critical deps
-	if _, err := exec.LookPath("go"); err != nil {
-		missing = append(missing, "go")
-	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		missing = append(missing, "systemd")
+	// Check critical deps. `make` belongs here: buildBinary shells out to
+	// `make build`, which is the single source of truth for the version LDFLAGS.
+	// Without it the user is told dependencies are satisfied and then hits
+	// "make: command not found" two tasks later.
+	for _, dep := range []struct{ bin, report string }{
+		{"go", "go"},
+		{"make", "make (Arch: base-devel, Debian: build-essential)"},
+		{"systemctl", "systemd"},
+	} {
+		if _, err := exec.LookPath(dep.bin); err != nil {
+			missing = append(missing, dep.report)
+		}
 	}
 
 	if len(missing) > 0 {
@@ -642,8 +665,12 @@ func disableService(m *model) error {
 }
 
 func removeBinary(m *model) error {
-	if err := os.Remove("/usr/local/bin/moonbit"); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove binary: %v", err)
+	// /usr/local/bin is where this installer puts it; /usr/bin is where the
+	// distro package puts it. Remove whichever are present.
+	for _, path := range []string{"/usr/local/bin/moonbit", "/usr/bin/moonbit"} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove %s: %v", path, err)
+		}
 	}
 	return nil
 }

@@ -13,10 +13,22 @@ func HomeDir() (string, error) {
 	}
 
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
+		// Look the user up rather than assuming /home/<name>. Non-standard
+		// layouts (LDAP/SSSD, /export/home, per-team roots) would otherwise fall
+		// through to HOME, which under sudo's env_reset is /root -- silently
+		// scanning and cleaning root's caches while reporting success.
+		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
+			if stat, err := os.Stat(u.HomeDir); err == nil && stat.IsDir() {
+				return u.HomeDir, nil
+			}
+		}
+		// Last-resort fallback for the conventional layout.
 		userHome := filepath.Join("/home", sudoUser)
 		if stat, err := os.Stat(userHome); err == nil && stat.IsDir() {
 			return userHome, nil
 		}
+		return "", fmt.Errorf("cannot resolve home directory for SUDO_USER=%q; "+
+			"set MOONBIT_HOME to the intended home directory", sudoUser)
 	}
 
 	if home := os.Getenv("HOME"); home != "" {

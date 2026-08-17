@@ -36,7 +36,11 @@ func (fs *OsFileSystem) Walk(root string, walkFunc filepath.WalkFunc) error {
 		AllowNonDirectory:   false,
 		Unsorted:            false,
 		Callback: func(osPathname string, de *godirwalk.Dirent) error {
-			info, err := os.Stat(osPathname)
+			// Lstat, not Stat. Stat reports a symlink's target, so a link would be
+			// collected as a regular file carrying the target's size -- inflating
+			// reported totals and handing the cleaner a path outside the tree
+			// being scanned.
+			info, err := os.Lstat(osPathname)
 			if err != nil {
 				return walkFunc(osPathname, nil, err)
 			}
@@ -231,8 +235,14 @@ func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *con
 		log.Printf("ERROR: Failed to stat path %s: %v", rootPath, err)
 		return err
 	} else if !info.IsDir() {
-		if s.shouldIncludeFile(rootPath, info, stats) {
-			addFileToStats(stats, rootPath, info)
+		// Category paths are glob-expanded, so this entry may be a symlink that
+		// Stat resolved to a regular file. Judge it by Lstat before collecting it.
+		linfo, lerr := os.Lstat(rootPath)
+		if lerr != nil {
+			return nil
+		}
+		if s.shouldIncludeFile(rootPath, linfo, stats) {
+			addFileToStats(stats, rootPath, linfo)
 		}
 		return nil
 	}
@@ -321,8 +331,10 @@ func addFileToStats(stats *config.Category, path string, info os.FileInfo) {
 
 // ShouldIncludeFile determines if a file should be included based on filters
 func (s *Scanner) shouldIncludeFile(path string, info os.FileInfo, category *config.Category) bool {
-	// Skip directories for now (focus on files)
-	if info.IsDir() {
+	// Only regular files are ever cleanable. This rejects directories, symlinks,
+	// devices, sockets and FIFOs in one check, and is the backstop that keeps a
+	// symlink from reaching the cleaner however its FileInfo was obtained.
+	if !info.Mode().IsRegular() {
 		return false
 	}
 

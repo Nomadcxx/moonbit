@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/audit"
@@ -154,13 +155,29 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 			filesDeleted++
 			bytesFreed += fileInfo.Size
 		} else {
-			if err := c.deleteFile(fileInfo.Path, category.ShredEnabled); err != nil {
+			// Shredding is enabled per file by the revalidation gate, which reads
+			// it from config. The category-level flag is only meaningful for
+			// callers passing a config category directly.
+			shred := category.ShredEnabled || fileInfo.CategoryShred
+			action := fileInfo.CategoryAction
+			if action == config.ActionDelete {
+				action = category.Action
+			}
+
+			var freed uint64
+			var err error
+			if action == config.ActionTruncate {
+				freed, err = c.truncateFile(fileInfo.Path)
+			} else {
+				freed, err = c.deleteFile(fileInfo.Path, shred)
+			}
+			if err != nil {
 				filesFailed++
 				errorMessages = append(errorMessages, fmt.Sprintf("%s: %v", fileInfo.Path, err))
 				continue
 			}
 			filesDeleted++
-			bytesFreed += fileInfo.Size
+			bytesFreed += freed
 		}
 	}
 
@@ -200,43 +217,117 @@ func (c *Cleaner) CleanCategory(ctx context.Context, category *config.Category, 
 	return cleanErr
 }
 
-// DeleteFile performs actual file deletion with optional shredding
-func (c *Cleaner) deleteFile(path string, shredEnabled bool) error {
+// truncateFile reclaims a file's space without unlinking it, for files a running
+// daemon holds open. Unlinking those frees nothing until the last descriptor
+// closes and leaves the writer with a nameless handle; truncation frees the
+// space immediately and the writer keeps working.
+//
+// It returns the number of bytes reclaimed.
+func (c *Cleaner) truncateFile(path string) (uint64, error) {
 	if c.isProtectedPath(path) {
-		return moonbiterrors.NewPathProtectedError(path, c.safetyConfig.ProtectedPaths)
+		return 0, moonbiterrors.NewPathProtectedError(path, c.safetyConfig.ProtectedPaths)
 	}
 
-	info, err := os.Stat(path)
+	// O_NOFOLLOW: never truncate through a symlink.
+	file, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return moonbiterrors.NewFileNotFoundError(path, err)
+			return 0, moonbiterrors.NewFileNotFoundError(path, err)
 		}
 		if os.IsPermission(err) {
-			return moonbiterrors.NewPermissionDeniedError(path, err)
+			return 0, moonbiterrors.NewPermissionDeniedError(path, err)
 		}
-		return fmt.Errorf("failed to stat file: %w", err)
+		return 0, fmt.Errorf("failed to open file for truncation: %w", err)
 	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("refusing to truncate %s: not a regular file (mode %s)", path, info.Mode())
+	}
+
+	freed := uint64(info.Size())
+	if freed == 0 {
+		return 0, nil
+	}
+	if err := file.Truncate(0); err != nil {
+		return 0, fmt.Errorf("failed to truncate: %w", err)
+	}
+	return freed, nil
+}
+
+// deleteFile removes a single file, optionally shredding it first. It returns
+// the number of bytes actually reclaimed from disk, measured immediately before
+// removal rather than taken from the (possibly stale) scan record.
+func (c *Cleaner) deleteFile(path string, shredEnabled bool) (uint64, error) {
+	if c.isProtectedPath(path) {
+		return 0, moonbiterrors.NewPathProtectedError(path, c.safetyConfig.ProtectedPaths)
+	}
+
+	// Lstat, not Stat: a symlink must be judged as a symlink. Stat reports the
+	// target's mode and size, which let a link inside a cache directory stand in
+	// for an arbitrary file elsewhere on the system.
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, moonbiterrors.NewFileNotFoundError(path, err)
+		}
+		if os.IsPermission(err) {
+			return 0, moonbiterrors.NewPermissionDeniedError(path, err)
+		}
+		return 0, fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("refusing to delete %s: not a regular file (mode %s)", path, info.Mode())
+	}
+
+	// Size on disk now, not the size recorded at scan time. A log the writing
+	// daemon truncated between scan and clean must not be reported at its old size.
+	freed := uint64(info.Size())
 
 	if shredEnabled && info.Size() > 0 {
 		if err := c.shredFile(path, info.Size()); err != nil {
-			return fmt.Errorf("failed to shred file: %w", err)
+			return 0, fmt.Errorf("failed to shred file: %w", err)
 		}
 	}
 
 	err = os.Remove(path)
-	if err != nil && os.IsPermission(err) {
-		return moonbiterrors.NewPermissionDeniedError(path, err)
+	if err != nil {
+		if os.IsPermission(err) {
+			return 0, moonbiterrors.NewPermissionDeniedError(path, err)
+		}
+		return 0, err
 	}
-	return err
+	return freed, nil
 }
 
 // ShredFile overwrites a file with random data before deletion
 func (c *Cleaner) shredFile(path string, size int64) error {
-	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	// O_NOFOLLOW makes the kernel refuse the open outright if the final path
+	// component is a symlink, so shredding can never reach through a link and
+	// overwrite a file outside the directory being cleaned.
+	file, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+
+	// Re-check on the open descriptor: a regular file cannot have been swapped
+	// for something else between the Lstat above and this open.
+	st, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("refusing to shred %s: not a regular file (mode %s)", path, st.Mode())
+	}
+	if st.Size() < size {
+		size = st.Size()
+	}
 
 	passes := c.safetyConfig.ShredPasses
 	if passes < 1 {
@@ -313,17 +404,27 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 		return true // Fail safe - protect on error
 	}
 
-	// Check against protected paths
-	for _, protected := range c.safetyConfig.ProtectedPaths {
-		// Ensure protected path ends with separator for proper boundary checking
-		protectedWithSep := protected
-		if !strings.HasSuffix(protected, string(filepath.Separator)) {
-			protectedWithSep = protected + string(filepath.Separator)
-		}
+	// Check the literal path and, when it resolves, the symlink target as well.
+	// filepath.Abs does not resolve symlinks, so on its own it judges a link by
+	// its own location -- letting a link in an unprotected directory point at a
+	// protected one. Both must clear the list.
+	candidates := []string{absPath}
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil && resolved != absPath {
+		candidates = append(candidates, resolved)
+	}
 
-		// Check if path starts with protected directory
-		if absPath == protected || strings.HasPrefix(absPath, protectedWithSep) {
-			return true
+	for _, candidate := range candidates {
+		for _, protected := range c.safetyConfig.ProtectedPaths {
+			// Ensure protected path ends with separator for proper boundary checking
+			protectedWithSep := protected
+			if !strings.HasSuffix(protected, string(filepath.Separator)) {
+				protectedWithSep = protected + string(filepath.Separator)
+			}
+
+			// Check if path starts with protected directory
+			if candidate == protected || strings.HasPrefix(candidate, protectedWithSep) {
+				return true
+			}
 		}
 	}
 

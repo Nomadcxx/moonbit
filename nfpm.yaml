@@ -1,0 +1,66 @@
+# nfpm configuration for deb/rpm packages.
+# CI drives this per-distro; see .github/workflows/release.yml
+name: moonbit
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Nomadcxx <noovie@gmail.com>
+description: |
+  A modern system cleaner for Linux with a TUI and CLI.
+  Scans and selectively removes caches, logs and temporary files across
+  Arch, Debian/Ubuntu, Fedora/RHEL and openSUSE.
+vendor: Nomadcxx
+homepage: https://github.com/Nomadcxx/moonbit
+license: GPL-3.0-only
+
+contents:
+  # Packaged binaries belong in /usr/bin, not /usr/local/bin (which is reserved
+  # for the local admin and is where the from-source installer writes).
+  - src: ./dist/moonbit
+    dst: /usr/bin/moonbit
+    file_info:
+      mode: 0755
+
+  # CI rewrites ExecStart to /usr/bin before packaging; the tracked units target
+  # the from-source /usr/local/bin path.
+  - src: ./dist/systemd/moonbit-scan.service
+    dst: /usr/lib/systemd/system/moonbit-scan.service
+    file_info:
+      mode: 0644
+  - src: ./dist/systemd/moonbit-scan.timer
+    dst: /usr/lib/systemd/system/moonbit-scan.timer
+    file_info:
+      mode: 0644
+  - src: ./dist/systemd/moonbit-clean.service
+    dst: /usr/lib/systemd/system/moonbit-clean.service
+    file_info:
+      mode: 0644
+  - src: ./dist/systemd/moonbit-clean.timer
+    dst: /usr/lib/systemd/system/moonbit-clean.timer
+    file_info:
+      mode: 0644
+  - src: ./dist/systemd/moonbit-daemon.service
+    dst: /usr/lib/systemd/system/moonbit-daemon.service
+    file_info:
+      mode: 0644
+
+  - src: ./LICENSE
+    dst: /usr/share/licenses/moonbit/LICENSE
+    file_info:
+      mode: 0644
+  - src: ./README.md
+    dst: /usr/share/doc/moonbit/README.md
+    file_info:
+      mode: 0644
+
+  - dst: /var/log/moonbit
+    type: dir
+    file_info:
+      mode: 0755
+
+# The binary is built with CGO_ENABLED=0, so there are no shared-library
+# dependencies to declare per distro -- only systemd, for the units.
+depends:
+  - systemd
