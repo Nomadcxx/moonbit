@@ -9,7 +9,9 @@ post_install() {
 ▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀
 
 EOF
-    echo "==> MoonBit v${1} installed successfully!"
+    echo "==> moonbit v${1} installed successfully!"
+    echo ""
+    echo "Search for moonbit in your application menu, or run it directly:"
     echo ""
     echo "Usage:"
     echo "  moonbit                    # Interactive TUI"
@@ -47,7 +49,7 @@ post_upgrade() {
 ▀   ▀  ▀▀▀   ▀▀▀  ▀   ▀ ▀▀▀▀  ▀▀▀▀▀   ▀   ▀     ▀
 
 EOF
-    echo "==> MoonBit upgraded to v${1}!"
+    echo "==> moonbit upgraded to v${1}!"
     echo ""
     echo "See the changelog for what changed in this release:"
     echo "  https://github.com/Nomadcxx/moonbit/releases/tag/v${1%%-*}"
@@ -67,7 +69,7 @@ EOF
 }
 
 pre_remove() {
-    echo "==> Disabling MoonBit services..."
+    echo "==> Disabling moonbit services..."
     systemctl disable --now moonbit-scan.timer 2>/dev/null || true
     systemctl disable --now moonbit-clean.timer 2>/dev/null || true
     systemctl disable --now moonbit-daemon.service 2>/dev/null || true
@@ -78,7 +80,7 @@ post_remove() {
     systemctl daemon-reload 2>/dev/null || true
 
     echo ""
-    echo "==> MoonBit binary and systemd units removed."
+    echo "==> moonbit binary and systemd units removed."
     echo ""
     echo "    Deliberately kept (they may hold the only copy of deleted files,"
     echo "    or your configuration):"
