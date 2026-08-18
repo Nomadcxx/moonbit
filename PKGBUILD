@@ -12,7 +12,7 @@ optdepends=(
 )
 makedepends=('go>=1.24')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Nomadcxx/${pkgname}/archive/v${pkgver}.tar.gz")
-sha256sums=('d559d68a2f3f49fae4fc55889d4fc8b0f1a02f384639cef7384cdd6b1c19802f')
+sha256sums=('d62a1ae25de1542accddb6895966dfd6ecd7c69f21aa7ef5ea5ab0199b0c9472')
 install=${pkgname}.install
 
 build() {
