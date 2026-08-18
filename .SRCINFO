@@ -11,6 +11,6 @@ pkgbase = moonbit
 	depends = systemd
 	optdepends = docker: Docker cleanup support
 	source = moonbit-1.5.1.tar.gz::https://github.com/Nomadcxx/moonbit/archive/v1.5.1.tar.gz
-	sha256sums = d62a1ae25de1542accddb6895966dfd6ecd7c69f21aa7ef5ea5ab0199b0c9472
+	sha256sums = 553af172304da104dcba50ba31ae550e118abf1cbaae91c014d7ba3e7caf5df7
 
 pkgname = moonbit
