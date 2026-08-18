@@ -20,7 +20,7 @@ func init() {
 	cacheFile, pathErr := paths.CacheFile()
 	if pathErr == nil {
 		logDir := filepath.Dir(cacheFile)
-		os.MkdirAll(logDir, 0700) // User-only permissions
+		_ = os.MkdirAll(logDir, 0700) // best-effort; OpenFile below reports failure
 		logPath := filepath.Join(logDir, "debug.log")
 		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // User-only read/write
 	}

@@ -72,7 +72,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v7+ is required for golangci-lint v2; v6 rejects a v2 version string.
+        uses: golangci/golangci-lint-action@v8
         with:
           # Pinned so toolchain drift cannot silently break linting the way it
           # did locally (v1.64.8 built against go1.25 vs a go1.26 toolchain).

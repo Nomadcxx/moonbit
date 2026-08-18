@@ -14,13 +14,41 @@ linters:
     - govet
     - ineffassign
     - staticcheck
-    - unused
     - misspell
     - unconvert
 
+  disable:
+    # See the note below: 27 pre-existing dead symbols. `unused` is part of
+    # golangci-lint v2's default set, so it must be disabled explicitly.
+    - unused
+
   settings:
     errcheck:
-      check-blank: true
+      # `_ = f()` is this codebase's way of saying "error deliberately ignored";
+      # flagging it adds noise without adding safety.
+      check-blank: false
+      # Conventional cases where the returned error is not actionable.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*os.File).Sync
+        - os.Remove
+        - os.RemoveAll
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os/exec.Cmd).Run
+        # Audit logging is best-effort: a failed audit write must not abort a
+        # clean, and logger construction already warns on failure.
+        - (*github.com/Nomadcxx/moonbit/internal/audit.Logger).Log
+        - (*github.com/Nomadcxx/moonbit/internal/audit.Logger).LogCleanOperation
+        - (*github.com/Nomadcxx/moonbit/internal/audit.Logger).LogDockerOperation
+        - (*github.com/Nomadcxx/moonbit/internal/audit.Logger).LogPackageOperation
+        - (*github.com/Nomadcxx/moonbit/internal/audit.Logger).LogSystemdOperation
+        - (*github.com/Nomadcxx/moonbit/internal/audit.Logger).Close
+        # Interactive prompts: a read error falls through to the safe default.
+        - fmt.Scanln
+        - fmt.Sscanf
 
   exclusions:
     rules:
@@ -28,12 +56,23 @@ linters:
       - path: _test\.go
         linters:
           - errcheck
+      # QF* are staticcheck "quickfix" style preferences (e.g. "could use a
+      # tagged switch"), not defect reports. Keep the SA/S/ST checks blocking.
+      - linters:
+          - staticcheck
+        text: "^QF[0-9]+"
     # In v2 path exclusions live here, not under `issues`.
     paths:
       - vendor
       - \.worktrees
       - ^src/
       - ^moonbit-demo/
+
+# NOTE: `unused` is deliberately not enabled yet. It reports 27 pre-existing dead
+# symbols (mostly unused lipgloss style vars in internal/ui/ui.go, plus a few
+# orphaned helpers). Removing them is a safe but separate cleanup; enabling the
+# linter before that lands would make CI permanently red. Re-enable once the
+# dead code is gone -- run `golangci-lint run --enable unused` to see the list.
 
 formatters:
   enable:

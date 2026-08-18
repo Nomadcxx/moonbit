@@ -817,10 +817,11 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 
 		ctx := context.Background()
 		c := cleaner.NewCleaner(cfg)
-		defer c.Close() // Ensure audit logger is closed and flushed
+		defer func() { _ = c.Close() }() // Ensure audit logger is closed and flushed
 
 		progressCh := make(chan cleaner.CleanMsg, 10)
-		go c.CleanCategory(ctx, verified.ScanResults, false, progressCh)
+		// Errors are delivered over progressCh; the return value is redundant here.
+		go func() { _ = c.CleanCategory(ctx, verified.ScanResults, false, progressCh) }()
 
 		var deletedFiles int
 		var deletedBytes uint64
@@ -1673,7 +1674,7 @@ var (
 	menuItemStyle = lipgloss.NewStyle().
 			Foreground(FgPrimary)
 
-	menuItemSelectedStyle = menuItemStyle.Copy().
+	menuItemSelectedStyle = menuItemStyle.
 				Bold(true).
 				Foreground(Primary)
 
@@ -1682,10 +1683,10 @@ var (
 				Foreground(Primary).
 				Align(lipgloss.Center)
 
-	resultsHeaderStyle = progressHeaderStyle.Copy().
+	resultsHeaderStyle = progressHeaderStyle.
 				Foreground(Accent)
 
-	selectionHeaderStyle = progressHeaderStyle.Copy().
+	selectionHeaderStyle = progressHeaderStyle.
 				Foreground(Secondary)
 
 	warningHeaderStyle = lipgloss.NewStyle().
@@ -1693,7 +1694,7 @@ var (
 				Foreground(Warning).
 				Align(lipgloss.Center)
 
-	cleaningHeaderStyle = progressHeaderStyle.Copy().
+	cleaningHeaderStyle = progressHeaderStyle.
 				Foreground(Danger)
 
 	successHeaderStyle = lipgloss.NewStyle().
@@ -1734,16 +1735,16 @@ var (
 	categoryItemStyle = lipgloss.NewStyle().
 				Foreground(FgPrimary)
 
-	categoryItemSelectedStyle = categoryItemStyle.Copy().
+	categoryItemSelectedStyle = categoryItemStyle.
 					Bold(true).
 					Foreground(Primary)
 
-	categoryItemEnabledStyle = categoryItemStyle.Copy().
+	categoryItemEnabledStyle = categoryItemStyle.
 					Foreground(Accent).
 					Bold(true)
 
-	actionItemStyle         = menuItemStyle.Copy()
-	actionItemSelectedStyle = menuItemSelectedStyle.Copy()
+	actionItemStyle         = menuItemStyle
+	actionItemSelectedStyle = menuItemSelectedStyle
 
 	selectionInfoStyle = lipgloss.NewStyle().
 				Bold(true).
@@ -1771,7 +1772,7 @@ var (
 			Background(BgSubtle).
 			Padding(0, 2)
 
-	buttonSelectedStyle = buttonStyle.Copy().
+	buttonSelectedStyle = buttonStyle.
 				Background(Primary).
 				Foreground(lipgloss.Color("0"))
 
@@ -1781,7 +1782,7 @@ var (
 				Padding(0, 2).
 				Bold(true)
 
-	buttonDangerSelectedStyle = buttonDangerStyle.Copy().
+	buttonDangerSelectedStyle = buttonDangerStyle.
 					Background(lipgloss.Color("#ff0000")). // Brighter red when selected
 					Bold(true)
 

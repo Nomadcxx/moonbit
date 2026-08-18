@@ -546,7 +546,8 @@ func CleanSession(dryRun bool) error {
 		cache.TotalFiles, utils.HumanizeBytes(cache.TotalSize))
 
 	progressCh := make(chan cleaner.CleanMsg, 10)
-	go c.CleanCategory(ctx, cache.ScanResults, dryRun, progressCh)
+	// Errors are delivered over progressCh; the return value is redundant here.
+	go func() { _ = c.CleanCategory(ctx, cache.ScanResults, dryRun, progressCh) }()
 
 	var deletedBytes uint64
 	var deletedFiles int
@@ -1147,7 +1148,7 @@ var duplicatesFindCmd = &cobra.Command{
 				utils.HumanizeBytes(uint64(group.TotalSize)))
 
 			for j, file := range group.Files {
-				marker := "  "
+				var marker string
 				if j == 0 {
 					marker = "✓ " // Keep oldest
 				} else {
@@ -1600,13 +1601,13 @@ func init() {
 	pkgOrphansCmd.PreRun = func(cmd *cobra.Command, args []string) {
 		force, _ := cmd.Flags().GetBool("force")
 		if force {
-			cmd.Flags().Set("dry-run", "false")
+			_ = cmd.Flags().Set("dry-run", "false")
 		}
 	}
 	pkgKernelsCmd.PreRun = func(cmd *cobra.Command, args []string) {
 		force, _ := cmd.Flags().GetBool("force")
 		if force {
-			cmd.Flags().Set("dry-run", "false")
+			_ = cmd.Flags().Set("dry-run", "false")
 		}
 	}
 

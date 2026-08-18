@@ -56,9 +56,7 @@ func (fs *OsFileSystem) ReadDir(dirname string) ([]os.FileInfo, error) {
 	}
 	// Convert []afero.FileInfo to []os.FileInfo
 	result := make([]os.FileInfo, len(entries))
-	for i, entry := range entries {
-		result[i] = entry
-	}
+	copy(result, entries)
 	return result, nil
 }
 
