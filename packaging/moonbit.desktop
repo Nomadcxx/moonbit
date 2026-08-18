@@ -5,13 +5,17 @@ Name=moonbit
 GenericName=System Cleaner
 Comment=Reclaim disk space from caches, logs and temporary files
 Icon=moonbit
-# pkexec sanitises PATH to /usr/sbin:/usr/bin:/sbin:/bin, so /usr/local/bin is
-# not searched and the path must be absolute. Packages rewrite this to
-# /usr/bin/moonbit; this value is for the from-source install.
-Exec=pkexec /usr/local/bin/moonbit
-# moonbit is a TUI, so it needs a terminal. polkit prompts for the password
-# before the TUI starts, which is the point of launching it this way.
-Terminal=true
+# Absolute path so the entry works regardless of the launcher's PATH. Packages
+# rewrite this to /usr/bin/moonbit; this value is for the from-source install.
+Exec=/usr/local/bin/moonbit --launcher
+# Deliberately NOT Terminal=true. That hands terminal selection to the launcher,
+# and launchers commonly default to `xterm -e` whether or not xterm exists.
+# moonbit finds a terminal itself and re-execs into it, then elevates with sudo
+# so the password prompt is visible. pkexec is unusable here: polkit's
+# auth_admin needs a session attached to a seat, and compositors run as a
+# systemd user service put their children under user@<uid>.service, which has
+# none -- polkit refuses without ever prompting.
+Terminal=false
 Categories=System;Filesystem;
 Keywords=clean;cleaner;cache;disk;space;cleanup;maintenance;temp;
 StartupNotify=false

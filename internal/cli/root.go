@@ -24,6 +24,7 @@ import (
 )
 
 var (
+	fromLauncher      bool
 	dryRun            bool
 	cleanForce        bool
 	scanNoPrompt      bool
@@ -53,13 +54,25 @@ var rootCmd = &cobra.Command{
 		"  • Support for all major package managers\n" +
 		"  • Docker cleanup and duplicate file detection",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Started from the application menu: we have no terminal, so find one
+		// and re-exec inside it. See RunFromLauncher for why this is not pkexec.
+		if fromLauncher {
+			if err := RunFromLauncher(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if !hasControllingTerminal() {
+				return // handed off to the terminal
+			}
+		}
+
 		// Check for root access and re-exec with sudo if needed
 		if !isRunningAsRoot() {
 			reexecWithSudo()
 			return
 		}
 
-		// Start Bubble Tea UI with MoonBit model
+		// Start Bubble Tea UI with moonbit model
 		ui.Start()
 	},
 }
@@ -1560,6 +1573,10 @@ func removeOldKernels(dryRun bool) {
 }
 
 func init() {
+	rootCmd.Flags().BoolVar(&fromLauncher, "launcher", false,
+		"Internal: started from a desktop launcher without a terminal")
+	_ = rootCmd.Flags().MarkHidden("launcher")
+
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(backupCmd)

@@ -98,17 +98,27 @@ func TestDesktopEntry(t *testing.T) {
 		}
 	}
 
-	// pkexec sanitises PATH to /usr/sbin:/usr/bin:/sbin:/bin. A bare program name
-	// resolves against that, so /usr/local/bin/moonbit would not be found and the
-	// launcher would silently do nothing.
-	exec := keys["Exec"]
-	if !strings.HasPrefix(exec, "pkexec /") {
-		t.Errorf("Exec must invoke pkexec with an absolute path, got %q", exec)
+	// Absolute path: the launcher's PATH is not guaranteed to include the
+	// install prefix, and a bare name would silently resolve to nothing.
+	execLine := keys["Exec"]
+	if !strings.HasPrefix(execLine, "/") {
+		t.Errorf("Exec must be an absolute path, got %q", execLine)
+	}
+	if !strings.HasSuffix(execLine, " --launcher") {
+		t.Errorf("Exec must pass --launcher so moonbit opens its own terminal, got %q", execLine)
 	}
 
-	// moonbit is a TUI; without a terminal the launcher opens nothing.
-	if keys["Terminal"] != "true" {
-		t.Errorf("Terminal must be true for a TUI, got %q", keys["Terminal"])
+	// pkexec cannot be used: polkit's auth_admin requires a session attached to
+	// a seat, and compositors running as a systemd user service give their
+	// children a seatless session, so polkit refuses without prompting.
+	if strings.Contains(execLine, "pkexec") {
+		t.Errorf("Exec must not use pkexec, got %q", execLine)
+	}
+
+	// Terminal=true delegates terminal selection to the launcher, which commonly
+	// defaults to a terminal that is not installed. moonbit finds its own.
+	if keys["Terminal"] != "false" {
+		t.Errorf("Terminal must be false; moonbit opens its own terminal, got %q", keys["Terminal"])
 	}
 
 	// Icon is looked up by name in the theme, so it must match the installed file.

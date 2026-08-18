@@ -119,7 +119,7 @@ jobs:
           /usr/bin/moonbit --version
           # The units must point at the packaged binary, not /usr/local/bin.
           grep -q 'ExecStart=/usr/bin/moonbit' /usr/lib/systemd/system/moonbit-scan.service
-          grep -q 'Exec=pkexec /usr/bin/moonbit' /usr/share/applications/moonbit.desktop
+          grep -q 'Exec=/usr/bin/moonbit --launcher' /usr/share/applications/moonbit.desktop
           test -f /usr/share/icons/hicolor/scalable/apps/moonbit.svg
 
       - name: Upload artifact
