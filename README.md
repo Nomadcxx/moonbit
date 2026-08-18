@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="logo.png" alt="MoonBit" />
+  <img src="logo.png" alt="moonbit" />
   
-  **A modern system cleaner built in Go with a TUI and CLI**
+  **A system cleaner for Linux, with a TUI and a CLI**
   
   ![Eldritch Theme](https://img.shields.io/badge/theme-eldritch-37f499?style=flat-square)
   ![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)
@@ -12,6 +12,7 @@
 
 ## Features
 - **Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
+- **Packaging**: AUR, `.deb` and `.rpm` per release, a Nix flake, and static binaries
 - **Package Managers**: Pacman, APT, DNF, Zypper, AUR helpers (yay, paru)
 - **Safe Cache Cleanup**: Package caches, temp files, thumbnails, font caches, logs, and conservative system caches
 - **App Cache Cleanup**: Deep-scan discovery for IDE, Electron, AI-tool, Bottles, and Lutris cache/log/temp paths
@@ -46,12 +47,12 @@ sudo apt install ./moonbit_<version>_ubuntu24.04_amd64.deb
 sudo dnf install ./moonbit-<version>-1.fedora42.x86_64.rpm
 ```
 
-These install to `/usr/bin/moonbit`.
+These install `/usr/bin/moonbit`.
 
 ### Static binary (any distro)
 
-Static, dependency-free binaries for `linux/amd64` and `linux/arm64` are attached
-to each release alongside a `SHA256SUMS` file:
+Every release carries static `linux/amd64` and `linux/arm64` binaries and a
+`SHA256SUMS` file:
 
 ```bash
 curl -fsSLO https://github.com/Nomadcxx/moonbit/releases/latest/download/moonbit-linux-amd64
@@ -66,7 +67,7 @@ sudo install -Dm755 moonbit-linux-amd64 /usr/local/bin/moonbit
 curl -sSL https://raw.githubusercontent.com/Nomadcxx/moonbit/main/install.sh | sudo bash
 ```
 
-**Requirements:** `go` (1.24+), `git`, `make`. Installs to `/usr/local/bin/moonbit`.
+**Requires:** `go` 1.24+, `git`, `make`. Installs `/usr/local/bin/moonbit`.
 
 ### Nix / NixOS
 
@@ -81,8 +82,8 @@ nix build
 ./result/bin/moonbit --help
 ```
 
-The derivation also installs the systemd units under
-`$out/lib/systemd/system`, with `ExecStart` rewritten to the store path.
+The derivation installs the systemd units under `$out/lib/systemd/system` with
+`ExecStart` pointing at the store path.
 
 ### Manual Build
 
@@ -106,7 +107,7 @@ The TUI offers two scan modes:
 - **Quick Scan** - Fast scan of conservative, commonly safe cleanup categories
 - **Deep Scan** - Comprehensive scan including logs, system caches, and deep-only app cache categories
 
-The Schedule screen can enable or disable MoonBit's systemd timer and daemon modes, and it warns if both automation modes are active.
+The Schedule screen can enable or disable moonbit's systemd timer and daemon modes, and it warns if both automation modes are active.
 
 ### CLI Commands
 
@@ -136,6 +137,10 @@ moonbit pkg kernels             # Remove old kernels (Debian/Ubuntu)
 moonbit docker images           # Remove unused images
 moonbit docker all              # Remove all unused resources
 
+# Systemd journal
+moonbit journal vacuum --size=500M          # Preview
+moonbit journal vacuum --time=14d --force   # Apply
+
 # Find duplicates
 moonbit duplicates find                    # Find duplicate files
 moonbit duplicates find --min-size 10240   # Only files >= 10KB
@@ -152,26 +157,28 @@ moonbit daemon status           # Show daemon status
 
 ### Safety Notes
 
-MoonBit intentionally avoids high-risk cleanup classes by default. Browser caches, model caches, Steam shader caches, and Steam download caches are not included in the built-in app cache cleanup set. New application cleanup paths are scoped to cache, log, temp, crash-report, and old tool-output locations; session, project, storage, repository, plugin, and prefix data paths are excluded.
+`moonbit clean` only previews until you pass `--force`. Some categories need sudo, depending on what you select and your sudo policy.
 
-`moonbit clean` is a dry-run unless `--force` is provided. System-wide scans and cleans may require sudo depending on the selected categories and your local sudo policy.
+moonbit skips high-risk cleanup classes by default. Browser caches, model caches, and Steam shader and download caches stay out of the app cache set. Application paths cover cache, log, temp, crash-report, and old tool-output locations; session, project, storage, repository, plugin, and prefix data stay untouched.
+
+moonbit never follows symlinks, and it re-checks every path against your config between scan and clean. A stale or hand-edited scan cache cannot widen what gets deleted. Reported "space freed" counts bytes measured on disk at deletion, not sizes recorded during the scan.
+
+Log cleanup targets rotated files only. moonbit will not unlink a log a daemon still holds open: it truncates Docker container logs, and reclaims journal space through `moonbit journal vacuum`, which drives `journalctl --vacuum-*`.
 
 ## Automated Cleaning
 
-> **Scope:** automation cleans **system-wide paths only** and never touches any
+> **Scope:** automation cleans system-wide paths only. It never touches a
 > user's home directory. The units run as root with `HOME=/root` and
 > `ProtectHome=read-only`, so home-relative categories (User Cache, Thumbnails,
-> Trash, npm, pip, cargo, ...) resolve under `/root`. On a desktop this means
-> automation will not reclaim your user caches -- run `moonbit scan && moonbit
-> clean --force` from your own session for those, or use a `systemctl --user`
-> unit. See [systemd/README.md](systemd/README.md).
+> Trash, npm, pip, cargo) resolve under `/root`. On a desktop, your own caches
+> are the ones filling the disk, and automation will not reclaim them. Run
+> `moonbit scan && moonbit clean --force` from your session for those, or write
+> a `systemctl --user` unit. See [systemd/README.md](systemd/README.md).
 
-MoonBit includes two mutually exclusive automation modes:
+moonbit has two automation modes. Use one at a time:
 
 - **Timer Mode**: lightweight scheduled systemd services
 - **Daemon Mode**: a long-running service with configurable scan and clean intervals
-
-Use only one mode at a time.
 
 ### Timer Mode
 

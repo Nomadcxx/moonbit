@@ -7,28 +7,62 @@ import (
 	"path/filepath"
 )
 
+// homeFromPasswd resolves a home directory through the passwd database rather
+// than assuming /home/<name>. Non-standard layouts (LDAP/SSSD, /export/home,
+// per-team roots) break that assumption, and the failure is silent: the caller
+// falls through to HOME, which is /root under an elevation.
+//
+// lookup is user.Lookup (by name) or user.LookupId (by numeric uid).
+func homeFromPasswd(lookup func(string) (*user.User, error), key string) string {
+	u, err := lookup(key)
+	if err != nil || u.HomeDir == "" {
+		return ""
+	}
+	if stat, err := os.Stat(u.HomeDir); err != nil || !stat.IsDir() {
+		return ""
+	}
+	return u.HomeDir
+}
+
+// existingDir returns path when it is a directory, otherwise "".
+func existingDir(path string) string {
+	if stat, err := os.Stat(path); err == nil && stat.IsDir() {
+		return path
+	}
+	return ""
+}
+
 func HomeDir() (string, error) {
 	if home := os.Getenv("MOONBIT_HOME"); home != "" {
 		return home, nil
 	}
 
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
-		// Look the user up rather than assuming /home/<name>. Non-standard
-		// layouts (LDAP/SSSD, /export/home, per-team roots) would otherwise fall
-		// through to HOME, which under sudo's env_reset is /root -- silently
-		// scanning and cleaning root's caches while reporting success.
-		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-			if stat, err := os.Stat(u.HomeDir); err == nil && stat.IsDir() {
-				return u.HomeDir, nil
+	// Recover the human behind an elevation. Both sudo and pkexec drop the
+	// original HOME, which under euid 0 leaves /root -- moonbit would then scan
+	// and clean root's caches while reporting success, and the user's actual
+	// caches would never be touched.
+	if os.Geteuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			if home := homeFromPasswd(user.Lookup, sudoUser); home != "" {
+				return home, nil
 			}
+			// Conventional layout, as a last resort.
+			if home := existingDir(filepath.Join("/home", sudoUser)); home != "" {
+				return home, nil
+			}
+			return "", fmt.Errorf("cannot resolve home directory for SUDO_USER=%q; "+
+				"set MOONBIT_HOME to the intended home directory", sudoUser)
 		}
-		// Last-resort fallback for the conventional layout.
-		userHome := filepath.Join("/home", sudoUser)
-		if stat, err := os.Stat(userHome); err == nil && stat.IsDir() {
-			return userHome, nil
+		// pkexec, which the desktop launcher uses, sets PKEXEC_UID and never
+		// SUDO_USER. Without this branch a launcher-started moonbit cleans
+		// root's caches instead of yours.
+		if pkexecUID := os.Getenv("PKEXEC_UID"); pkexecUID != "" {
+			if home := homeFromPasswd(user.LookupId, pkexecUID); home != "" {
+				return home, nil
+			}
+			return "", fmt.Errorf("cannot resolve home directory for PKEXEC_UID=%q; "+
+				"set MOONBIT_HOME to the intended home directory", pkexecUID)
 		}
-		return "", fmt.Errorf("cannot resolve home directory for SUDO_USER=%q; "+
-			"set MOONBIT_HOME to the intended home directory", sudoUser)
 	}
 
 	if home := os.Getenv("HOME"); home != "" {

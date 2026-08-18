@@ -110,3 +110,45 @@ func TestXDGOverridesRedirectAllPaths(t *testing.T) {
 		t.Errorf("DataDir: got %q, want %q", data, want)
 	}
 }
+
+// The desktop launcher runs moonbit through pkexec, which sets PKEXEC_UID and
+// never SUDO_USER. Without that branch HomeDir falls through to HOME, which is
+// /root under an elevation, and moonbit cleans root's caches while telling the
+// user it cleaned theirs.
+func TestPkexecUidIsResolvedThroughPasswd(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("asserts the unprivileged precedence; the branch itself needs euid 0")
+	}
+
+	current, err := user.Current()
+	if err != nil {
+		t.Skipf("cannot determine current user: %v", err)
+	}
+
+	// The mechanism the fix relies on: a numeric uid resolves to a home.
+	looked, err := user.LookupId(current.Uid)
+	if err != nil {
+		t.Skipf("user.LookupId unavailable: %v", err)
+	}
+	if looked.HomeDir == "" {
+		t.Fatal("user.LookupId returned an empty home directory")
+	}
+	if looked.HomeDir != current.HomeDir {
+		t.Errorf("LookupId disagrees with Current: %q vs %q", looked.HomeDir, current.HomeDir)
+	}
+
+	// homeFromPasswd is what the PKEXEC_UID branch calls.
+	if got := homeFromPasswd(user.LookupId, current.Uid); got != current.HomeDir {
+		t.Errorf("homeFromPasswd(uid=%s) = %q, want %q", current.Uid, got, current.HomeDir)
+	}
+	// An unknown uid must fail rather than guessing.
+	if got := homeFromPasswd(user.LookupId, "4294967290"); got != "" {
+		t.Errorf("unknown uid should not resolve, got %q", got)
+	}
+}
+
+func TestHomeFromPasswdRejectsMissingUser(t *testing.T) {
+	if got := homeFromPasswd(user.Lookup, "definitely-not-a-real-user-9f3a"); got != "" {
+		t.Errorf("unknown user should not resolve, got %q", got)
+	}
+}
