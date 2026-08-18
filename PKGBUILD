@@ -1,8 +1,8 @@
 # Maintainer: Nomadcxx <noovie@gmail.com>
 pkgname=moonbit
-pkgver=1.4.0
+pkgver=1.5.0
 pkgrel=1
-pkgdesc="A modern system cleaner built in Go with a TUI and CLI"
+pkgdesc="A system cleaner for Linux, with a TUI and a CLI"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Nomadcxx/moonbit"
 license=('GPL-3.0-only')
