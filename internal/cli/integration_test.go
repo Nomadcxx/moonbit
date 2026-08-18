@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/validation"
@@ -355,6 +357,45 @@ func TestCLIScanThenCleanEndToEnd(t *testing.T) {
 		t.Skipf("symlinks unsupported: %v", err)
 	}
 
+	// Write a config containing ONLY this temp directory before scanning.
+	//
+	// Without this, config.Load generates the default config, whose categories
+	// carry absolute system paths (/var/cache/pacman/pkg, /var/log, ...) that do
+	// not depend on MOONBIT_HOME. ScanAndSave would then pick up the real
+	// machine's caches and CleanSession would try to delete them -- this test
+	// calls CleanSession(false), which deletes for real.
+	cfgPath, err := paths.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	sandboxCfg := &config.Config{Categories: []config.Category{{
+		Name:     "Yay Cache",
+		Paths:    []string{yay},
+		Filters:  []string{`\.tar\.gz$`},
+		Risk:     config.Low,
+		Selected: true,
+	}}}
+	if err := config.Save(sandboxCfg, cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Guard: every category must live under the temp root.
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cat := range config.AuthoritativeCategories(loaded) {
+		for _, p := range cat.Paths {
+			if !strings.HasPrefix(filepath.Clean(p), root) {
+				t.Fatalf("refusing to run: category %q targets %s, outside the temp root %s",
+					cat.Name, p, root)
+			}
+		}
+	}
+
 	// Reset the command-level globals this pipeline reads.
 	prevMode, prevInc, prevExc := scanMode, includeCategories, excludeCategories
 	t.Cleanup(func() { scanMode, includeCategories, excludeCategories = prevMode, prevInc, prevExc })
@@ -365,9 +406,9 @@ func TestCLIScanThenCleanEndToEnd(t *testing.T) {
 	}
 
 	// Inspect what the scan recorded before cleaning.
-	mgr, err := session.NewManager()
-	if err != nil {
-		t.Fatal(err)
+	mgr, mgrErr := session.NewManager()
+	if mgrErr != nil {
+		t.Fatal(mgrErr)
 	}
 	cached, err := mgr.Load()
 	if err != nil {

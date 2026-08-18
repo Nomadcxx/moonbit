@@ -1967,6 +1967,41 @@ func (m Model) executeDaemonCommand(action string) (tea.Model, tea.Cmd) {
 	return m, runDaemonCommand(action)
 }
 
+// unitInstalled reports whether systemd can see a unit at all. `systemctl cat`
+// searches every unit path and exits non-zero when the unit does not exist.
+func unitInstalled(unit string) bool {
+	return exec.Command("systemctl", "cat", unit).Run() == nil
+}
+
+// runSystemctl applies an action to units and returns systemd's own diagnostic
+// on failure. exec.Cmd.Run discards stderr, which is how a missing unit file
+// surfaced to users as an unactionable "exit status 1".
+func runSystemctl(action string, units ...string) error {
+	var missing []string
+	for _, u := range units {
+		if !unitInstalled(u) {
+			missing = append(missing, u)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s not installed on this system.\n"+
+			"Re-run the installer, or install the units manually:\n"+
+			"  sudo install -m644 systemd/moonbit-*.service systemd/moonbit-*.timer /etc/systemd/system/\n"+
+			"  sudo systemctl daemon-reload",
+			strings.Join(missing, ", "))
+	}
+
+	args := append([]string{action, "--now"}, units...)
+	out, err := exec.Command("systemctl", args...).CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%v: %s", err, msg)
+		}
+		return err
+	}
+	return nil
+}
+
 // runDaemonCommand executes systemctl command for moonbit-daemon.service asynchronously
 func runDaemonCommand(action string) tea.Cmd {
 	return func() tea.Msg {
@@ -1976,102 +2011,41 @@ func runDaemonCommand(action string) tea.Cmd {
 		}
 
 		serviceName := "moonbit-daemon.service"
-		var cmd *exec.Cmd
-		switch action {
-		case "enable":
-			cmd = exec.Command("systemctl", "enable", "--now", serviceName)
-		case "disable":
-			cmd = exec.Command("systemctl", "disable", "--now", serviceName)
+		if action != "enable" && action != "disable" {
+			return timerCommandMsg{success: false, message: "Invalid command"}
 		}
 
-		if cmd != nil {
-			err := cmd.Run()
-			if auditLog != nil {
-				result := "success"
-				if err != nil {
-					result = "failed"
-				}
-				auditLog.LogSystemdOperation(action, serviceName, result, err)
-			}
-
+		err := runSystemctl(action, serviceName)
+		if auditLog != nil {
+			result := "success"
 			if err != nil {
-				return timerCommandMsg{
-					success: false,
-					message: fmt.Sprintf("Failed to %s %s: %v", action, serviceName, err),
-				}
+				result = "failed"
 			}
-			return timerCommandMsg{
-				success: true,
-				message: fmt.Sprintf("Successfully %sd %s", action, serviceName),
-			}
+			auditLog.LogSystemdOperation(action, serviceName, result, err)
 		}
 
+		if err != nil {
+			return timerCommandMsg{
+				success: false,
+				message: fmt.Sprintf("Failed to %s %s: %v", action, serviceName, err),
+			}
+		}
 		return timerCommandMsg{
-			success: false,
-			message: "Invalid command",
+			success: true,
+			message: fmt.Sprintf("Successfully %sd %s", action, serviceName),
 		}
 	}
 }
 
-// executeTimerCommand executes a systemctl command for a timer
 // timerCommandMsg contains the result of a timer command
 type timerCommandMsg struct {
 	success bool
 	message string
 }
 
-func (m Model) executeTimerCommand(action, timerName string) (tea.Model, tea.Cmd) {
-	return m, runTimerCommand(action, timerName)
-}
-
 // executeTimerCommands executes commands for both timers
 func (m Model) executeTimerCommands(action string) (tea.Model, tea.Cmd) {
 	return m, runTimerCommands(action)
-}
-
-// runTimerCommand executes systemctl command asynchronously
-func runTimerCommand(action, timerName string) tea.Cmd {
-	return func() tea.Msg {
-		auditLog, _ := audit.NewLogger()
-		if auditLog != nil {
-			defer auditLog.Close()
-		}
-
-		var cmd *exec.Cmd
-		switch action {
-		case "enable":
-			cmd = exec.Command("systemctl", "enable", "--now", timerName)
-		case "disable":
-			cmd = exec.Command("systemctl", "disable", "--now", timerName)
-		}
-
-		if cmd != nil {
-			err := cmd.Run()
-			if auditLog != nil {
-				result := "success"
-				if err != nil {
-					result = "failed"
-				}
-				auditLog.LogSystemdOperation(action, timerName, result, err)
-			}
-
-			if err != nil {
-				return timerCommandMsg{
-					success: false,
-					message: fmt.Sprintf("Failed to %s %s: %v", action, timerName, err),
-				}
-			}
-			return timerCommandMsg{
-				success: true,
-				message: fmt.Sprintf("Successfully %sd %s", action, timerName),
-			}
-		}
-
-		return timerCommandMsg{
-			success: false,
-			message: "Invalid command",
-		}
-	}
 }
 
 // runTimerCommands executes systemctl commands for both timers
@@ -2082,47 +2056,31 @@ func runTimerCommands(action string) tea.Cmd {
 			defer auditLog.Close()
 		}
 
-		if _, err := exec.LookPath("moonbit"); err != nil {
+		if action != "enable" && action != "disable" {
+			return timerCommandMsg{success: false, message: "Invalid command"}
+		}
+
+		units := []string{"moonbit-scan.timer", "moonbit-clean.timer"}
+		timers := strings.Join(units, ", ")
+
+		err := runSystemctl(action, units...)
+		if auditLog != nil {
+			result := "success"
+			if err != nil {
+				result = "failed"
+			}
+			auditLog.LogSystemdOperation(action, timers, result, err)
+		}
+
+		if err != nil {
 			return timerCommandMsg{
 				success: false,
-				message: fmt.Sprintf("moonbit binary not found: %v", err),
+				message: fmt.Sprintf("Failed to %s timers: %v", action, err),
 			}
 		}
-
-		var cmd *exec.Cmd
-		timers := "moonbit-scan.timer, moonbit-clean.timer"
-		switch action {
-		case "enable":
-			cmd = exec.Command("systemctl", "enable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
-		case "disable":
-			cmd = exec.Command("systemctl", "disable", "--now", "moonbit-scan.timer", "moonbit-clean.timer")
-		}
-
-		if cmd != nil {
-			err := cmd.Run()
-			if auditLog != nil {
-				result := "success"
-				if err != nil {
-					result = "failed"
-				}
-				auditLog.LogSystemdOperation(action, timers, result, err)
-			}
-
-			if err != nil {
-				return timerCommandMsg{
-					success: false,
-					message: fmt.Sprintf("Failed to %s timers: %v", action, err),
-				}
-			}
-			return timerCommandMsg{
-				success: true,
-				message: fmt.Sprintf("Successfully %sd both timers", action),
-			}
-		}
-
 		return timerCommandMsg{
-			success: false,
-			message: "Invalid command",
+			success: true,
+			message: fmt.Sprintf("Successfully %sd both timers", action),
 		}
 	}
 }

@@ -93,7 +93,7 @@ func newModel() model {
 		{name: "Check dependencies", description: "Checking system dependencies", execute: checkDependencies, status: statusPending},
 		{name: "Build binary", description: "Building moonbit", execute: buildBinary, status: statusPending},
 		{name: "Install binary", description: "Installing to /usr/local/bin", execute: installBinary, status: statusPending},
-		{name: "Install systemd", description: "Installing systemd timers", execute: installSystemd, optional: true, status: statusPending},
+		{name: "Install systemd", description: "Installing systemd units", execute: installSystemd, optional: true, status: statusPending},
 		{name: "Configure schedule", description: "Configuring cleaning schedule", execute: configureSchedule, optional: true, status: statusPending},
 		{name: "Enable service", description: "Enabling systemd timers", execute: enableService, optional: true, status: statusPending},
 	}
@@ -542,18 +542,29 @@ func installBinary(m *model) error {
 	return nil
 }
 
-func installSystemd(m *model) error {
-	if m.scheduleName == "manual" || m.scheduleName == "daemon" {
-		return nil // Skip systemd for manual and daemon modes
-	}
-
-	// Copy systemd files
-	files := []string{
+// systemdUnitFiles is every unit the installer places in /etc/systemd/system.
+// It must list every unit under systemd/ -- a unit that ships in the repo but is
+// missing here cannot be enabled later from the TUI's Schedule screen.
+func systemdUnitFiles() []string {
+	return []string{
 		"systemd/moonbit-scan.service",
 		"systemd/moonbit-scan.timer",
 		"systemd/moonbit-clean.service",
 		"systemd/moonbit-clean.timer",
+		"systemd/moonbit-daemon.service",
 	}
+}
+
+func installSystemd(m *model) error {
+	// Install every unit file regardless of the chosen schedule.
+	//
+	// Timer mode and daemon mode are mutually exclusive at RUNTIME, not at
+	// install time. Installing a unit file does not enable it. Skipping the
+	// install for daemon/manual mode left the timer units absent from
+	// /etc/systemd/system, so the TUI's Schedule screen -- which exists
+	// precisely to switch between modes later -- failed with a bare
+	// "exit status 1" when the user tried to enable them.
+	files := systemdUnitFiles()
 
 	// Verify source files exist
 	for _, file := range files {
@@ -613,8 +624,11 @@ func enableTimers(scheduleName string) error {
 	}
 
 	for _, timer := range timers {
-		cmd := exec.Command("systemctl", "enable", "--now", timer)
-		if err := cmd.Run(); err != nil {
+		out, err := exec.Command("systemctl", "enable", "--now", timer).CombinedOutput()
+		if err != nil {
+			if msg := strings.TrimSpace(string(out)); msg != "" {
+				return fmt.Errorf("failed to enable %s: %v: %s", timer, err, msg)
+			}
 			return fmt.Errorf("failed to enable %s: %v", timer, err)
 		}
 	}
@@ -623,14 +637,10 @@ func enableTimers(scheduleName string) error {
 }
 
 func enableDaemon() error {
-	if _, err := os.Stat("systemd/moonbit-daemon.service"); err != nil {
-		return fmt.Errorf("daemon service file not found: %s (run installer from moonbit project root)", err)
-	}
-
-	target := "/etc/systemd/system/moonbit-daemon.service"
-	cmd := exec.Command("install", "-m", "644", "systemd/moonbit-daemon.service", target)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to install daemon service: %v", err)
+	// installSystemd runs earlier in the task list and has already placed the
+	// unit in /etc/systemd/system.
+	if _, err := os.Stat("/etc/systemd/system/moonbit-daemon.service"); err != nil {
+		return fmt.Errorf("daemon unit was not installed: %v", err)
 	}
 
 	cmds := [][]string{
