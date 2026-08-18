@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -93,6 +94,7 @@ func newModel() model {
 		{name: "Check dependencies", description: "Checking system dependencies", execute: checkDependencies, status: statusPending},
 		{name: "Build binary", description: "Building moonbit", execute: buildBinary, status: statusPending},
 		{name: "Install binary", description: "Installing to /usr/local/bin", execute: installBinary, status: statusPending},
+		{name: "Install launcher", description: "Adding moonbit to the app menu", execute: installDesktopEntry, optional: true, status: statusPending},
 		{name: "Install systemd", description: "Installing systemd units", execute: installSystemd, optional: true, status: statusPending},
 		{name: "Configure schedule", description: "Configuring cleaning schedule", execute: configureSchedule, optional: true, status: statusPending},
 		{name: "Enable service", description: "Enabling systemd timers", execute: enableService, optional: true, status: statusPending},
@@ -150,6 +152,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						{name: "Check privileges", description: "Checking root access", execute: checkPrivileges, status: statusPending},
 						{name: "Disable service", description: "Disabling systemd timers", execute: disableService, status: statusPending},
 						{name: "Remove binary", description: "Removing moonbit binary", execute: removeBinary, status: statusPending},
+						{name: "Remove launcher", description: "Removing app menu entry", execute: removeDesktopEntry, optional: true, status: statusPending},
 						{name: "Remove systemd", description: "Removing systemd files", execute: removeSystemd, optional: true, status: statusPending},
 					}
 					// Skip schedule selection for uninstall
@@ -404,6 +407,7 @@ func (m model) renderComplete() string {
 Removed:
   /usr/local/bin/moonbit, /usr/bin/moonbit
   /etc/systemd/system/moonbit-*.{service,timer}
+  /usr/share/applications/moonbit.desktop and its icon
 
 Kept (may hold the only copy of deleted files, or your config):
   /var/log/moonbit           audit log
@@ -538,6 +542,36 @@ func installBinary(m *model) error {
 	if _, err := os.Stat("/usr/local/bin/moonbit"); err != nil {
 		return fmt.Errorf("failed to verify binary installation")
 	}
+
+	return nil
+}
+
+// installDesktopEntry puts moonbit in the application launcher.
+//
+// The entry runs `pkexec /usr/local/bin/moonbit` with Terminal=true: polkit
+// shows a graphical password prompt, then the TUI opens in a terminal already
+// elevated. The path must be absolute because pkexec sanitises PATH to
+// /usr/sbin:/usr/bin:/sbin:/bin, which does not include /usr/local/bin.
+func installDesktopEntry(m *model) error {
+	for _, f := range []struct{ src, dst string }{
+		{"packaging/moonbit.desktop", "/usr/share/applications/moonbit.desktop"},
+		{"packaging/moonbit.svg", "/usr/share/icons/hicolor/scalable/apps/moonbit.svg"},
+	} {
+		if _, err := os.Stat(f.src); err != nil {
+			return fmt.Errorf("%s not found (run installer from moonbit project root)", f.src)
+		}
+		if err := os.MkdirAll(filepath.Dir(f.dst), 0755); err != nil {
+			return fmt.Errorf("failed to create %s: %v", filepath.Dir(f.dst), err)
+		}
+		if err := exec.Command("install", "-m", "644", f.src, f.dst).Run(); err != nil {
+			return fmt.Errorf("failed to install %s: %v", f.dst, err)
+		}
+	}
+
+	// Refresh the caches so the entry appears without a re-login. Both are
+	// best-effort; a missing tool is not a failed install.
+	_ = exec.Command("update-desktop-database", "/usr/share/applications").Run()
+	_ = exec.Command("gtk-update-icon-cache", "-qtf", "/usr/share/icons/hicolor").Run()
 
 	return nil
 }
@@ -682,6 +716,20 @@ func removeBinary(m *model) error {
 			return fmt.Errorf("failed to remove %s: %v", path, err)
 		}
 	}
+	return nil
+}
+
+func removeDesktopEntry(m *model) error {
+	for _, f := range []string{
+		"/usr/share/applications/moonbit.desktop",
+		"/usr/share/icons/hicolor/scalable/apps/moonbit.svg",
+	} {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove %s: %v", f, err)
+		}
+	}
+	_ = exec.Command("update-desktop-database", "/usr/share/applications").Run()
+	_ = exec.Command("gtk-update-icon-cache", "-qtf", "/usr/share/icons/hicolor").Run()
 	return nil
 }
 

@@ -2,37 +2,13 @@
   <title>moonbit</title>
   <rect width="128" height="128" rx="28" fill="#0d1a17"/>
   <rect x="1.5" y="1.5" width="125" height="125" rx="26.5"
-        fill="none" stroke="#37f499" stroke-opacity=".25" stroke-width="3"/>
-
-  <!-- crescent moon -->
-  <mask id="c">
-    <rect width="128" height="128" fill="black"/>
-    <circle cx="34" cy="34" r="17" fill="white"/>
-    <circle cx="43" cy="28" r="15" fill="black"/>
-  </mask>
-  <g mask="url(#c)"><rect width="128" height="128" fill="#37f499" fill-opacity=".55"/></g>
-
-  <!-- sweeper -->
-  <g transform="translate(74,46) rotate(28)">
-    <rect x="-3" y="-30" width="6" height="42" rx="3" fill="#9fb8ae"/>
-    <path d="M -10 12 L 10 12 L 14 24 L -14 24 Z" fill="#37f499"/>
-    <g stroke="#37f499" stroke-width="2.6" stroke-linecap="round" opacity=".85">
-      <line x1="-11" y1="24" x2="-13" y2="36"/>
-      <line x1="-5.5" y1="24" x2="-6.5" y2="37"/>
-      <line x1="0" y1="24" x2="0" y2="38"/>
-      <line x1="5.5" y1="24" x2="6.5" y2="37"/>
-      <line x1="11" y1="24" x2="13" y2="36"/>
-    </g>
+        fill="none" stroke="#37f499" stroke-opacity=".22" stroke-width="3"/>
+  <circle cx="64" cy="64" r="40" fill="#37f499"/>
+  <g fill="#0d1a17" opacity=".3">
+    <circle cx="50" cy="52" r="9"/>
+    <circle cx="76" cy="46" r="6"/>
+    <circle cx="72" cy="76" r="11"/>
+    <circle cx="46" cy="78" r="5.5"/>
   </g>
-
-  <!-- sweep motion -->
-  <g stroke="#37f499" stroke-linecap="round" fill="none" opacity=".45">
-    <path d="M 26 84 q 16 8 34 4" stroke-width="3"/>
-    <path d="M 22 73 q 12 6 24 4" stroke-width="2.4" opacity=".6"/>
-  </g>
-
-  <!-- wordmark -->
-  <text x="64" y="115" text-anchor="middle"
-        font-family="DejaVu Sans, Verdana, sans-serif" font-weight="700" font-size="19"
-        textLength="86" lengthAdjust="spacingAndGlyphs" fill="#37f499">moonbit</text>
+  <circle cx="64" cy="64" r="40" fill="none" stroke="#04d1f9" stroke-opacity=".35" stroke-width="3"/>
 </svg>

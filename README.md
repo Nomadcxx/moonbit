@@ -21,6 +21,7 @@
 - **Duplicate Finder**: Locate duplicate files with configurable minimum sizes
 - **Automated Maintenance**: Systemd timer mode and daemon mode
 - **Safety Controls**: Dry-runs by default, category filtering, and explicit force mode for deletion
+- **Desktop Launcher**: Appears in the app menu, with a graphical password prompt
 
 ## Installation
 
@@ -102,6 +103,10 @@ sudo ./moonbit-installer
 ```bash
 moonbit              # Launch interactive TUI
 ```
+
+Search for **moonbit** in your application menu to launch it without a terminal.
+The launcher runs moonbit through `pkexec`, so your desktop asks for the password
+in its own prompt, then opens the TUI already elevated.
 
 The TUI offers two scan modes:
 - **Quick Scan** - Fast scan of conservative, commonly safe cleanup categories

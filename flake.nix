@@ -55,6 +55,12 @@
               substituteInPlace $out/lib/systemd/system/*.service \
                 --replace-quiet /usr/local/bin/moonbit $out/bin/moonbit
 
+              install -Dm644 packaging/moonbit.desktop $out/share/applications/moonbit.desktop
+              substituteInPlace $out/share/applications/moonbit.desktop \
+                --replace-quiet /usr/local/bin/moonbit $out/bin/moonbit
+              install -Dm644 packaging/moonbit.svg \
+                $out/share/icons/hicolor/scalable/apps/moonbit.svg
+
               install -Dm644 README.md $out/share/doc/moonbit/README.md
               install -Dm644 LICENSE   $out/share/licenses/moonbit/LICENSE
             '';

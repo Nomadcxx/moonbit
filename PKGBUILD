@@ -49,6 +49,14 @@ package() {
             "${pkgdir}/etc/systemd/system/${unit}"
     done
 
+    # Desktop launcher. pkexec sanitises PATH to /usr/sbin:/usr/bin:/sbin:/bin,
+    # so Exec must be absolute; rewrite it from the from-source /usr/local/bin.
+    install -Dm644 packaging/moonbit.desktop "${pkgdir}/usr/share/applications/moonbit.desktop"
+    sed -i 's|/usr/local/bin/moonbit|/usr/bin/moonbit|g' \
+        "${pkgdir}/usr/share/applications/moonbit.desktop"
+    install -Dm644 packaging/moonbit.svg \
+        "${pkgdir}/usr/share/icons/hicolor/scalable/apps/moonbit.svg"
+
     # Create log and run directories
     install -dm755 "${pkgdir}/var/log/moonbit"
 

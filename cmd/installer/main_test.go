@@ -70,3 +70,68 @@ func TestInstallerShipsBothTimerAndDaemonUnits(t *testing.T) {
 		}
 	}
 }
+
+// The launcher entry is the only way a user who avoids terminals starts moonbit,
+// so its two fragile properties are worth pinning.
+func TestDesktopEntry(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "packaging", "moonbit.desktop"))
+	if err != nil {
+		t.Fatalf("cannot read desktop entry: %v", err)
+	}
+
+	keys := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if ok {
+			keys[k] = v
+		}
+	}
+
+	for _, required := range []string{"Type", "Name", "Exec", "Icon", "Terminal", "Categories"} {
+		if keys[required] == "" {
+			t.Errorf("desktop entry is missing %s", required)
+		}
+	}
+
+	// pkexec sanitises PATH to /usr/sbin:/usr/bin:/sbin:/bin. A bare program name
+	// resolves against that, so /usr/local/bin/moonbit would not be found and the
+	// launcher would silently do nothing.
+	exec := keys["Exec"]
+	if !strings.HasPrefix(exec, "pkexec /") {
+		t.Errorf("Exec must invoke pkexec with an absolute path, got %q", exec)
+	}
+
+	// moonbit is a TUI; without a terminal the launcher opens nothing.
+	if keys["Terminal"] != "true" {
+		t.Errorf("Terminal must be true for a TUI, got %q", keys["Terminal"])
+	}
+
+	// Icon is looked up by name in the theme, so it must match the installed file.
+	if keys["Icon"] != "moonbit" {
+		t.Errorf("Icon should be the theme name \"moonbit\", got %q", keys["Icon"])
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "packaging", keys["Icon"]+".svg")); err != nil {
+		t.Errorf("no icon file matching Icon=%s: %v", keys["Icon"], err)
+	}
+}
+
+// Every packaging route has to rewrite Exec away from /usr/local/bin, or the
+// packaged launcher points at a binary that route never installs.
+func TestPackagingRewritesDesktopExec(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	for _, f := range []string{"PKGBUILD", "flake.nix", ".github/workflows/release.yml"} {
+		b, err := os.ReadFile(filepath.Join(repoRoot, f))
+		if err != nil {
+			t.Errorf("cannot read %s: %v", f, err)
+			continue
+		}
+		if !strings.Contains(string(b), "moonbit.desktop") {
+			t.Errorf("%s does not install the desktop entry", f)
+		}
+	}
+}

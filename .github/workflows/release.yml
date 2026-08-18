@@ -86,6 +86,9 @@ jobs:
           mkdir -p dist/systemd
           cp systemd/*.service systemd/*.timer dist/systemd/
           sed -i 's|/usr/local/bin/moonbit|/usr/bin/moonbit|g' dist/systemd/*
+          # Same rewrite for the launcher: pkexec does not search /usr/local/bin.
+          cp packaging/moonbit.desktop dist/moonbit.desktop
+          sed -i 's|/usr/local/bin/moonbit|/usr/bin/moonbit|g' dist/moonbit.desktop
 
       - name: Install nfpm
         run: |
@@ -116,6 +119,8 @@ jobs:
           /usr/bin/moonbit --version
           # The units must point at the packaged binary, not /usr/local/bin.
           grep -q 'ExecStart=/usr/bin/moonbit' /usr/lib/systemd/system/moonbit-scan.service
+          grep -q 'Exec=pkexec /usr/bin/moonbit' /usr/share/applications/moonbit.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/moonbit.svg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
