@@ -105,8 +105,18 @@ moonbit              # Launch interactive TUI
 ```
 
 Search for **moonbit** in your application menu to launch it without a terminal.
-moonbit opens a terminal itself (honouring `$TERMINAL`, then falling back through
-kitty, foot, alacritty and others) and asks for your password there.
+moonbit opens a terminal itself and asks for your password there. It honours
+`$TERMINAL` when that names a terminal you actually have, then falls back
+through ghostty, kitty, foot, alacritty, konsole, ptyxis, GNOME Console,
+gnome-terminal, xfce4-terminal and others.
+
+If it picks the wrong one, name yours explicitly:
+
+```bash
+MOONBIT_TERMINAL="myterm --exec-flag" moonbit --launcher
+```
+
+Set it in `~/.config/environment.d/moonbit.conf` to make it stick.
 
 The TUI offers two scan modes:
 - **Quick Scan** - Fast scan of conservative, commonly safe cleanup categories

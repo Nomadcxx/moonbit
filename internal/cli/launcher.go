@@ -5,41 +5,62 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // LauncherFlag is the flag the desktop entry passes. It marks "started from a
 // graphical launcher, with no terminal attached".
 const LauncherFlag = "--launcher"
 
+// TerminalEnvVar lets a user name the terminal moonbit should open when the
+// built-in list gets it wrong. This is the escape hatch: the argument form is
+// not uniform across terminals, and no list can cover every desktop.
+//
+//	MOONBIT_TERMINAL="myterm --exec-flag"
+const TerminalEnvVar = "MOONBIT_TERMINAL"
+
 // terminalCandidate pairs a terminal emulator with the arguments that make it
-// run a command. The flag is not universal: most take -e, but wezterm needs
-// "start --", the GTK terminals need -x or --, and getting it wrong produces a
-// window that opens and closes with no visible error.
+// run a command. The flag is not universal and there is no safe default:
+// `ghostty --` does nothing, `gnome-terminal -e` is deprecated and parses its
+// argument differently. Getting it wrong opens a window that closes instantly
+// with no error, which is precisely the failure this file exists to prevent.
 type terminalCandidate struct {
 	bin  string
 	args []string
 }
 
-// Ordered by preference. Wayland-native and widely used first, then the older
-// X11 terminals as a floor. This mirrors what rofi-sensible-terminal does,
-// except moonbit does the search itself rather than trusting the launcher to.
+// Ordered by how likely a given desktop is to have it, not alphabetically.
+//
+// Entries marked "verified" were tested by running
+//
+//	<bin> <args> /bin/sh -c 'echo OK > marker'
+//
+// and confirming the marker appeared. The GNOME family was checked in a
+// container with a session bus, since those terminals are D-Bus activated and
+// do nothing without one. The rest use each project's documented invocation.
 var terminalCandidates = []terminalCandidate{
-	{"ghostty", []string{"-e"}},
-	{"kitty", []string{"-e"}},
-	{"foot", []string{"-e"}},
-	{"alacritty", []string{"-e"}},
+	{"ghostty", []string{"-e"}},   // verified
+	{"kitty", []string{"-e"}},     // verified; Hyprland's usual default
+	{"foot", []string{"-e"}},      // verified; common on Sway/niri
+	{"alacritty", []string{"-e"}}, // verified
+	{"konsole", []string{"-e"}},   // verified; KDE default
 	{"wezterm", []string{"start", "--"}},
-	{"konsole", []string{"-e"}},
-	{"gnome-terminal", []string{"--"}},
-	{"xfce4-terminal", []string{"-x"}},
+	{"ptyxis", []string{"--"}},         // verified; Fedora 41+ default
+	{"kgx", []string{"--"}},            // verified; GNOME Console
+	{"gnome-console", []string{"--"}},  // kgx under its other name
+	{"gnome-terminal", []string{"--"}}, // verified; -e is deprecated and parses a single string
+	{"cosmic-term", []string{"-e"}},
+	{"xfce4-terminal", []string{"-x"}}, // verified
 	{"mate-terminal", []string{"-x"}},
 	{"tilix", []string{"-e"}},
 	{"terminator", []string{"-x"}},
+	{"blackbox", []string{"-c"}},
+	{"deepin-terminal", []string{"-e"}},
 	{"lxterminal", []string{"-e"}},
 	{"qterminal", []string{"-e"}},
-	{"urxvt", []string{"-e"}},
+	{"urxvt", []string{"-e"}}, // verified
 	{"st", []string{"-e"}},
-	{"xterm", []string{"-e"}},
+	{"xterm", []string{"-e"}}, // verified
 }
 
 // hasControllingTerminal reports whether this process can reach a terminal.
@@ -54,29 +75,44 @@ func hasControllingTerminal() bool {
 	return true
 }
 
-// findTerminal returns the first usable terminal emulator. $TERMINAL wins when
-// it names something actually installed, so a user's choice is honoured.
-func findTerminal() (terminalCandidate, bool) {
+// candidatesToTry builds the ordered list of terminals to attempt.
+//
+// MOONBIT_TERMINAL wins outright. $TERMINAL comes next but only when it names
+// something installed: it is very often stale, left pointing at a terminal that
+// was removed, and trusting it blindly means opening nothing at all.
+func candidatesToTry() []terminalCandidate {
+	var out []terminalCandidate
+
+	if raw := strings.TrimSpace(os.Getenv(TerminalEnvVar)); raw != "" {
+		fields := strings.Fields(raw)
+		if path, err := exec.LookPath(fields[0]); err == nil {
+			args := fields[1:]
+			if len(args) == 0 {
+				args = []string{"-e"}
+			}
+			out = append(out, terminalCandidate{bin: path, args: args})
+		}
+	}
+
 	if t := strings.TrimSpace(os.Getenv("TERMINAL")); t != "" {
-		// Respect the user's setting, but only if it exists -- $TERMINAL is
-		// frequently stale, naming a terminal that was uninstalled long ago.
 		if path, err := exec.LookPath(t); err == nil {
+			args := []string{"-e"} // widest convention for an unknown terminal
 			for _, c := range terminalCandidates {
 				if c.bin == t {
-					return terminalCandidate{bin: path, args: c.args}, true
+					args = c.args
+					break
 				}
 			}
-			// Unknown terminal: -e is the overwhelmingly common convention.
-			return terminalCandidate{bin: path, args: []string{"-e"}}, true
+			out = append(out, terminalCandidate{bin: path, args: args})
 		}
 	}
 
 	for _, c := range terminalCandidates {
 		if path, err := exec.LookPath(c.bin); err == nil {
-			return terminalCandidate{bin: path, args: c.args}, true
+			out = append(out, terminalCandidate{bin: path, args: c.args})
 		}
 	}
-	return terminalCandidate{}, false
+	return out
 }
 
 // notifyDesktop surfaces a message to a user who has no terminal to read.
@@ -88,37 +124,30 @@ func notifyDesktop(urgency, summary, body string) {
 	fmt.Fprintf(os.Stderr, "%s: %s\n", summary, body)
 }
 
-// RunFromLauncher re-executes moonbit inside a terminal it locates itself.
+// RunFromLauncher replaces this process with a terminal running moonbit.
+//
+// It uses syscall.Exec rather than spawning and exiting. GNOME and KDE place a
+// launched application in a transient systemd scope; if moonbit forked a
+// terminal and then exited, systemd could tear the scope down and take the
+// terminal with it. Replacing the process image means the scope tracks the
+// terminal itself, so it lives exactly as long as the user keeps it open.
 //
 // The desktop entry deliberately does NOT use pkexec. polkit's auth_admin
 // requires an active session attached to a seat, and compositors that run as a
 // systemd user service (niri, and anything started through uwsm) put their
 // children under user@<uid>.service, which has no seat. polkit then refuses
-// outright -- no password prompt, exit 127, and the terminal closes before the
-// user can read anything. sudo has no such requirement, so moonbit opens a
-// terminal and elevates there, where the password prompt is visible.
+// outright, with no password prompt and no readable error. sudo has no such
+// requirement, so moonbit elevates inside the terminal where the prompt shows.
 //
-// The entry also does NOT use Terminal=true. That delegates finding a terminal
-// to the launcher, and launchers routinely default to `xterm -e` whether or not
-// xterm is installed.
+// It also does NOT use Terminal=true, which hands terminal selection to the
+// launcher; launchers commonly default to `xterm -e` whether or not xterm is
+// installed.
+//
+// On success this function does not return.
 func RunFromLauncher() error {
 	// Started from a terminal after all: nothing to do, carry on normally.
 	if hasControllingTerminal() {
 		return nil
-	}
-
-	term, ok := findTerminal()
-	if !ok {
-		names := make([]string, 0, len(terminalCandidates))
-		for _, c := range terminalCandidates {
-			names = append(names, c.bin)
-		}
-		err := fmt.Errorf("no terminal emulator found (looked for $TERMINAL and: %s)",
-			strings.Join(names, ", "))
-		notifyDesktop("critical", "moonbit cannot start",
-			"No terminal emulator was found. Install one (for example kitty, foot or "+
-				"alacritty), or run 'sudo moonbit' from a terminal.")
-		return err
 	}
 
 	exe, err := os.Executable()
@@ -137,14 +166,25 @@ func RunFromLauncher() error {
 		}
 	}
 
-	args := append(append([]string{}, term.args...), inner...)
-	cmd := exec.Command(term.bin, args...)
-	if err := cmd.Start(); err != nil {
+	candidates := candidatesToTry()
+	if len(candidates) == 0 {
 		notifyDesktop("critical", "moonbit cannot start",
-			fmt.Sprintf("Failed to open %s: %v", term.bin, err))
-		return fmt.Errorf("failed to start terminal %s: %w", term.bin, err)
+			"No terminal emulator was found. Install one (kitty, foot, alacritty, "+
+				"konsole or gnome-terminal), or set MOONBIT_TERMINAL, or run "+
+				"'sudo moonbit' from a terminal.")
+		return fmt.Errorf("no terminal emulator found")
 	}
 
-	// Detach: the launcher should not wait on the terminal.
-	return cmd.Process.Release()
+	// syscall.Exec only returns on failure, so a binary that vanished between
+	// LookPath and here just moves us to the next candidate.
+	var lastErr error
+	for _, term := range candidates {
+		argv := append([]string{term.bin}, append(append([]string{}, term.args...), inner...)...)
+		lastErr = syscall.Exec(term.bin, argv, os.Environ())
+	}
+
+	notifyDesktop("critical", "moonbit cannot start",
+		fmt.Sprintf("Could not open a terminal (last error: %v). "+
+			"Set MOONBIT_TERMINAL to your terminal, or run 'sudo moonbit'.", lastErr))
+	return fmt.Errorf("failed to exec any terminal, last error: %w", lastErr)
 }

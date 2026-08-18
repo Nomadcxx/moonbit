@@ -1,6 +1,6 @@
 # Maintainer: Nomadcxx <noovie@gmail.com>
 pkgname=moonbit
-pkgver=1.5.0
+pkgver=1.5.1
 pkgrel=1
 pkgdesc="A system cleaner for Linux, with a TUI and a CLI"
 arch=('x86_64' 'aarch64')
