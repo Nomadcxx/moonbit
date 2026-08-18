@@ -48,7 +48,7 @@ jobs:
         run: dnf install -y -q curl git make golang
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get version
         id: get_version
@@ -118,7 +118,7 @@ jobs:
           grep -q 'ExecStart=/usr/bin/moonbit' /usr/lib/systemd/system/moonbit-scan.service
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: moonbit-${{ matrix.distro }}
           path: |
@@ -129,10 +129,10 @@ jobs:
     name: Static binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -148,7 +148,7 @@ jobs:
               -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
               -o "dist/moonbit-${GOOS}-${GOARCH}" ./cmd/main.go
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: moonbit-static-binaries
           path: dist/moonbit-*
@@ -161,7 +161,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           merge-multiple: true
 
@@ -177,7 +177,7 @@ jobs:
           rm -f source.tar.gz
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             *.deb
