@@ -277,6 +277,38 @@ func TestHandleCleanCompleteClearsCacheWhenOnlyStaleFilesWereSkipped(t *testing.
 	assert.NotContains(t, result.renderComplete(), "retained for retry")
 }
 
+func TestRunCleanCmdClearsCacheWhenAllFilesAreStale(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, "active.log")
+	require.NoError(t, os.WriteFile(path, []byte("stale scan result"), 0600))
+	cfg := &config.Config{Categories: []config.Category{{
+		Name: "Active Logs", Paths: []string{home}, Risk: config.Low, Action: config.ActionDelete,
+	}}}
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{{
+			Path: path, Size: uint64(len("stale scan result")), CategoryName: "Active Logs", CategoryAction: config.ActionDelete,
+		}}},
+		TotalFiles: 1,
+		TotalSize:  uint64(len("stale scan result")),
+		ScannedAt:  time.Now(),
+	}
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	require.NoError(t, sessionMgr.Save(cache))
+	require.NoError(t, os.Remove(path))
+
+	msg := runCleanCmd(cfg, cache)().(cleanCompleteMsg)
+	require.Truef(t, msg.Success, "clean command failed: %s", msg.Error)
+	assert.Zero(t, msg.FailedActions)
+	assert.Equal(t, "1 cached file skipped (no longer verify against config)", msg.Warning)
+
+	updated, cmd := NewModel().handleCleanComplete(msg)
+	assert.Nil(t, cmd)
+	assert.False(t, sessionMgr.Exists(), "an entirely stale cache cannot be retried")
+	assert.Contains(t, updated.(Model).renderComplete(), "Scan again to refresh")
+}
+
 func TestRunCleanCmdReportsTruncationSeparately(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MOONBIT_HOME", home)

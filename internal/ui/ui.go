@@ -835,13 +835,19 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 		if err != nil {
 			return cleanCompleteMsg{Success: false, Error: err.Error()}
 		}
+		skipped := report.TotalDropped()
 		if verified.TotalFiles == 0 {
+			if skipped > 0 {
+				return cleanCompleteMsg{
+					Success: true,
+					Warning: formatSkippedCacheWarning(skipped),
+				}
+			}
 			return cleanCompleteMsg{
 				Success: false,
 				Error:   "nothing in the scan cache could be verified against the current config",
 			}
 		}
-		skipped := report.TotalDropped()
 
 		ctx := context.Background()
 		c := cleaner.NewCleaner(cfg)
@@ -883,11 +889,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			warning = fmt.Sprintf("%d cleanup %s failed", len(errors), actionLabel)
 		}
 		if skipped > 0 {
-			fileLabel := "files"
-			if skipped == 1 {
-				fileLabel = "file"
-			}
-			note := fmt.Sprintf("%d cached %s skipped (no longer verify against config)", skipped, fileLabel)
+			note := formatSkippedCacheWarning(skipped)
 			if warning == "" {
 				warning = note
 			} else {
@@ -904,6 +906,14 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			Warning:        warning,
 		}
 	}
+}
+
+func formatSkippedCacheWarning(skipped int) string {
+	fileLabel := "files"
+	if skipped == 1 {
+		fileLabel = "file"
+	}
+	return fmt.Sprintf("%d cached %s skipped (no longer verify against config)", skipped, fileLabel)
 }
 
 // handleCleanComplete processes cleaning completion
