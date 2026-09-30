@@ -39,7 +39,7 @@ func ValidateFilePath(path string) error {
 	}
 	for _, protected := range protectedPaths {
 		if absPath == protected || strings.HasPrefix(absPath, protected+string(filepath.Separator)) {
-			if (protected == "/home" || protected == "/root") && pathWithin(homePath, absPath) {
+			if (protected == "/home" || protected == "/root") && paths.IsWithin(homePath, absPath) {
 				continue
 			}
 			return fmt.Errorf("cannot operate on protected system path: %s", absPath)
@@ -47,14 +47,6 @@ func ValidateFilePath(path string) error {
 	}
 
 	return nil
-}
-
-func pathWithin(root, path string) bool {
-	if root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ValidatePackage checks if a package name is valid

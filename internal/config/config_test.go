@@ -79,6 +79,16 @@ func TestLoad_NonExistent(t *testing.T) {
 	assert.NotNil(t, cfg)
 }
 
+func TestLoadReadOnlyDoesNotCreateMissingConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "missing", "config.toml")
+	cfg, err := LoadReadOnly(configPath)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("read-only load created config: stat error = %v", err)
+	}
+}
+
 func TestLoadDefaultPathWithoutHomeEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", "")
