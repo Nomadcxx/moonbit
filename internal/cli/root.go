@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,14 +84,23 @@ var scanCmd = &cobra.Command{
 	Short: "Scan system for cleanable files",
 	Long:  "Scan the system for cleanable files and cache locations",
 	Run: func(cmd *cobra.Command, args []string) {
+		if jsonOut {
+			initJSON()
+		}
 		if scanMode != "" {
 			if err := validation.ValidateMode(scanMode); err != nil {
+				if jsonOut {
+					jsonTerminal(err)
+				}
 				fmt.Fprintf(os.Stderr, "Invalid scan mode: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
 		if listCategories {
+			if jsonOut {
+				jsonTerminal(errors.New("--json cannot be combined with --list-categories"))
+			}
 			if err := ListCategories(scanMode); err != nil {
 				fmt.Fprintf(os.Stderr, "List categories failed: %v\n", err)
 				os.Exit(1)
@@ -99,13 +109,24 @@ var scanCmd = &cobra.Command{
 		}
 
 		if !isRunningAsRoot() {
+			if jsonOut {
+				// No TTY to type a sudo password into; the caller (pkexec) must
+				// elevate before invoking.
+				jsonTerminal(errors.New("scan --json requires root"))
+			}
 			reexecWithSudo()
 			return
 		}
 
 		if err := ScanAndSave(); err != nil {
+			if jsonOut {
+				jsonTerminal(err)
+			}
 			fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
 			os.Exit(1)
+		}
+		if jsonOut {
+			return // scanAllCategories already emitted the terminal done event
 		}
 		if scanNoPrompt {
 			return
@@ -137,12 +158,21 @@ var cleanCmd = &cobra.Command{
 		return applyCleanFlags(cmd)
 	},
 	Run: func(cmd *cobra.Command, args []string) {
+		if jsonOut {
+			initJSON()
+		}
 		if !isRunningAsRoot() && !dryRun {
+			if jsonOut {
+				jsonTerminal(errors.New("clean --json --force requires root"))
+			}
 			reexecWithSudo()
 			return
 		}
 
 		if err := CleanSession(dryRun); err != nil {
+			if jsonOut {
+				jsonTerminal(err)
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -222,7 +252,9 @@ func ScanAndSave() error {
 
 // ScanAndSaveWithMode runs a scan filtered by mode (quick/deep)
 func ScanAndSaveWithMode(mode string) error {
-	displayScanHeader(mode)
+	if !jsonOut {
+		displayScanHeader(mode)
+	}
 
 	cfg, s, err := initializeScanner()
 	if err != nil {
@@ -247,7 +279,9 @@ func ScanAndSaveWithMode(mode string) error {
 		return err
 	}
 
-	displayScanResults(totalFiles, totalSize)
+	if !jsonOut {
+		displayScanResults(totalFiles, totalSize)
+	}
 	return nil
 }
 
@@ -297,7 +331,7 @@ func displayScanHeader(mode string) {
 
 // initializeScanner loads config and creates a scanner instance
 func initializeScanner() (*config.Config, *scanner.Scanner, error) {
-	if configPath, err := paths.ConfigFile(); err == nil {
+	if configPath, err := paths.ConfigFile(); err == nil && !jsonOut {
 		fmt.Printf("Using config: %s\n", configPath)
 	}
 
@@ -341,18 +375,36 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 	scanResults.Files = []config.FileInfo{}
 
 	for i, category := range categories {
+		if jsonOut && jsonCtx.Err() != nil {
+			return totalSize, totalFiles, scanResults, jsonCtx.Err()
+		}
 		if !categoryPathExists(&category) {
-			fmt.Printf("Skipping %s (not found)\n", category.Name)
+			if !jsonOut {
+				fmt.Printf("Skipping %s (not found)\n", category.Name)
+			}
 			continue
 		}
 
-		fmt.Printf("Scanning %s (%d/%d)...\n", category.Name, i+1, len(categories))
+		if jsonOut {
+			jsonEmit.emit("category", map[string]any{
+				"name": category.Name, "i": i + 1, "total": len(categories),
+			})
+		} else {
+			fmt.Printf("Scanning %s (%d/%d)...\n", category.Name, i+1, len(categories))
+		}
 
 		categoryStarted := time.Now()
 		stats, err := scanSingleCategory(s, &category)
 		categoryDuration := time.Since(categoryStarted)
 		if err != nil {
-			fmt.Printf("  Error: %v\n", err)
+			if jsonOut {
+				if jsonCtx.Err() != nil {
+					return totalSize, totalFiles, scanResults, jsonCtx.Err()
+				}
+				jsonEmit.emit("category_error", map[string]any{"name": category.Name, "msg": err.Error()})
+			} else {
+				fmt.Printf("  Error: %v\n", err)
+			}
 			failedCategories = append(failedCategories, fmt.Sprintf("%s: %v", category.Name, err))
 			continue
 		}
@@ -363,7 +415,16 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 				categorySize += file.Size
 			}
 
-			fmt.Println(formatScanCategoryResult(len(stats.Files), categorySize, categoryDuration))
+			if jsonOut {
+				jsonEmit.emit("category_done", map[string]any{
+					"name":        category.Name,
+					"files":       len(stats.Files),
+					"bytes":       categorySize,
+					"duration_ms": categoryDuration.Milliseconds(),
+				})
+			} else {
+				fmt.Println(formatScanCategoryResult(len(stats.Files), categorySize, categoryDuration))
+			}
 
 			totalSize += categorySize
 			totalFiles += len(stats.Files)
@@ -375,9 +436,22 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 		time.Sleep(ScanDelayBetweenCategories)
 	}
 
-	fmt.Println(formatScanSummary(categoriesScanned, totalFiles, totalSize, time.Since(started)))
-	if len(failedCategories) > 0 {
-		fmt.Println(formatScanFailureSummary(failedCategories))
+	if jsonOut {
+		done := map[string]any{
+			"files":       totalFiles,
+			"bytes":       totalSize,
+			"categories":  categoriesScanned,
+			"duration_ms": time.Since(started).Milliseconds(),
+		}
+		if len(failedCategories) > 0 {
+			done["failed"] = failedCategories
+		}
+		jsonEmit.emit("done", done)
+	} else {
+		fmt.Println(formatScanSummary(categoriesScanned, totalFiles, totalSize, time.Since(started)))
+		if len(failedCategories) > 0 {
+			fmt.Println(formatScanFailureSummary(failedCategories))
+		}
 	}
 	return totalSize, totalFiles, scanResults, nil
 }
@@ -431,9 +505,16 @@ func categoryPathExists(category *config.Category) bool {
 // scanSingleCategory scans a single category and returns its stats
 func scanSingleCategory(s *scanner.Scanner, category *config.Category) (*config.Category, error) {
 	progressCh := make(chan scanner.ScanMsg, 10)
-	go s.ScanCategory(context.Background(), category, progressCh)
+	go s.ScanCategory(jsonContext(), category, progressCh)
 
 	for msg := range progressCh {
+		if msg.Progress != nil && jsonOut && jsonThrottle.ready() {
+			jsonEmit.emit("scan", map[string]any{
+				"files": msg.Progress.FilesScanned,
+				"bytes": msg.Progress.Bytes,
+				"dir":   msg.Progress.CurrentDir,
+			})
+		}
 		if msg.Complete != nil {
 			return msg.Complete.Stats, nil
 		}
@@ -443,6 +524,14 @@ func scanSingleCategory(s *scanner.Scanner, category *config.Category) (*config.
 	}
 
 	return nil, fmt.Errorf("scan completed without results")
+}
+
+// jsonContext returns the cancellable context in --json mode, plain background otherwise.
+func jsonContext() context.Context {
+	if jsonOut {
+		return jsonCtx
+	}
+	return context.Background()
 }
 
 // saveScanResults creates and saves the session cache
@@ -463,7 +552,9 @@ func saveScanResults(totalSize uint64, totalFiles int, scanResults config.Catego
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 
-	fmt.Printf("Saved scan cache: %s\n", sessionMgr.Path())
+	if !jsonOut {
+		fmt.Printf("Saved scan cache: %s\n", sessionMgr.Path())
+	}
 	return nil
 }
 
@@ -485,6 +576,44 @@ func cleanFileActionCounts(files []config.FileInfo) (deleted, truncated int) {
 	return deleted, truncated
 }
 
+// cleanBegin emits the clean-start event with a per-category rollup of what
+// will actually be deleted (after revalidation). Full paths live in the cache;
+// the panel only needs counts to render the review list.
+func cleanBegin(cache *config.SessionCache, files []config.FileInfo, dryRun bool) {
+	if !jsonOut {
+		return
+	}
+	type cat struct {
+		Name  string `json:"name"`
+		Files int    `json:"files"`
+		Bytes uint64 `json:"bytes"`
+	}
+	var order []string
+	agg := map[string]*cat{}
+	for _, f := range files {
+		name := f.CategoryName
+		if name == "" {
+			name = "Other"
+		}
+		if _, ok := agg[name]; !ok {
+			agg[name] = &cat{Name: name}
+			order = append(order, name)
+		}
+		agg[name].Files++
+		agg[name].Bytes += f.Size
+	}
+	cats := make([]cat, 0, len(order))
+	for _, n := range order {
+		cats = append(cats, *agg[n])
+	}
+	jsonEmit.emit("clean_begin", map[string]any{
+		"files":      cache.TotalFiles,
+		"bytes":      cache.TotalSize,
+		"dry_run":    dryRun,
+		"categories": cats,
+	})
+}
+
 // displayScanResults shows the final scan results summary
 func displayScanResults(totalFiles int, totalSize uint64) {
 	fmt.Println()
@@ -503,16 +632,20 @@ func CleanSession(dryRun bool) error {
 		modeLabel = "Deep"
 	}
 
-	fmt.Println(S.ASCIIHeader())
-	fmt.Println(S.Header(fmt.Sprintf("%s Clean", modeLabel)))
-	fmt.Println(S.Separator())
+	if !jsonOut {
+		fmt.Println(S.ASCIIHeader())
+		fmt.Println(S.Header(fmt.Sprintf("%s Clean", modeLabel)))
+		fmt.Println(S.Separator())
+	}
 
 	// Load session cache
 	sessionMgr, err := session.NewManager()
 	if err != nil {
 		return fmt.Errorf("failed to create session manager: %w", err)
 	}
-	fmt.Printf("Using scan cache: %s\n", sessionMgr.Path())
+	if !jsonOut {
+		fmt.Printf("Using scan cache: %s\n", sessionMgr.Path())
+	}
 	cache, err := sessionMgr.Load()
 	if err != nil {
 		return fmt.Errorf("no scan results found - run scan first: %w", err)
@@ -522,7 +655,11 @@ func CleanSession(dryRun bool) error {
 	}
 
 	if cache.TotalFiles == 0 {
-		fmt.Println("No files to clean.")
+		if !jsonOut {
+			fmt.Println("No files to clean.")
+		} else {
+			jsonEmit.emit("clean_done", map[string]any{"deleted": 0, "freed": 0, "errors": []string{}})
+		}
 		return nil
 	}
 
@@ -540,7 +677,11 @@ func CleanSession(dryRun bool) error {
 		return err
 	}
 	if cache.TotalFiles == 0 {
-		fmt.Println("No files to clean: nothing in the scan cache could be verified against the current config.")
+		if !jsonOut {
+			fmt.Println("No files to clean: nothing in the scan cache could be verified against the current config.")
+		} else {
+			jsonEmit.emit("clean_done", map[string]any{"deleted": 0, "freed": 0, "errors": []string{}})
+		}
 		return nil
 	}
 
@@ -548,7 +689,11 @@ func CleanSession(dryRun bool) error {
 	if scanMode != "" {
 		cache = filterCacheByMode(cache, cfg, scanMode)
 		if cache.TotalFiles == 0 {
-			fmt.Printf("No files to clean in %s mode.\n", scanMode)
+			if !jsonOut {
+				fmt.Printf("No files to clean in %s mode.\n", scanMode)
+			} else {
+				jsonEmit.emit("clean_done", map[string]any{"deleted": 0, "freed": 0, "errors": []string{}})
+			}
 			return nil
 		}
 	}
@@ -558,14 +703,25 @@ func CleanSession(dryRun bool) error {
 		return err
 	}
 	if cache.TotalFiles == 0 {
-		fmt.Println("No files to clean after category filters.")
+		if !jsonOut {
+			fmt.Println("No files to clean after category filters.")
+		} else {
+			jsonEmit.emit("clean_done", map[string]any{"deleted": 0, "freed": 0, "errors": []string{}})
+		}
 		return nil
 	}
 
 	c := cleaner.NewCleaner(cfg)
-	ctx := context.Background()
+	ctx := jsonContext()
 
 	if dryRun {
+		cleanBegin(cache, cache.ScanResults.Files, true)
+		if jsonOut {
+			jsonEmit.emit("clean_done", map[string]any{
+				"deleted": 0, "freed": uint64(0), "errors": []string{}, "dry_run": true,
+			})
+			return nil
+		}
 		deleted, truncated := cleanFileActionCounts(cache.ScanResults.Files)
 		deletedLabel, truncatedLabel := "files", "files"
 		if deleted == 1 {
@@ -595,8 +751,11 @@ func CleanSession(dryRun bool) error {
 	}
 
 	// Actual cleaning using cleaner package
-	fmt.Printf("🗑️  Deleting %d files (%s)...\n",
-		cache.TotalFiles, utils.HumanizeBytes(cache.TotalSize))
+	cleanBegin(cache, cache.ScanResults.Files, false)
+	if !jsonOut {
+		fmt.Printf("🗑️  Deleting %d files (%s)...\n",
+			cache.TotalFiles, utils.HumanizeBytes(cache.TotalSize))
+	}
 
 	progressCh := make(chan cleaner.CleanMsg, 10)
 	// Errors are delivered over progressCh; the return value is redundant here.
@@ -605,13 +764,21 @@ func CleanSession(dryRun bool) error {
 	var deletedBytes uint64
 	var deletedFiles int
 	var truncatedFiles int
-	var errors []string
+	var errorsList []string
 
 	// Process cleaning messages
 	for msg := range progressCh {
 		if msg.Progress != nil {
+			if jsonOut && jsonThrottle.ready() {
+				jsonEmit.emit("clean", map[string]any{
+					"done":  msg.Progress.FilesProcessed,
+					"total": msg.Progress.TotalFiles,
+					"freed": msg.Progress.BytesFreed,
+					"file":  msg.Progress.CurrentFile,
+				})
+			}
 			// Progress update every 100 files
-			if msg.Progress.FilesProcessed%100 == 0 && msg.Progress.FilesProcessed > 0 {
+			if !jsonOut && msg.Progress.FilesProcessed%100 == 0 && msg.Progress.FilesProcessed > 0 {
 				fmt.Printf("   Progress: %d/%d files (%s)\n",
 					msg.Progress.FilesProcessed,
 					msg.Progress.TotalFiles,
@@ -623,9 +790,9 @@ func CleanSession(dryRun bool) error {
 			deletedFiles = msg.Complete.FilesDeleted
 			truncatedFiles = msg.Complete.FilesTruncated
 			deletedBytes = msg.Complete.BytesFreed
-			errors = msg.Complete.Errors
+			errorsList = msg.Complete.Errors
 
-			if msg.Complete.BackupCreated {
+			if !jsonOut && msg.Complete.BackupCreated {
 				fmt.Printf("   📦 Backup created: %s\n", msg.Complete.BackupPath)
 			}
 			break
@@ -636,6 +803,24 @@ func CleanSession(dryRun bool) error {
 		}
 	}
 
+	if jsonOut {
+		if ctx.Err() != nil {
+			return fmt.Errorf("clean cancelled: %w", ctx.Err())
+		}
+		if errorsList == nil {
+			errorsList = []string{}
+		}
+		jsonEmit.emit("clean_done", map[string]any{
+			"deleted": deletedFiles, "freed": deletedBytes, "errors": errorsList,
+		})
+		if len(errorsList) > 0 {
+			// Terminal event already carried the error detail.
+			return nil
+		}
+		_ = clearSessionCache()
+		return nil
+	}
+
 	fmt.Println()
 	fmt.Println(S.Header("Cleaning Complete"))
 	fmt.Println(S.Separator())
@@ -643,14 +828,14 @@ func CleanSession(dryRun bool) error {
 	fmt.Printf("  %s %d\n", S.Bold("Files truncated:"), truncatedFiles)
 	fmt.Printf("  %s %s\n", S.Bold("Space freed:"), S.Success(utils.HumanizeBytes(deletedBytes)))
 
-	if len(errors) > 0 {
-		fmt.Printf("  %s %d files could not be deleted\n", S.Warning("Errors:"), len(errors))
-		if len(errors) <= 5 {
-			for _, err := range errors {
+	if len(errorsList) > 0 {
+		fmt.Printf("  %s %d files could not be deleted\n", S.Warning("Errors:"), len(errorsList))
+		if len(errorsList) <= 5 {
+			for _, err := range errorsList {
 				fmt.Printf("      - %s\n", err)
 			}
 		}
-		return fmt.Errorf("cleaning incomplete: %d file(s) could not be deleted", len(errors))
+		return fmt.Errorf("cleaning incomplete: %d file(s) could not be deleted", len(errorsList))
 	}
 
 	fmt.Printf("   ⚡ Scan data cleared\n")
@@ -685,7 +870,7 @@ func revalidateSessionCache(cache *config.SessionCache, cfg *config.Config) (*co
 		return nil, err
 	}
 
-	if report.TotalDropped() > 0 {
+	if report.TotalDropped() > 0 && !jsonOut {
 		fmt.Printf("%s %d of %d scanned files no longer verify against config and will be skipped (%s)\n",
 			S.Warning("Note:"), report.TotalDropped(),
 			report.TotalDropped()+report.Accepted, report.Summary())
@@ -1746,12 +1931,14 @@ func init() {
 	scanCmd.Flags().BoolVar(&listCategories, "list-categories", false, "List categories selected by the current filters and exit")
 	scanCmd.Flags().StringSliceVar(&includeCategories, "include-category", nil, "Only include categories by name (repeat or comma-separate)")
 	scanCmd.Flags().StringSliceVar(&excludeCategories, "exclude-category", nil, "Exclude categories by name (repeat or comma-separate)")
+	scanCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit newline-delimited JSON progress events on stdout (requires root; cancels when stdin closes)")
 
 	cleanCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true, "Preview only, don't delete files")
 	cleanCmd.Flags().BoolVarP(&cleanForce, "force", "f", false, "Actually delete files")
 	cleanCmd.Flags().StringVarP(&scanMode, "mode", "m", "", "Clean mode: 'quick' (safe caches only) or 'deep' (all categories)")
 	cleanCmd.Flags().StringSliceVar(&includeCategories, "include-category", nil, "Only clean categories by name (repeat or comma-separate)")
 	cleanCmd.Flags().StringSliceVar(&excludeCategories, "exclude-category", nil, "Exclude categories by name (repeat or comma-separate)")
+	cleanCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit newline-delimited JSON progress events on stdout (cancels when stdin closes)")
 }
 
 // SetVersion wires build metadata injected via -ldflags into the root command,
