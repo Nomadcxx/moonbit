@@ -322,6 +322,14 @@ func hashOpenFile(file io.Reader) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+func matchesScannedIdentity(info os.FileInfo, expected FileInfo) error {
+	if !info.Mode().IsRegular() || paths.FileID(info) != expected.FileID ||
+		info.Size() != expected.Size || info.ModTime().UnixNano() != expected.ModTime {
+		return fmt.Errorf("file changed since duplicate scan")
+	}
+	return nil
+}
+
 // RemoveDuplicates removes selected duplicate files that still match their scan records.
 func RemoveDuplicates(filesToRemove []FileInfo) (int, int64, []string) {
 	removed := 0
@@ -349,10 +357,9 @@ func RemoveDuplicates(filesToRemove []FileInfo) (int, int64, []string) {
 			removeErrors = append(removeErrors, fmt.Sprintf("%s: failed to stat file: %v", expected.Path, err))
 			continue
 		}
-		if !info.Mode().IsRegular() || paths.FileID(info) != expected.FileID ||
-			info.Size() != expected.Size || info.ModTime().UnixNano() != expected.ModTime {
+		if err := matchesScannedIdentity(info, expected); err != nil {
 			file.Close()
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: file changed since duplicate scan", expected.Path))
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", expected.Path, err))
 			continue
 		}
 		hash, err := hashOpenFile(file)
@@ -372,7 +379,9 @@ func RemoveDuplicates(filesToRemove []FileInfo) (int, int64, []string) {
 		}
 		size := info.Size()
 
-		if err := paths.Remove(expected.Path); err != nil {
+		if err := paths.RemoveIf(expected.Path, func(info os.FileInfo) error {
+			return matchesScannedIdentity(info, expected)
+		}); err != nil {
 			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", expected.Path, err))
 			continue
 		}

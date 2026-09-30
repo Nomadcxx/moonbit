@@ -423,6 +423,30 @@ func TestRemoveDuplicatesRejectsInPlaceContentChange(t *testing.T) {
 	}
 }
 
+func TestRemoveIfRejectsReplacementSinceDuplicateScan(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duplicate.bin")
+	if err := os.WriteFile(path, []byte("scanned content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	expected := scannedFile(t, path)
+	if err := os.Rename(path, path+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("scanned content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := paths.RemoveIf(path, func(info os.FileInfo) error {
+		return matchesScannedIdentity(info, expected)
+	})
+	if err == nil {
+		t.Fatal("replacement file passed the scan identity check")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("replacement file was removed: %v", err)
+	}
+}
+
 func TestScanOptionsMinSize(t *testing.T) {
 	tmpDir := t.TempDir()
 
