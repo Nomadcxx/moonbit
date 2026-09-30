@@ -603,25 +603,42 @@ func TestBackupFileRejectsFIFODestination(t *testing.T) {
 
 func TestListBackups(t *testing.T) {
 	tempDir := t.TempDir()
-
-	// Override data home
-	originalDataHome := os.Getenv("XDG_DATA_HOME")
-	defer os.Setenv("XDG_DATA_HOME", originalDataHome)
-
-	os.Setenv("XDG_DATA_HOME", tempDir)
+	t.Setenv("XDG_DATA_HOME", tempDir)
 
 	backupDir := filepath.Join(tempDir, "moonbit", "backups")
-	os.MkdirAll(backupDir, 0755)
+	require.NoError(t, os.MkdirAll(backupDir, 0755))
 
-	// Create some backup files
-	backup1 := filepath.Join(backupDir, "test1_20250105.backup")
-	backup2 := filepath.Join(backupDir, "test2_20250105.backup")
-	os.WriteFile(backup1, []byte("backup1"), 0644)
-	os.WriteFile(backup2, []byte("backup2"), 0644)
+	for _, name := range []string{"test1_20250105.backup", "test2_20250105.backup"} {
+		require.NoError(t, os.Mkdir(filepath.Join(backupDir, name+".files"), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(backupDir, name+".json"), []byte("{}"), 0600))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(backupDir, "ghost.backup.json"), []byte("{}"), 0600))
+	require.NoError(t, os.Mkdir(filepath.Join(backupDir, "stray.backup.files"), 0700))
 
 	backups, err := ListBackups()
-	assert.NoError(t, err)
-	assert.GreaterOrEqual(t, len(backups), 2)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"test1_20250105.backup", "test2_20250105.backup"}, backups)
+}
+
+func TestRestoreBackupDoesNotCreateDefaultConfig(t *testing.T) {
+	f := newRestoreTestFixture(t)
+	cfg := config.DefaultConfig()
+	var userCache *config.Category
+	for i := range cfg.Categories {
+		if cfg.Categories[i].Name == "User Cache" {
+			userCache = &cfg.Categories[i]
+			break
+		}
+	}
+	require.NotNil(t, userCache)
+	target := filepath.Join(userCache.Paths[0], "restore-test.tmp")
+	f.writeBackupForCategory(t, userCache.Name, target, []byte("restore"))
+
+	configPath, err := paths.ConfigFile()
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(configPath))
+	require.NoError(t, RestoreBackup(f.backupPath))
+	assert.NoFileExists(t, configPath)
 }
 
 func TestRestoreBackup(t *testing.T) {
