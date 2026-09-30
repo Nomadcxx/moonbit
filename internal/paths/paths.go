@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -162,4 +163,29 @@ func DataDir(parts ...string) (string, error) {
 
 	allParts := append([]string{base}, parts...)
 	return filepath.Join(allParts...), nil
+}
+
+// OwnerID reports the uid/gid of the human behind an elevation (sudo or
+// pkexec), when running as root. Root-created files in the user's home are
+// otherwise unreadable by that user.
+func OwnerID() (uid, gid int, ok bool) {
+	if os.Geteuid() != 0 {
+		return 0, 0, false
+	}
+	if name := os.Getenv("SUDO_USER"); name != "" {
+		if u, err := user.Lookup(name); err == nil {
+			return atoi(u.Uid), atoi(u.Gid), true
+		}
+	}
+	if id := os.Getenv("PKEXEC_UID"); id != "" {
+		if u, err := user.LookupId(id); err == nil {
+			return atoi(u.Uid), atoi(u.Gid), true
+		}
+	}
+	return 0, 0, false
+}
+
+func atoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }

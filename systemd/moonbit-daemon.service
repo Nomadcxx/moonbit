@@ -13,7 +13,7 @@ Environment=XDG_DATA_HOME=/var/lib
 StateDirectory=moonbit
 CacheDirectory=moonbit
 LogsDirectory=moonbit
-ExecStart=/usr/local/bin/moonbit daemon --log /var/log/moonbit/daemon.log --pid /run/moonbit/moonbit.pid
+ExecStart=/usr/local/bin/moonbit daemon --log /var/log/moonbit/daemon.log --pid /run/moonbit/moonbit.pid --socket /run/moonbit/panel.sock
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=on-failure
 RestartSec=30
