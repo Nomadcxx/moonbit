@@ -378,6 +378,7 @@ func TestCLIScanThenCleanEndToEnd(t *testing.T) {
 		Risk:     config.Low,
 		Selected: true,
 	}}}
+	sandboxCfg.Scan.MaxDepth = 3
 	if err := config.Save(sandboxCfg, cfgPath); err != nil {
 		t.Fatal(err)
 	}

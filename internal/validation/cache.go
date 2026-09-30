@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 // DefaultMaxCacheAge bounds how long a scan result stays usable. Past this the
@@ -26,7 +27,8 @@ const (
 	DropTooRecent       DropReason = "file newer than category min_age_days"
 	DropMissing         DropReason = "file no longer exists"
 	DropNotRegular      DropReason = "not a regular file"
-	DropChanged         DropReason = "size or mtime changed since scan"
+	DropChanged         DropReason = "file identity, size, or mtime changed since scan"
+	DropDuplicate       DropReason = "duplicate path in scan cache"
 )
 
 // Report summarises what the gate removed, so callers can tell the user why the
@@ -113,10 +115,17 @@ type resolvedCategory struct {
 	excludes []*regexp.Regexp
 }
 
-func resolveCategories(categories []config.Category) map[string]*resolvedCategory {
+func resolveCategories(categories []config.Category) (map[string]*resolvedCategory, error) {
 	out := make(map[string]*resolvedCategory, len(categories))
 	for i := range categories {
 		cat := &categories[i]
+		name := normalizeName(cat.Name)
+		if name == "" {
+			return nil, fmt.Errorf("category %d has empty name", i)
+		}
+		if _, exists := out[name]; exists {
+			return nil, fmt.Errorf("category %q duplicates an existing category name", cat.Name)
+		}
 		rc := &resolvedCategory{cat: cat}
 
 		for _, p := range cat.Paths {
@@ -124,7 +133,7 @@ func resolveCategories(categories []config.Category) map[string]*resolvedCategor
 			if strings.ContainsAny(p, "*?[") {
 				matches, err := filepath.Glob(p)
 				if err != nil {
-					continue
+					return nil, fmt.Errorf("category %q has invalid path pattern %q: %w", cat.Name, p, err)
 				}
 				expanded = matches
 			} else {
@@ -144,19 +153,23 @@ func resolveCategories(categories []config.Category) map[string]*resolvedCategor
 		}
 
 		for _, f := range cat.Filters {
-			if re, err := regexp.Compile(f); err == nil {
-				rc.filters = append(rc.filters, re)
+			re, err := regexp.Compile(f)
+			if err != nil {
+				return nil, fmt.Errorf("category %q has invalid filter %q: %w", cat.Name, f, err)
 			}
+			rc.filters = append(rc.filters, re)
 		}
 		for _, e := range cat.ExcludePatterns {
-			if re, err := regexp.Compile(e); err == nil {
-				rc.excludes = append(rc.excludes, re)
+			re, err := regexp.Compile(e)
+			if err != nil {
+				return nil, fmt.Errorf("category %q has invalid exclude pattern %q: %w", cat.Name, e, err)
 			}
+			rc.excludes = append(rc.excludes, re)
 		}
 
-		out[normalizeName(cat.Name)] = rc
+		out[name] = rc
 	}
-	return out
+	return out, nil
 }
 
 func normalizeName(name string) string {
@@ -224,6 +237,57 @@ func (rc *resolvedCategory) isExcluded(path string) bool {
 	return false
 }
 
+// RestorePathValidator compiles category path rules once for a restore.
+type RestorePathValidator struct {
+	categories map[string]*resolvedCategory
+}
+
+// NewRestorePathValidator compiles category rules once for a restore.
+func NewRestorePathValidator(categories []config.Category) (*RestorePathValidator, error) {
+	resolved, err := resolveCategories(categories)
+	if err != nil {
+		return nil, err
+	}
+	return &RestorePathValidator{categories: resolved}, nil
+}
+
+// ValidatePath requires a backup destination to remain within its configured
+// category and match that category's filters. The caller must still open it
+// without following symlinks after this lexical check.
+func (v *RestorePathValidator) ValidatePath(path, categoryName string) error {
+	if strings.TrimSpace(categoryName) == "" {
+		return fmt.Errorf("backup file has no category")
+	}
+	rc, ok := v.categories[normalizeName(categoryName)]
+	if !ok {
+		return fmt.Errorf("backup category %q is not configured", categoryName)
+	}
+	cleanPath := filepath.Clean(path)
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return fmt.Errorf("invalid restore path %q: %w", path, err)
+	}
+
+	allowed := false
+	for _, root := range rc.roots {
+		absRoot, err := filepath.Abs(root)
+		if err == nil && contains(absRoot, absPath) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("restore path %q is outside category %q", path, categoryName)
+	}
+	if rc.isExcluded(cleanPath) {
+		return fmt.Errorf("restore path %q is excluded by category %q", path, categoryName)
+	}
+	if !rc.matchesFilters(cleanPath) {
+		return fmt.Errorf("restore path %q does not match category %q filters", path, categoryName)
+	}
+	return nil
+}
+
 // RevalidateCache re-derives the authoritative delete list from config.
 //
 // The session cache lives in the invoking user's home directory and is therefore
@@ -253,11 +317,15 @@ func RevalidateCache(cache *config.SessionCache, categories []config.Category, o
 		return nil, nil, fmt.Errorf("scan cache is timestamped in the future; re-run 'moonbit scan'")
 	}
 
-	resolved := resolveCategories(categories)
+	resolved, err := resolveCategories(categories)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid category rules: %w", err)
+	}
 	report := newReport()
 
 	files := cache.ScanResults.Files
 	accepted := make([]config.FileInfo, 0, len(files))
+	seenPaths := make(map[string]struct{}, len(files))
 	var totalSize uint64
 	aggregateRisk := config.Low
 
@@ -287,6 +355,11 @@ func RevalidateCache(cache *config.SessionCache, categories []config.Category, o
 		}
 		if !info.Mode().IsRegular() {
 			report.drop(DropNotRegular, file.Path)
+			continue
+		}
+		fileID := paths.FileID(info)
+		if file.FileID != "" && file.FileID != fileID {
+			report.drop(DropChanged, file.Path)
 			continue
 		}
 
@@ -323,8 +396,26 @@ func RevalidateCache(cache *config.SessionCache, categories []config.Category, o
 			report.drop(DropChanged, file.Path)
 			continue
 		}
-		if file.ModTime != "" && info.ModTime().Format(time.RFC3339) != file.ModTime {
-			report.drop(DropChanged, file.Path)
+		if file.ModTime != "" {
+			// New scans carry FileID and RFC3339Nano timestamps. Older caches have
+			// only second precision, so retain their previous comparison semantics.
+			format := time.RFC3339
+			if file.FileID != "" {
+				format = time.RFC3339Nano
+			}
+			if info.ModTime().Format(format) != file.ModTime {
+				report.drop(DropChanged, file.Path)
+				continue
+			}
+		}
+		pathKey, err := filepath.Abs(realPath)
+		if err != nil {
+			report.drop(DropOutsideCategory, file.Path)
+			continue
+		}
+		pathKey = filepath.Clean(pathKey)
+		if _, duplicate := seenPaths[pathKey]; duplicate {
+			report.drop(DropDuplicate, file.Path)
 			continue
 		}
 
@@ -332,12 +423,15 @@ func RevalidateCache(cache *config.SessionCache, categories []config.Category, o
 		verified := file
 		verified.Path = literal
 		verified.Size = uint64(info.Size())
+		verified.ModTime = info.ModTime().Format(time.RFC3339Nano)
+		verified.FileID = fileID
 		verified.CategoryName = rc.cat.Name
 		verified.CategoryRisk = rc.cat.Risk
 		verified.CategorySelected = rc.cat.Selected
 		verified.CategoryShred = rc.cat.ShredEnabled
 		verified.CategoryAction = rc.cat.Action
 
+		seenPaths[pathKey] = struct{}{}
 		if rc.cat.Risk > aggregateRisk {
 			aggregateRisk = rc.cat.Risk
 		}

@@ -5,7 +5,25 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 )
+
+// IsWithin reports whether path is root or one of its descendants.
+func IsWithin(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
 
 // homeFromPasswd resolves a home directory through the passwd database rather
 // than assuming /home/<name>. Non-standard layouts (LDAP/SSSD, /export/home,
@@ -32,11 +50,9 @@ func existingDir(path string) string {
 	return ""
 }
 
+// HomeDir resolves the invoking user's home when SUDO_USER or PKEXEC_UID is
+// set. In those runs it ignores MOONBIT_HOME.
 func HomeDir() (string, error) {
-	if home := os.Getenv("MOONBIT_HOME"); home != "" {
-		return home, nil
-	}
-
 	// Recover the human behind an elevation. Both sudo and pkexec drop the
 	// original HOME, which under euid 0 leaves /root -- moonbit would then scan
 	// and clean root's caches while reporting success, and the user's actual
@@ -63,6 +79,13 @@ func HomeDir() (string, error) {
 			return "", fmt.Errorf("cannot resolve home directory for PKEXEC_UID=%q; "+
 				"set MOONBIT_HOME to the intended home directory", pkexecUID)
 		}
+	}
+
+	// MOONBIT_HOME remains an override for ordinary runs. During elevation the
+	// invoking user's passwd entry is authoritative, so an inherited variable
+	// cannot redirect privileged reads and writes to another home.
+	if home := os.Getenv("MOONBIT_HOME"); home != "" {
+		return home, nil
 	}
 
 	if home := os.Getenv("HOME"); home != "" {

@@ -30,14 +30,23 @@ func NewLogger() (*Logger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine log directory: %w", err)
 	}
-	if err := os.MkdirAll(logDir, 0700); err != nil {
+	if err := paths.MkdirAll(logDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	logPath := filepath.Join(logDir, "audit.log")
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := paths.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audit log: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("failed to stat audit log: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("audit log is not a regular file: %s", logPath)
 	}
 
 	return &Logger{

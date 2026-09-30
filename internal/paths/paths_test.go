@@ -12,6 +12,8 @@ import (
 func TestHomeDirUsesMoonbitHomeWhenSet(t *testing.T) {
 	t.Setenv("MOONBIT_HOME", "/tmp/moonbit-home")
 	t.Setenv("HOME", "")
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("PKEXEC_UID", "")
 
 	home, err := HomeDir()
 	require.NoError(t, err)

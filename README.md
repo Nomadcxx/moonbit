@@ -178,6 +178,8 @@ moonbit skips high-risk cleanup classes by default. Browser caches, model caches
 
 moonbit never follows symlinks, and it re-checks every path against your config between scan and clean. A stale or hand-edited scan cache cannot widen what gets deleted. Reported "space freed" counts bytes measured on disk at deletion, not sizes recorded during the scan.
 
+Config, cache, and backup operations reject symlinked path components, including `$HOME`, `~/.config`, `~/.cache`, and `~/.local/share`. Use a bind mount to relocate these directories. For non-elevated runs, `MOONBIT_HOME` overrides `HOME`. When `SUDO_USER` or `PKEXEC_UID` is set, moonbit resolves the invoking account's home and ignores `MOONBIT_HOME`.
+
 Log cleanup targets rotated files only. moonbit will not unlink a log a daemon still holds open: it truncates Docker container logs, and reclaims journal space through `moonbit journal vacuum`, which drives `journalctl --vacuum-*`.
 
 ## Automated Cleaning

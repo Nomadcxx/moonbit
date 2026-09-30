@@ -1,8 +1,10 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 	"testing"
 )
 
@@ -31,6 +33,87 @@ func TestNoSystemdJournalDeletionCategory(t *testing.T) {
 				t.Errorf("category %q targets /var/log/journal for deletion", cat.Name)
 			}
 		}
+	}
+}
+
+func TestSaveRejectsSymlinkedConfigDirectory(t *testing.T) {
+	base := t.TempDir()
+	configHome := filepath.Join(base, "xdg-config")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(configHome, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(configHome, "moonbit")); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(configHome, "moonbit", "config.toml")
+	if err := Save(DefaultConfig(), path); err == nil {
+		t.Fatal("Save should reject a symlinked parent directory")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("config was written through the symlink: lstat error = %v", err)
+	}
+}
+
+func TestSaveRejectsFIFOConfigFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := syscall.Mkfifo(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	if err := Save(DefaultConfig(), path); err == nil {
+		t.Fatal("Save should reject a FIFO config file")
+	}
+	buf := make([]byte, 4096)
+	if n, _ := reader.Read(buf); n != 0 {
+		t.Fatalf("config data was written to a FIFO: %q", buf[:n])
+	}
+}
+
+func TestSavePreservesExistingConfigPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("old config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(DefaultConfig(), path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("config permissions = %04o, want preserved 0600", got)
+	}
+}
+
+func TestLoadRejectsSymlinkedConfigFile(t *testing.T) {
+	base := t.TempDir()
+	configHome := filepath.Join(base, "xdg-config")
+	configDir := filepath.Join(configHome, "moonbit")
+	externalConfig := filepath.Join(base, "external.toml")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(externalConfig, []byte("[scan]\nmax_depth = 3\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalConfig, filepath.Join(configDir, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("Load should reject a symlinked config file")
 	}
 }
 
@@ -137,6 +220,57 @@ func TestAuthoritativeCategoriesIncludesDynamic(t *testing.T) {
 
 	if got := AuthoritativeCategories(nil); len(got) != len(DynamicCategories()) {
 		t.Error("nil config should still yield the dynamic categories")
+	}
+}
+
+func TestDynamicThumbnailCategoryKeepsMinimumAge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MOONBIT_HOME", home)
+	thumbnailPath := filepath.Join(home, ".cache", "thumbnails")
+	if err := os.MkdirAll(thumbnailPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, category := range DynamicCategories() {
+		if category.Name == "Thumbnail Cache" {
+			if category.MinAgeDays != 30 {
+				t.Fatalf("dynamic thumbnails min age = %d, want 30", category.MinAgeDays)
+			}
+			return
+		}
+	}
+	t.Fatal("expected dynamic thumbnail category")
+}
+
+func TestValidateRejectsUnsafeCategoryRules(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*Config)
+	}{
+		{"scan ignore pattern", func(cfg *Config) { cfg.Scan.IgnorePatterns = []string{"("} }},
+		{"category filter", func(cfg *Config) { cfg.Categories[0].Filters = []string{"("} }},
+		{"category exclude", func(cfg *Config) { cfg.Categories[0].ExcludePatterns = []string{"("} }},
+		{"unknown action", func(cfg *Config) { cfg.Categories[0].Action = "wipe" }},
+		{"duplicate category", func(cfg *Config) { cfg.Categories = append(cfg.Categories, cfg.Categories[0]) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.edit(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate accepted an unsafe rule")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidIgnorePattern(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[scan]\nignore_patterns = [\"(\"]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load should reject an invalid ignore pattern")
 	}
 }
 
