@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/duplicates"
+	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/spf13/cobra"
@@ -284,6 +288,238 @@ func TestScanOutputFormatIncludesDurationAndSummary(t *testing.T) {
 	assert.Contains(t, summary, "files=3")
 	assert.Contains(t, summary, "bytes=4096")
 	assert.Contains(t, summary, "duration=2s")
+}
+
+func TestOrphanPackagePreviewMatchesRemovalCommand(t *testing.T) {
+	tests := []struct {
+		manager string
+		command string
+	}{
+		{"pacman", "sudo pacman -Rns orphan-a orphan-b"},
+		{"apt", "sudo apt autoremove -y"},
+		{"dnf", "sudo dnf autoremove -y"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.manager, func(t *testing.T) {
+			binDir := t.TempDir()
+			t.Setenv("PATH", binDir)
+			t.Setenv("MOONBIT_HOME", t.TempDir())
+			writeExecutable(t, filepath.Join(binDir, tt.manager), "#!/bin/sh\nprintf 'orphan-a\\norphan-b\\n'\n")
+			if tt.manager == "apt" {
+				writeExecutable(t, filepath.Join(binDir, "apt-mark"), "#!/bin/sh\nprintf 'orphan-a\\norphan-b\\n'\n")
+			}
+
+			output := captureStdout(t, func() { removeOrphanedPackages(true) })
+			assert.Contains(t, output, tt.command)
+		})
+	}
+}
+
+func TestPacmanOrphanQueryFailureIsReported(t *testing.T) {
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
+	t.Setenv("MOONBIT_HOME", t.TempDir())
+	writeExecutable(t, filepath.Join(binDir, "pacman"), "#!/bin/sh\nif [ \"$1\" = -Qtdq ]; then echo 'database unavailable' >&2; exit 2; fi\nexit 2\n")
+
+	var commandErr error
+	output := captureStdout(t, func() { commandErr = removeOrphanedPackages(true) })
+	require.Error(t, commandErr)
+	assert.Contains(t, commandErr.Error(), "pacman")
+	assert.NotContains(t, output, "No orphaned packages found")
+	assert.Contains(t, output, "Failed to list orphaned packages")
+}
+
+func TestPacmanEmptyOrphanQueryIsNotReportedAsFailure(t *testing.T) {
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
+	t.Setenv("MOONBIT_HOME", t.TempDir())
+	writeExecutable(t, filepath.Join(binDir, "pacman"), "#!/bin/sh\nif [ \"$1\" = -Qtdq ]; then exit 1; fi\nif [ \"$1\" = -Qq ]; then printf 'installed-package\\n'; exit 0; fi\nexit 2\n")
+
+	var commandErr error
+	output := captureStdout(t, func() { commandErr = removeOrphanedPackages(true) })
+	require.NoError(t, commandErr)
+	assert.Contains(t, output, "No orphaned packages found")
+}
+
+func TestKernelPreviewMatchesExecutedCommand(t *testing.T) {
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
+	t.Setenv("MOONBIT_HOME", t.TempDir())
+	writeExecutable(t, filepath.Join(binDir, "apt"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "uname"), "#!/bin/sh\nprintf '6.1.0-test\\n'\n")
+	writeExecutable(t, filepath.Join(binDir, "dpkg"), "#!/bin/sh\nprintf 'ii linux-image-6.0-old installed\\n'\n")
+
+	output := captureStdout(t, func() { removeOldKernels(true) })
+	assert.Contains(t, output, "sudo apt autoremove -y")
+}
+
+func TestCleanPreviewSeparatesDeletesFromTruncations(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	t.Setenv("HOME", home)
+	t.Setenv("MOONBIT_HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	originalMode := scanMode
+	originalIncludes, originalExcludes := includeCategories, excludeCategories
+	scanMode = ""
+	includeCategories, excludeCategories = nil, nil
+	defer func() {
+		scanMode = originalMode
+		includeCategories, excludeCategories = originalIncludes, originalExcludes
+	}()
+
+	deleteDir, truncateDir := t.TempDir(), t.TempDir()
+	deletePath := filepath.Join(deleteDir, "package.cache")
+	truncatePath := filepath.Join(truncateDir, "active.log")
+	require.NoError(t, os.WriteFile(deletePath, []byte("cache"), 0600))
+	require.NoError(t, os.WriteFile(truncatePath, []byte("log"), 0600))
+	cfg := config.DefaultConfig()
+	cfg.Categories = append(cfg.Categories,
+		config.Category{Name: "Test Package Cache", Paths: []string{deleteDir}, Risk: config.Low},
+		config.Category{Name: "Test Active Logs", Paths: []string{truncateDir}, Risk: config.Low, Action: config.ActionTruncate},
+	)
+	require.NoError(t, config.Save(cfg, filepath.Join(configHome, "moonbit", "config.toml")))
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	require.NoError(t, sessionMgr.Save(&config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{
+			{Path: deletePath, Size: 5, CategoryName: "Test Package Cache"},
+			{Path: truncatePath, Size: 3, CategoryName: "Test Active Logs", CategoryAction: config.ActionTruncate},
+		}},
+		TotalFiles: 2,
+		TotalSize:  8,
+		ScannedAt:  time.Now(),
+	}))
+
+	output := captureStdout(t, func() { require.NoError(t, CleanSession(true)) })
+	assert.Contains(t, output, "DRY RUN - Would delete 1 file and truncate 1 file")
+}
+
+func TestDockerOutputMatchesExecutedPruneCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		command *cobra.Command
+		preview string
+	}{
+		{"images", dockerImagesCmd, "docker image prune -a -f"},
+		{"all", dockerAllCmd, "docker system prune -a --volumes -f"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			t.Setenv("PATH", binDir)
+			t.Setenv("MOONBIT_HOME", t.TempDir())
+			writeExecutable(t, filepath.Join(binDir, "docker"), "#!/bin/sh\nexit 0\n")
+			output := captureStdout(t, func() { tt.command.Run(tt.command, nil) })
+			assert.Contains(t, output, tt.preview)
+		})
+	}
+}
+
+func TestDuplicatesFindReportsIncompleteScan(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "readable.bin")
+	require.NoError(t, os.WriteFile(file, make([]byte, duplicates.DefaultMinSize), 0644))
+	missing := filepath.Join(root, "missing")
+
+	output := captureStdout(t, func() {
+		duplicatesFindCmd.Run(duplicatesFindCmd, []string{root, missing})
+	})
+
+	assert.Contains(t, output, "Scan incomplete")
+	assert.Contains(t, output, missing)
+	assert.Contains(t, output, "Files scanned: 1")
+	assert.Contains(t, output, "No duplicates found in scanned paths.")
+}
+
+func TestDuplicatesCleanStopsOnIncompleteScan(t *testing.T) {
+	root := t.TempDir()
+	content := make([]byte, duplicates.DefaultMinSize)
+	for _, name := range []string{"first.bin", "second.bin"} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), content, 0644))
+	}
+	missing := filepath.Join(root, "missing")
+	previousDryRun, err := duplicatesCleanCmd.Flags().GetBool("dry-run")
+	require.NoError(t, err)
+	require.NoError(t, duplicatesCleanCmd.Flags().Set("dry-run", "true"))
+	t.Cleanup(func() {
+		value := "false"
+		if previousDryRun {
+			value = "true"
+		}
+		_ = duplicatesCleanCmd.Flags().Set("dry-run", value)
+	})
+
+	var commandErr error
+	output := captureStdout(t, func() {
+		commandErr = duplicatesCleanCmd.RunE(duplicatesCleanCmd, []string{root, missing})
+	})
+
+	assert.Contains(t, output, "Scan incomplete")
+	assert.Contains(t, output, "Refusing cleanup")
+	assert.NotContains(t, output, "Would remove")
+	require.Error(t, commandErr)
+	assert.Contains(t, commandErr.Error(), "cleanup refused")
+}
+
+func TestScanAllCategoriesReportsPartialFailures(t *testing.T) {
+	root := t.TempDir()
+	workingPath := filepath.Join(root, "working")
+	brokenPath := filepath.Join(root, "broken")
+	require.NoError(t, os.Mkdir(workingPath, 0700))
+	require.NoError(t, os.Mkdir(brokenPath, 0700))
+	s := scanner.NewScannerWithFs(config.DefaultConfig(), failingStatFS{path: brokenPath})
+	categories := []config.Category{
+		{Name: "Working Cache", Paths: []string{workingPath}},
+		{Name: "Broken Cache", Paths: []string{brokenPath}},
+	}
+
+	output := captureStdout(t, func() {
+		_, _, _, err := scanAllCategories(s, categories)
+		require.NoError(t, err)
+	})
+
+	assert.Contains(t, output, "Partial scan: 1 category failed")
+	assert.Contains(t, output, "Broken Cache")
+	assert.Contains(t, output, "injected stat failure")
+}
+
+type failingStatFS struct {
+	path string
+}
+
+func (fs failingStatFS) Stat(path string) (os.FileInfo, error) {
+	if filepath.Clean(path) == filepath.Clean(fs.path) {
+		return nil, errors.New("injected stat failure")
+	}
+	return os.Stat(path)
+}
+
+func (fs failingStatFS) Walk(string, filepath.WalkFunc) error { return nil }
+
+func (fs failingStatFS) ReadDir(string) ([]os.FileInfo, error) { return nil, nil }
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(content), 0700))
+}
+
+func captureStdout(t *testing.T, run func()) string {
+	t.Helper()
+	previous := os.Stdout
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = writer
+	defer func() { os.Stdout = previous }()
+
+	run()
+	require.NoError(t, writer.Close())
+	output, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	return string(output)
 }
 
 func TestListCategoriesOutputsRiskAndSelectionScope(t *testing.T) {

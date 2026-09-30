@@ -8,7 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+
+	"github.com/Nomadcxx/moonbit/internal/paths"
+	"github.com/Nomadcxx/moonbit/internal/validation"
 )
 
 // FileInfo represents a file with metadata
@@ -17,6 +21,7 @@ type FileInfo struct {
 	Size    int64
 	Hash    string
 	ModTime int64
+	FileID  string
 }
 
 // DuplicateGroup represents a group of duplicate files
@@ -33,7 +38,7 @@ type ScanOptions struct {
 	MinSize        int64 // Minimum file size to consider (default: 1KB)
 	MaxSize        int64 // Maximum file size to consider (0 = unlimited)
 	IgnorePatterns []string
-	MaxDepth       int
+	MaxDepth       int // Relative path depth: root is 0; directories at the limit are not traversed.
 }
 
 // ScanProgress reports scanning progress
@@ -51,6 +56,8 @@ type ScanResult struct {
 	WastedSpace        int64
 	FilesScanned       int
 	DirectoriesScanned int
+	Incomplete         bool
+	ScanErrors         []string
 }
 
 // Constants for duplicate scanning
@@ -82,7 +89,7 @@ func NewScanner(opts ScanOptions) *Scanner {
 	if opts.MinSize == 0 {
 		opts.MinSize = DefaultMinSize
 	}
-	if opts.MaxDepth == 0 {
+	if opts.MaxDepth <= 0 {
 		opts.MaxDepth = DefaultMaxDepth
 	}
 	return &Scanner{opts: opts}
@@ -99,15 +106,23 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 	filesScanned := 0
 	bytesScanned := int64(0)
 	dirsScanned := 0
+	var scanErrors []string
 
 	for _, rootPath := range s.opts.Paths {
-		err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
+				scanErrors = append(scanErrors, fmt.Sprintf("%s: %v", path, err))
 				return nil // Skip errors, continue scanning
 			}
 
 			if info.IsDir() {
 				dirsScanned++
+				if path != rootPath && pathDepth(rootPath, path) >= s.opts.MaxDepth {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !info.Mode().IsRegular() {
 				return nil
 			}
 
@@ -130,7 +145,8 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 			fileInfo := FileInfo{
 				Path:    path,
 				Size:    info.Size(),
-				ModTime: info.ModTime().Unix(),
+				ModTime: info.ModTime().UnixNano(),
+				FileID:  paths.FileID(info),
 			}
 
 			sizeMap[info.Size()] = append(sizeMap[info.Size()], fileInfo)
@@ -148,10 +164,6 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 
 			return nil
 		})
-
-		if err != nil {
-			return nil, fmt.Errorf("walk error: %w", err)
-		}
 	}
 
 	// Phase 2: Hash files with duplicate sizes
@@ -168,9 +180,13 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 		files []FileInfo
 		size  int64
 	}
+	type hashResult struct {
+		groups map[string][]FileInfo
+		errors []string
+	}
 
 	jobs := make(chan hashJob, 100)
-	results := make(chan map[string][]FileInfo, 100)
+	results := make(chan hashResult, 100)
 	var wg sync.WaitGroup
 
 	// Start worker goroutines for parallel hashing
@@ -179,7 +195,7 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			localHashMap := make(map[string][]FileInfo)
+			localResult := hashResult{groups: make(map[string][]FileInfo)}
 
 			for job := range jobs {
 				if len(job.files) < 2 {
@@ -189,15 +205,16 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 				for _, file := range job.files {
 					hash, err := hashFile(file.Path)
 					if err != nil {
+						localResult.errors = append(localResult.errors, fmt.Sprintf("%s: %v", file.Path, err))
 						continue // Skip files we can't hash
 					}
 
 					file.Hash = hash
-					localHashMap[hash] = append(localHashMap[hash], file)
+					localResult.groups[hash] = append(localResult.groups[hash], file)
 				}
 			}
 
-			results <- localHashMap
+			results <- localResult
 		}()
 	}
 
@@ -219,10 +236,11 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 	}()
 
 	// Merge results
-	for localMap := range results {
-		for hash, files := range localMap {
+	for localResult := range results {
+		for hash, files := range localResult.groups {
 			hashMap[hash] = append(hashMap[hash], files...)
 		}
+		scanErrors = append(scanErrors, localResult.errors...)
 		hashCount++
 		progressCh <- ScanProgress{
 			FilesScanned: filesScanned,
@@ -263,6 +281,7 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 	sort.Slice(groups, func(i, j int) bool {
 		return groups[i].TotalSize > groups[j].TotalSize
 	})
+	sort.Strings(scanErrors)
 
 	return &ScanResult{
 		Groups:             groups,
@@ -270,17 +289,31 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 		WastedSpace:        wastedSpace,
 		FilesScanned:       filesScanned,
 		DirectoriesScanned: dirsScanned,
+		Incomplete:         len(scanErrors) > 0,
+		ScanErrors:         scanErrors,
 	}, nil
+}
+
+func pathDepth(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(os.PathSeparator)) + 1
 }
 
 // hashFile computes SHA256 hash of a file
 func hashFile(path string) (string, error) {
-	file, err := os.Open(path)
+	file, err := paths.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
+	return hashOpenFile(file)
+}
+
+func hashOpenFile(file io.Reader) (string, error) {
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
@@ -289,23 +322,67 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// RemoveDuplicates removes selected duplicate files
-func RemoveDuplicates(filesToRemove []string) (int, int64, []string) {
+func matchesScannedIdentity(info os.FileInfo, expected FileInfo) error {
+	if !info.Mode().IsRegular() || paths.FileID(info) != expected.FileID ||
+		info.Size() != expected.Size || info.ModTime().UnixNano() != expected.ModTime {
+		return fmt.Errorf("file changed since duplicate scan")
+	}
+	return nil
+}
+
+// RemoveDuplicates removes selected duplicate files that still match their scan records.
+func RemoveDuplicates(filesToRemove []FileInfo) (int, int64, []string) {
 	removed := 0
 	freedSpace := int64(0)
-	var errors []string
+	var removeErrors []string
 
-	for _, path := range filesToRemove {
-		info, err := os.Stat(path)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", path, err))
+	for _, expected := range filesToRemove {
+		if err := validation.ValidateFilePath(expected.Path); err != nil {
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", expected.Path, err))
+			continue
+		}
+		if expected.FileID == "" || expected.Hash == "" {
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: missing scan identity", expected.Path))
 			continue
 		}
 
+		file, err := paths.OpenFile(expected.Path, os.O_RDONLY, 0)
+		if err != nil {
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", expected.Path, err))
+			continue
+		}
+		info, err := file.Stat()
+		if err != nil {
+			file.Close()
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: failed to stat file: %v", expected.Path, err))
+			continue
+		}
+		if err := matchesScannedIdentity(info, expected); err != nil {
+			file.Close()
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", expected.Path, err))
+			continue
+		}
+		hash, err := hashOpenFile(file)
+		if err != nil {
+			file.Close()
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: failed to hash file: %v", expected.Path, err))
+			continue
+		}
+		if hash != expected.Hash {
+			file.Close()
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: file contents changed since duplicate scan", expected.Path))
+			continue
+		}
+		if err := file.Close(); err != nil {
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: failed to close file: %v", expected.Path, err))
+			continue
+		}
 		size := info.Size()
 
-		if err := os.Remove(path); err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", path, err))
+		if err := paths.RemoveIf(expected.Path, func(info os.FileInfo) error {
+			return matchesScannedIdentity(info, expected)
+		}); err != nil {
+			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", expected.Path, err))
 			continue
 		}
 
@@ -313,5 +390,5 @@ func RemoveDuplicates(filesToRemove []string) (int, int64, []string) {
 		freedSpace += size
 	}
 
-	return removed, freedSpace, errors
+	return removed, freedSpace, removeErrors
 }
