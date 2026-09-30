@@ -334,6 +334,7 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 	var totalSize uint64
 	var totalFiles int
 	var categoriesScanned int
+	var failedCategories []string
 	var scanResults config.Category
 	scanResults.Name = "Total Cleanable"
 	scanResults.Files = []config.FileInfo{}
@@ -351,6 +352,7 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 		categoryDuration := time.Since(categoryStarted)
 		if err != nil {
 			fmt.Printf("  Error: %v\n", err)
+			failedCategories = append(failedCategories, fmt.Sprintf("%s: %v", category.Name, err))
 			continue
 		}
 
@@ -373,7 +375,18 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 	}
 
 	fmt.Println(formatScanSummary(categoriesScanned, totalFiles, totalSize, time.Since(started)))
+	if len(failedCategories) > 0 {
+		fmt.Println(formatScanFailureSummary(failedCategories))
+	}
 	return totalSize, totalFiles, scanResults, nil
+}
+
+func formatScanFailureSummary(failures []string) string {
+	unit := "categories"
+	if len(failures) == 1 {
+		unit = "category"
+	}
+	return fmt.Sprintf("Partial scan: %d %s failed: %s", len(failures), unit, strings.Join(failures, "; "))
 }
 
 func formatScanCategoryResult(files int, size uint64, duration time.Duration) string {
@@ -451,6 +464,24 @@ func saveScanResults(totalSize uint64, totalFiles int, scanResults config.Catego
 
 	fmt.Printf("Saved scan cache: %s\n", sessionMgr.Path())
 	return nil
+}
+
+func commandLine(command string, args ...string) string {
+	if len(args) == 0 {
+		return command
+	}
+	return command + " " + strings.Join(args, " ")
+}
+
+func cleanFileActionCounts(files []config.FileInfo) (deleted, truncated int) {
+	for _, file := range files {
+		if file.CategoryAction == config.ActionTruncate {
+			truncated++
+		} else {
+			deleted++
+		}
+	}
+	return deleted, truncated
 }
 
 // displayScanResults shows the final scan results summary
@@ -534,12 +565,20 @@ func CleanSession(dryRun bool) error {
 	ctx := context.Background()
 
 	if dryRun {
-		fmt.Printf("DRY RUN - Would delete %d files (%s)\n",
-			cache.TotalFiles, utils.HumanizeBytes(cache.TotalSize))
+		deleted, truncated := cleanFileActionCounts(cache.ScanResults.Files)
+		deletedLabel, truncatedLabel := "files", "files"
+		if deleted == 1 {
+			deletedLabel = "file"
+		}
+		if truncated == 1 {
+			truncatedLabel = "file"
+		}
+		fmt.Printf("DRY RUN - Would delete %d %s and truncate %d %s (%s)\n",
+			deleted, deletedLabel, truncated, truncatedLabel, utils.HumanizeBytes(cache.TotalSize))
 
 		// Show preview of what would be cleaned
 		if cache.ScanResults != nil && len(cache.ScanResults.Files) > 0 {
-			fmt.Println("\n📋 Files that would be deleted:")
+			fmt.Println("\n📋 Files that would be cleaned:")
 			for i, file := range cache.ScanResults.Files {
 				if i >= 10 { // Limit preview
 					fmt.Printf("   ... and %d more files\n", len(cache.ScanResults.Files)-10)
@@ -564,6 +603,7 @@ func CleanSession(dryRun bool) error {
 
 	var deletedBytes uint64
 	var deletedFiles int
+	var truncatedFiles int
 	var errors []string
 
 	// Process cleaning messages
@@ -580,6 +620,7 @@ func CleanSession(dryRun bool) error {
 
 		if msg.Complete != nil {
 			deletedFiles = msg.Complete.FilesDeleted
+			truncatedFiles = msg.Complete.FilesTruncated
 			deletedBytes = msg.Complete.BytesFreed
 			errors = msg.Complete.Errors
 
@@ -598,6 +639,7 @@ func CleanSession(dryRun bool) error {
 	fmt.Println(S.Header("Cleaning Complete"))
 	fmt.Println(S.Separator())
 	fmt.Printf("  %s %d\n", S.Bold("Files deleted:"), deletedFiles)
+	fmt.Printf("  %s %d\n", S.Bold("Files truncated:"), truncatedFiles)
 	fmt.Printf("  %s %s\n", S.Bold("Space freed:"), S.Success(utils.HumanizeBytes(deletedBytes)))
 
 	if len(errors) > 0 {
@@ -1001,9 +1043,10 @@ var dockerImagesCmd = &cobra.Command{
 		dfCmd.Stderr = os.Stderr
 		dfCmd.Run()
 
-		fmt.Println("\n🗑️  Running: docker image prune -a")
+		pruneArgs := []string{"image", "prune", "-a", "-f"}
+		fmt.Printf("\n🗑️  Running: %s\n", commandLine("docker", pruneArgs...))
 
-		pruneCmd := exec.Command("docker", "image", "prune", "-a", "-f")
+		pruneCmd := exec.Command("docker", pruneArgs...)
 		pruneCmd.Stdout = os.Stdout
 		pruneCmd.Stderr = os.Stderr
 
@@ -1013,7 +1056,7 @@ var dockerImagesCmd = &cobra.Command{
 			if err != nil {
 				result = "failed"
 			}
-			auditLog.LogDockerOperation("prune_images", []string{"-a", "-f"}, result, err)
+			auditLog.LogDockerOperation("prune_images", pruneArgs, result, err)
 		}
 
 		if err != nil {
@@ -1051,9 +1094,10 @@ var dockerAllCmd = &cobra.Command{
 		dfCmd.Stderr = os.Stderr
 		dfCmd.Run()
 
-		fmt.Println("\n🗑️  Running: docker system prune -a --volumes")
+		pruneArgs := []string{"system", "prune", "-a", "--volumes", "-f"}
+		fmt.Printf("\n🗑️  Running: %s\n", commandLine("docker", pruneArgs...))
 
-		pruneCmd := exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
+		pruneCmd := exec.Command("docker", pruneArgs...)
 		pruneCmd.Stdout = os.Stdout
 		pruneCmd.Stderr = os.Stderr
 
@@ -1063,7 +1107,7 @@ var dockerAllCmd = &cobra.Command{
 			if err != nil {
 				result = "failed"
 			}
-			auditLog.LogDockerOperation("prune_all", []string{"-a", "--volumes", "-f"}, result, err)
+			auditLog.LogDockerOperation("prune_all", pruneArgs, result, err)
 		}
 
 		if err != nil {
@@ -1085,6 +1129,17 @@ var duplicatesCmd = &cobra.Command{
 	Use:   "duplicates",
 	Short: "Find and remove duplicate files",
 	Long:  "Scan for duplicate files based on content hashing and optionally remove them",
+}
+
+func printDuplicateScanErrors(result *duplicates.ScanResult) bool {
+	if !result.Incomplete {
+		return false
+	}
+	fmt.Printf("\n⚠️ Scan incomplete; results may omit files (%d issue(s)):\n", len(result.ScanErrors))
+	for _, scanErr := range result.ScanErrors {
+		fmt.Printf("  %s\n", scanErr)
+	}
+	return true
 }
 
 var duplicatesFindCmd = &cobra.Command{
@@ -1115,9 +1170,11 @@ var duplicatesFindCmd = &cobra.Command{
 
 		scanner := duplicates.NewScanner(opts)
 		progressCh := make(chan duplicates.ScanProgress, 10)
+		progressDone := make(chan struct{})
 
 		// Show progress
 		go func() {
+			defer close(progressDone)
 			for progress := range progressCh {
 				if progress.Phase != "" {
 					fmt.Printf("\r%s - %d files scanned (%s)",
@@ -1129,10 +1186,12 @@ var duplicatesFindCmd = &cobra.Command{
 		}()
 
 		result, err := scanner.Scan(progressCh)
+		<-progressDone
 		if err != nil {
 			fmt.Printf("\n❌ Error: %v\n", err)
 			return
 		}
+		printDuplicateScanErrors(result)
 
 		fmt.Printf("\n\n📊 Scan Results\n")
 		fmt.Println("================")
@@ -1142,7 +1201,11 @@ var duplicatesFindCmd = &cobra.Command{
 		fmt.Printf("Wasted space: %s\n\n", utils.HumanizeBytes(uint64(result.WastedSpace)))
 
 		if len(result.Groups) == 0 {
-			fmt.Println("No duplicate files found.")
+			if result.Incomplete {
+				fmt.Println("No duplicates found in scanned paths.")
+			} else {
+				fmt.Println("No duplicate files found.")
+			}
 			return
 		}
 
@@ -1179,13 +1242,12 @@ var duplicatesCleanCmd = &cobra.Command{
 	Use:   "clean [paths...]",
 	Short: "Remove duplicate files (interactive)",
 	Long:  "Interactively scan and remove duplicate files. Scans specified paths (or home directory) and allows you to select which duplicates to remove.",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		paths := args
 		if len(paths) == 0 {
 			homeDir, err := os.UserHomeDir()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to get home directory: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("failed to get home directory: %w", err)
 			}
 			paths = []string{homeDir}
 		}
@@ -1209,9 +1271,11 @@ var duplicatesCleanCmd = &cobra.Command{
 
 		scanner := duplicates.NewScanner(opts)
 		progressCh := make(chan duplicates.ScanProgress, 10)
+		progressDone := make(chan struct{})
 
 		// Show progress
 		go func() {
+			defer close(progressDone)
 			for progress := range progressCh {
 				if progress.Phase != "" {
 					fmt.Printf("\r%s - %d files scanned (%s)",
@@ -1223,9 +1287,15 @@ var duplicatesCleanCmd = &cobra.Command{
 		}()
 
 		result, err := scanner.Scan(progressCh)
+		<-progressDone
 		if err != nil {
-			fmt.Printf("\n%s Error: %v\n", S.Error("❌"), err)
-			os.Exit(1)
+			return fmt.Errorf("scan duplicates: %w", err)
+		}
+		if printDuplicateScanErrors(result) {
+			// An unreadable subtree could contain the oldest copy; partial scans
+			// cannot safely honor the keep-oldest rule.
+			fmt.Println(S.Error("Refusing cleanup because the duplicate scan is incomplete."))
+			return fmt.Errorf("duplicate scan is incomplete; cleanup refused")
 		}
 
 		fmt.Printf("\n\n%s\n", S.Header("📊 Scan Results"))
@@ -1237,14 +1307,14 @@ var duplicatesCleanCmd = &cobra.Command{
 
 		if len(result.Groups) == 0 {
 			fmt.Println(S.Success("✅ No duplicate files found."))
-			return
+			return nil
 		}
 
 		// Interactive selection
 		fmt.Println(S.Info("💡 For each duplicate group, the oldest file will be kept."))
 		fmt.Println(S.Info("   All other duplicates in the group will be removed.\n"))
 
-		var filesToRemove []string
+		var filesToRemove []duplicates.FileInfo
 		totalSpaceToFree := int64(0)
 
 		for i, group := range result.Groups {
@@ -1257,14 +1327,14 @@ var duplicatesCleanCmd = &cobra.Command{
 				utils.HumanizeBytes(uint64(group.TotalSize)))
 
 			// Show files (oldest first, keep first one)
-			groupFilesToRemove := []string{}
+			groupFilesToRemove := []duplicates.FileInfo{}
 			groupSpaceToFree := int64(0)
 			for j, file := range group.Files {
 				if j == 0 {
 					fmt.Printf("  %s %s %s\n", S.Success("✓ KEEP"), S.Muted("(oldest)"), file.Path)
 				} else {
 					fmt.Printf("  %s %s\n", S.Error("✗ REMOVE"), file.Path)
-					groupFilesToRemove = append(groupFilesToRemove, file.Path)
+					groupFilesToRemove = append(groupFilesToRemove, file)
 					groupSpaceToFree += file.Size
 				}
 			}
@@ -1288,7 +1358,7 @@ var duplicatesCleanCmd = &cobra.Command{
 
 		if len(filesToRemove) == 0 {
 			fmt.Println(S.Info("\n💡 No files selected for removal."))
-			return
+			return nil
 		}
 
 		// Final confirmation
@@ -1303,7 +1373,7 @@ var duplicatesCleanCmd = &cobra.Command{
 				len(filesToRemove),
 				utils.HumanizeBytes(uint64(totalSpaceToFree)))
 			fmt.Println(S.Info("   Run without --dry-run to actually delete files."))
-			return
+			return nil
 		}
 
 		fmt.Printf("\n%s Remove %d duplicate file(s)? [y/N]: ", S.Error("⚠️"), len(filesToRemove))
@@ -1312,22 +1382,23 @@ var duplicatesCleanCmd = &cobra.Command{
 
 		if strings.ToLower(finalResponse) != "y" && strings.ToLower(finalResponse) != "yes" {
 			fmt.Println(S.Muted("Cancelled. No files were removed."))
-			return
+			return nil
 		}
 
-		// Validate paths before deletion
-		var validatedPaths []string
-		for _, path := range filesToRemove {
-			if err := validation.ValidateFilePath(path); err != nil {
-				fmt.Printf("%s Skipping invalid path: %s (%v)\n", S.Warning("⚠️"), path, err)
+		// Keep this preflight for per-path user feedback; RemoveDuplicates repeats
+		// validation at the destructive-operation boundary.
+		var validatedPaths []duplicates.FileInfo
+		for _, file := range filesToRemove {
+			if err := validation.ValidateFilePath(file.Path); err != nil {
+				fmt.Printf("%s Skipping invalid path: %s (%v)\n", S.Warning("⚠️"), file.Path, err)
 				continue
 			}
-			validatedPaths = append(validatedPaths, path)
+			validatedPaths = append(validatedPaths, file)
 		}
 
 		if len(validatedPaths) == 0 {
 			fmt.Println(S.Error("❌ No valid paths to remove after validation."))
-			return
+			return fmt.Errorf("no valid duplicate paths to remove")
 		}
 
 		if len(validatedPaths) < len(filesToRemove) {
@@ -1353,7 +1424,9 @@ var duplicatesCleanCmd = &cobra.Command{
 
 		if removed < len(validatedPaths) {
 			fmt.Printf("%s %d file(s) could not be removed\n", S.Warning("⚠️"), len(validatedPaths)-removed)
+			return fmt.Errorf("removed %d of %d selected duplicate files", removed, len(validatedPaths))
 		}
+		return nil
 	},
 }
 
@@ -1367,7 +1440,7 @@ var pkgOrphansCmd = &cobra.Command{
 	Use:   "orphans",
 	Short: "Find and remove orphaned packages",
 	Long:  "Detect and remove packages that were installed as dependencies but are no longer needed",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		if !dryRun && !isRunningAsRoot() {
@@ -1375,10 +1448,10 @@ var pkgOrphansCmd = &cobra.Command{
 			fmt.Println("")
 			fmt.Println("Please run with sudo:")
 			fmt.Println("  sudo moonbit pkg orphans --force")
-			os.Exit(1)
+			return fmt.Errorf("removing orphaned packages requires root access")
 		}
 
-		removeOrphanedPackages(dryRun)
+		return removeOrphanedPackages(dryRun)
 	},
 }
 
@@ -1401,7 +1474,7 @@ var pkgKernelsCmd = &cobra.Command{
 	},
 }
 
-func removeOrphanedPackages(dryRun bool) {
+func removeOrphanedPackages(dryRun bool) error {
 	fmt.Println("🧹 Searching for orphaned packages...")
 
 	auditLog, err := audit.NewLogger()
@@ -1411,39 +1484,50 @@ func removeOrphanedPackages(dryRun bool) {
 		defer auditLog.Close()
 	}
 
-	var listCmd, removeCmd *exec.Cmd
+	var listCmd *exec.Cmd
+	var listedPackages []byte
+	var removeArgs []string
 
 	if _, err := exec.LookPath("pacman"); err == nil {
 		fmt.Println("📦 Detected: Pacman (Arch/Manjaro)")
-		listCmd = exec.Command("pacman", "-Qtdq")
-		if !dryRun {
-			output, err := exec.Command("pacman", "-Qtdq").Output()
-			if err != nil || len(strings.Fields(string(output))) == 0 {
-				fmt.Println("\n✅ No orphaned packages found")
+		output, err := exec.Command("pacman", "-Qtdq").Output()
+		orphans := strings.Fields(string(output))
+		if err != nil && len(orphans) == 0 {
+			// pacman returns a nonzero status for an empty -Qtdq result. Confirm the
+			// package database is readable before treating that as no orphans.
+			_, verifyErr := exec.Command("pacman", "-Qq").Output()
+			if verifyErr != nil {
+				fmt.Printf("\n❌ Failed to list orphaned packages: %v\n", err)
 				if auditLog != nil {
-					auditLog.LogPackageOperation("remove_orphans", []string{}, "success", nil)
+					auditLog.LogPackageOperation("remove_orphans", []string{"pacman", "-Qtdq"}, "failed", err)
 				}
-				return
+				return fmt.Errorf("pacman -Qtdq failed: %w", err)
 			}
-			orphans := strings.Fields(string(output))
-			fmt.Printf("\n🗑️  Running: sudo pacman -Rns %s\n", strings.Join(orphans, " "))
-			removeArgs := append([]string{"pacman", "-Rns"}, orphans...)
-			removeCmd = exec.Command("sudo", removeArgs...)
 		}
+		if err != nil && len(orphans) > 0 {
+			fmt.Printf("\n❌ Failed to list orphaned packages: %v\n", err)
+			if auditLog != nil {
+				auditLog.LogPackageOperation("remove_orphans", []string{"pacman", "-Qtdq"}, "failed", err)
+			}
+			return fmt.Errorf("pacman -Qtdq failed: %w", err)
+		}
+		if len(orphans) == 0 {
+			fmt.Println("\n✅ No orphaned packages found")
+			if auditLog != nil {
+				auditLog.LogPackageOperation("remove_orphans", []string{}, "success", nil)
+			}
+			return nil
+		}
+		listedPackages = []byte(strings.Join(orphans, "\n") + "\n")
+		removeArgs = append([]string{"pacman", "-Rns"}, orphans...)
 	} else if _, err := exec.LookPath("apt"); err == nil {
 		fmt.Println("📦 Detected: APT (Debian/Ubuntu)")
 		listCmd = exec.Command("apt-mark", "showauto")
-		if !dryRun {
-			fmt.Println("\n🗑️  Running: sudo apt autoremove")
-			removeCmd = exec.Command("sudo", "apt", "autoremove", "-y")
-		}
+		removeArgs = []string{"apt", "autoremove", "-y"}
 	} else if _, err := exec.LookPath("dnf"); err == nil {
 		fmt.Println("📦 Detected: DNF (Fedora/RHEL)")
 		listCmd = exec.Command("dnf", "repoquery", "--extras")
-		if !dryRun {
-			fmt.Println("\n🗑️  Running: sudo dnf autoremove")
-			removeCmd = exec.Command("sudo", "dnf", "autoremove", "-y")
-		}
+		removeArgs = []string{"dnf", "autoremove", "-y"}
 	} else if _, err := exec.LookPath("zypper"); err == nil {
 		fmt.Println("📦 Detected: Zypper (openSUSE)")
 		listCmd = exec.Command("zypper", "packages", "--orphaned")
@@ -1453,7 +1537,7 @@ func removeOrphanedPackages(dryRun bool) {
 			if auditLog != nil {
 				auditLog.LogPackageOperation("remove_orphans", []string{}, "failed", fmt.Errorf("automatic zypper orphan removal not implemented"))
 			}
-			return
+			return fmt.Errorf("automatic zypper orphan removal is not implemented")
 		}
 	} else {
 		fmt.Println("❌ No supported package manager found")
@@ -1461,28 +1545,42 @@ func removeOrphanedPackages(dryRun bool) {
 		if auditLog != nil {
 			auditLog.LogPackageOperation("remove_orphans", []string{}, "failed", fmt.Errorf("no supported package manager"))
 		}
-		return
+		return fmt.Errorf("no supported package manager found")
 	}
 
-	if listCmd != nil {
+	if listCmd != nil || len(listedPackages) > 0 {
 		fmt.Println("\n📋 Orphaned packages:")
-		listCmd.Stdout = os.Stdout
-		listCmd.Stderr = os.Stderr
-		if err := listCmd.Run(); err != nil {
-			fmt.Printf("\n⚠️  Could not list orphaned packages (this is normal if there are none)\n")
+		if listedPackages != nil {
+			fmt.Print(string(listedPackages))
+		} else {
+			listCmd.Stdout = os.Stdout
+			listCmd.Stderr = os.Stderr
+			if err := listCmd.Run(); err != nil {
+				fmt.Printf("\n❌ Failed to list orphaned packages: %v\n", err)
+				if auditLog != nil {
+					auditLog.LogPackageOperation("remove_orphans", removeArgs, "failed", err)
+				}
+				return fmt.Errorf("list orphaned packages: %w", err)
+			}
 		}
 	}
 
 	if dryRun {
-		fmt.Println("\n💡 Dry-run mode: no packages removed")
+		if len(removeArgs) > 0 {
+			fmt.Printf("\nDRY RUN - would run: %s\n", commandLine("sudo", removeArgs...))
+		} else {
+			fmt.Println("\nAutomatic zypper orphan removal is not implemented; no removal command will run.")
+		}
 		fmt.Println("   Run with --force to actually remove orphaned packages")
 		if auditLog != nil {
-			auditLog.LogPackageOperation("remove_orphans", []string{}, "dry-run", nil)
+			auditLog.LogPackageOperation("remove_orphans", removeArgs, "dry-run", nil)
 		}
-		return
+		return nil
 	}
 
-	if removeCmd != nil {
+	if len(removeArgs) > 0 {
+		fmt.Printf("\n🗑️  Running: %s\n", commandLine("sudo", removeArgs...))
+		removeCmd := exec.Command("sudo", removeArgs...)
 		removeCmd.Stdout = os.Stdout
 		removeCmd.Stderr = os.Stderr
 		cmdErr := removeCmd.Run()
@@ -1492,19 +1590,21 @@ func removeOrphanedPackages(dryRun bool) {
 			if cmdErr != nil {
 				result = "failed"
 			}
-			auditLog.LogPackageOperation("remove_orphans", []string{}, result, cmdErr)
+			auditLog.LogPackageOperation("remove_orphans", removeArgs, result, cmdErr)
 		}
 
 		if cmdErr != nil {
 			fmt.Printf("❌ Failed to remove orphaned packages: %v\n", cmdErr)
-			return
+			return fmt.Errorf("remove orphaned packages: %w", cmdErr)
 		}
 		fmt.Println("\nOrphaned packages removed successfully!")
 	}
+	return nil
 }
 
 func removeOldKernels(dryRun bool) {
 	fmt.Println("🧹 Checking for old kernel versions...")
+	removeArgs := []string{"apt", "autoremove", "-y"}
 
 	// Check if this is a Debian/Ubuntu system
 	if _, err := exec.LookPath("apt"); err != nil {
@@ -1550,16 +1650,16 @@ func removeOldKernels(dryRun bool) {
 	}
 
 	if dryRun {
-		fmt.Println("\n💡 Dry-run mode: run 'sudo apt autoremove' to remove old kernels")
+		fmt.Printf("\nDRY RUN - would run: %s\n", commandLine("sudo", removeArgs...))
 		fmt.Println("   This will keep your current kernel and one previous version")
 		fmt.Println("   Use --force to automatically run the command")
 		return
 	}
 
-	fmt.Println("\n🗑️  Running: sudo apt autoremove")
+	fmt.Printf("\n🗑️  Running: %s\n", commandLine("sudo", removeArgs...))
 	fmt.Println("   This will remove old kernels while keeping current + one previous")
 
-	autoremoveCmd := exec.Command("sudo", "apt", "autoremove", "-y")
+	autoremoveCmd := exec.Command("sudo", removeArgs...)
 	autoremoveCmd.Stdout = os.Stdout
 	autoremoveCmd.Stderr = os.Stderr
 
