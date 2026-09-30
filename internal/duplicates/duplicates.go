@@ -109,7 +109,7 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 	var scanErrors []string
 
 	for _, rootPath := range s.opts.Paths {
-		filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		walkErr := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				scanErrors = append(scanErrors, fmt.Sprintf("%s: %v", path, err))
 				return nil // Skip errors, continue scanning
@@ -164,6 +164,9 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 
 			return nil
 		})
+		if walkErr != nil {
+			scanErrors = append(scanErrors, fmt.Sprintf("%s: %v", rootPath, walkErr))
+		}
 	}
 
 	// Phase 2: Hash files with duplicate sizes
