@@ -2,6 +2,8 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +13,40 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAddFileToStatsStoresFileID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.tmp")
+	require.NoError(t, os.WriteFile(path, []byte("cache"), 0600))
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+
+	category := &config.Category{Name: "Test Cache"}
+	addFileToStats(category, path, info, make(map[string]struct{}))
+	require.Len(t, category.Files, 1)
+
+	data, err := json.Marshal(category.Files[0])
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(data, &got))
+	fileID, ok := got["file_id"].(string)
+	if !ok || fileID == "" {
+		t.Fatal("scan result must persist the file identity for mutation checks")
+	}
+}
+
+func TestAddFileToStatsPreservesSubsecondModTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.tmp")
+	require.NoError(t, os.WriteFile(path, []byte("cache"), 0600))
+	mtime := time.Date(2026, 9, 29, 10, 11, 12, 345678900, time.Local)
+	require.NoError(t, os.Chtimes(path, mtime, mtime))
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+
+	category := &config.Category{Name: "Test Cache"}
+	addFileToStats(category, path, info, make(map[string]struct{}))
+	require.Len(t, category.Files, 1)
+	assert.Equal(t, info.ModTime().Format(time.RFC3339Nano), category.Files[0].ModTime)
+}
 
 func TestNewScanner(t *testing.T) {
 	cfg := &config.Config{
@@ -22,16 +58,14 @@ func TestNewScanner(t *testing.T) {
 			WorkerCount    int      `toml:"worker_count"`
 		}{
 			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
-			WorkerCount:    4, // Explicit worker count for test determinism
+			WorkerCount:    4, // Retained legacy TOML setting.
 		},
 	}
 
 	s := NewScanner(cfg)
 
 	assert.NotNil(t, s)
-	assert.Equal(t, cfg, s.cfg)
 	assert.NotNil(t, s.filter)
-	assert.Equal(t, 4, s.workers)
 }
 
 func TestExpandPathPattern(t *testing.T) {
@@ -222,6 +256,37 @@ func TestScanCategoryIncludesSingleFilePath(t *testing.T) {
 	assert.Equal(t, testFile, complete.Stats.Files[0].Path)
 }
 
+func TestScanCategoryAppliesIgnoreRulesToSingleFileRoot(t *testing.T) {
+	home := t.TempDir()
+	ignoredDir := filepath.Join(home, "node_modules")
+	if err := os.MkdirAll(ignoredDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	testFile := filepath.Join(ignoredDir, "cache.tmp")
+	if err := os.WriteFile(testFile, []byte("cache"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Scan.IgnorePatterns = []string{"node_modules"}
+	s := NewScanner(cfg)
+	category := &config.Category{Name: "Test Cache", Paths: []string{testFile}}
+	progressCh := make(chan ScanMsg, 4)
+	go s.ScanCategory(context.Background(), category, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		if msg.Error != nil {
+			t.Fatal(msg.Error)
+		}
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+	require.NotNil(t, complete)
+	assert.Empty(t, complete.Stats.Files)
+}
+
 func TestScanCategoryRecordsFileCategoryProvenance(t *testing.T) {
 	tempDir := t.TempDir()
 	testFile := filepath.Join(tempDir, "cache.bin")
@@ -266,6 +331,54 @@ func TestScanCategoryRecordsFileCategoryProvenance(t *testing.T) {
 	assert.Equal(t, "Cursor Cache", complete.Stats.Files[0].CategoryName)
 	assert.Equal(t, config.Low, complete.Stats.Files[0].CategoryRisk)
 	assert.True(t, complete.Stats.Files[0].CategorySelected)
+}
+
+func TestScanCategoryDeduplicatesFilesFromOverlappingPaths(t *testing.T) {
+	tempDir := t.TempDir()
+	testFile := filepath.Join(tempDir, "cache.tmp")
+	require.NoError(t, os.WriteFile(testFile, []byte("cache data"), 0644))
+
+	s := NewScanner(&config.Config{})
+	category := &config.Category{Name: "Cache", Paths: []string{tempDir, testFile}}
+	progressCh := make(chan ScanMsg, 8)
+	s.ScanCategory(context.Background(), category, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		require.NoError(t, msg.Error)
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+	require.NotNil(t, complete)
+	assert.Equal(t, 1, complete.Stats.FileCount)
+	assert.Len(t, complete.Stats.Files, 1)
+	assert.Equal(t, uint64(len("cache data")), complete.Stats.Size)
+}
+
+func BenchmarkScanCategoryCompiledRules(b *testing.B) {
+	tempDir := b.TempDir()
+	for i := 0; i < 256; i++ {
+		path := filepath.Join(tempDir, fmt.Sprintf("cache-%03d.tmp", i))
+		if err := os.WriteFile(path, []byte("cache data"), 0644); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	s := NewScanner(&config.Config{})
+	category := &config.Category{
+		Name:            "Cache",
+		Paths:           []string{tempDir},
+		Filters:         []string{`\.tmp$`, `\.cache$`, `cache-`, `never-match`},
+		ExcludePatterns: []string{`/excluded/`, `never-exclude`},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		progressCh := make(chan ScanMsg, 8)
+		s.ScanCategory(context.Background(), category, progressCh)
+		for range progressCh {
+		}
+	}
 }
 
 func TestAppCacheCategoryExcludesSteamFlatpakCache(t *testing.T) {
@@ -344,6 +457,10 @@ func TestShouldIncludeFile(t *testing.T) {
 
 	// Test 2: Files with no filters should be included
 	assert.True(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, emptyCategory))
+
+	// Invalid filters stay excluded until corrected in the configuration.
+	invalidFilters := &config.Category{Filters: []string{"["}}
+	assert.False(t, s.shouldIncludeFile("/tmp/test.log", fileInfo, invalidFilters))
 
 	// Test 3: Files matching at least one filter should be included (OR logic)
 	categoryWithFilters := &config.Category{Filters: []string{`\.log$`, `\.tmp$`}}
@@ -438,7 +555,6 @@ func TestNewScannerWithFs(t *testing.T) {
 	s := NewScannerWithFs(cfg, fs)
 
 	assert.NotNil(t, s)
-	assert.Equal(t, cfg, s.cfg)
 	assert.Equal(t, fs, s.fs)
 	assert.NotNil(t, s.filter)
 }

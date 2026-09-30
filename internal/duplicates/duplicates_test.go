@@ -3,8 +3,95 @@ package duplicates
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
+
+func scannedFile(t *testing.T, path string) FileInfo {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := hashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return FileInfo{
+		Path: path, Size: info.Size(), Hash: hash, ModTime: info.ModTime().UnixNano(), FileID: paths.FileID(info),
+	}
+}
+
+func TestScanHonorsMaxDepth(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"root.txt":               "root",
+		"one/child.txt":          "child",
+		"one/two/grandchild.txt": "grandchild",
+	}
+	for relative, content := range files {
+		path := filepath.Join(root, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		maxDepth int
+		want     int
+	}{
+		{maxDepth: 1, want: 1},
+		{maxDepth: 2, want: 2},
+	} {
+		scanner := NewScanner(ScanOptions{Paths: []string{root}, MinSize: 1, MaxDepth: tc.maxDepth})
+		progressCh := make(chan ScanProgress, 16)
+		go func() {
+			for range progressCh {
+			}
+		}()
+		result, err := scanner.Scan(progressCh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.FilesScanned != tc.want {
+			t.Fatalf("MaxDepth %d should scan %d files, scanned %d", tc.maxDepth, tc.want, result.FilesScanned)
+		}
+	}
+}
+
+func TestScanReportsIncompleteWhenRootCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "included.txt")
+	if err := os.WriteFile(file, []byte("readable"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "missing")
+	scanner := NewScanner(ScanOptions{Paths: []string{root, missing}, MinSize: 1})
+	progressCh := make(chan ScanProgress, 16)
+	go func() {
+		for range progressCh {
+		}
+	}()
+
+	result, err := scanner.Scan(progressCh)
+	if err != nil {
+		t.Fatalf("expected partial scan result, got error: %v", err)
+	}
+	if result.FilesScanned != 1 {
+		t.Fatalf("expected readable root to be scanned, got %d files", result.FilesScanned)
+	}
+	if !result.Incomplete {
+		t.Fatal("scan with an unreadable root must be marked incomplete")
+	}
+	if len(result.ScanErrors) != 1 || !strings.Contains(result.ScanErrors[0], missing) {
+		t.Fatalf("expected a diagnostic for %q, got %v", missing, result.ScanErrors)
+	}
+}
 
 func TestNewScanner(t *testing.T) {
 	opts := ScanOptions{
@@ -190,7 +277,7 @@ func TestRemoveDuplicates(t *testing.T) {
 	}
 
 	// Remove one duplicate
-	removed, freedSpace, errors := RemoveDuplicates([]string{file2})
+	removed, freedSpace, errors := RemoveDuplicates([]FileInfo{scannedFile(t, file2)})
 
 	if removed != 1 {
 		t.Errorf("Expected 1 file removed, got %d", removed)
@@ -212,6 +299,89 @@ func TestRemoveDuplicates(t *testing.T) {
 	// Verify file1 still exists
 	if _, err := os.Stat(file1); err != nil {
 		t.Error("Expected file1 to still exist")
+	}
+}
+
+func TestRemoveDuplicatesRejectsParentSymlinkSwap(t *testing.T) {
+	base := t.TempDir()
+	allowed := filepath.Join(base, "allowed")
+	original := filepath.Join(base, "allowed.original")
+	outside := filepath.Join(base, "outside")
+	if err := os.Mkdir(allowed, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	scannedPath := filepath.Join(allowed, "target.bin")
+	if err := os.WriteFile(scannedPath, []byte("scanned duplicate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	expected := scannedFile(t, scannedPath)
+	victimPath := filepath.Join(outside, "target.bin")
+	victim := []byte("outside victim")
+	if err := os.WriteFile(victimPath, victim, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(allowed, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, allowed); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	removed, _, errs := RemoveDuplicates([]FileInfo{expected})
+	if removed != 0 || len(errs) != 1 {
+		t.Fatalf("changed path should be rejected, removed=%d errors=%v", removed, errs)
+	}
+	got, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatalf("outside victim was removed: %v", err)
+	}
+	if string(got) != string(victim) {
+		t.Fatalf("outside victim changed: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(original, "target.bin")); err != nil {
+		t.Fatalf("scanned file was removed: %v", err)
+	}
+}
+
+func TestRemoveDuplicatesRejectsInPlaceContentChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duplicate.bin")
+	original := []byte("original content")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	expected := scannedFile(t, path)
+	statBefore, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := []byte("modified content")
+	if err := os.WriteFile(path, changed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, statBefore.ModTime(), statBefore.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	statAfter, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.FileID(statBefore) != paths.FileID(statAfter) || statBefore.Size() != statAfter.Size() {
+		t.Fatal("test mutation must keep the file identity and size unchanged")
+	}
+
+	removed, _, errs := RemoveDuplicates([]FileInfo{expected})
+	if removed != 0 || len(errs) != 1 {
+		t.Fatalf("changed contents should be rejected, removed=%d errors=%v", removed, errs)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("changed file was removed: %v", err)
+	}
+	if string(got) != string(changed) {
+		t.Fatalf("changed file was modified: %q", got)
 	}
 }
 
