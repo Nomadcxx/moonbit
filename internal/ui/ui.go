@@ -14,6 +14,8 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/docker"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
 	"github.com/Nomadcxx/moonbit/internal/utils"
@@ -103,6 +105,7 @@ type Model struct {
 	cleanActive         bool
 	cleanStarted        time.Time
 	cleanError          string
+	cleanWarning        string
 	cleanFilesDeleted   int
 	cleanFilesTruncated int
 	cleanBytesFreed     uint64
@@ -256,6 +259,8 @@ func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
 	m.cleanFilesDeleted = 0
 	m.cleanFilesTruncated = 0
 	m.cleanBytesFreed = 0
+	m.cleanError = ""
+	m.cleanWarning = ""
 	return m, nil
 }
 
@@ -515,7 +520,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 		}
 
 		if len(scanFailures) > 0 && len(scannedCategories) == 0 {
-			return scanCompleteMsg{Success: false, Error: formatScanFailures(scanFailures)}
+			return scanCompleteMsg{Success: false, Error: "All categories failed: " + formatScanFailures(scanFailures)}
 		}
 
 		// Save to cache
@@ -551,7 +556,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 
 		return scanCompleteMsg{
 			Success:    true,
-			Error:      formatScanFailures(scanFailures),
+			Warning:    partialScanWarning(scanFailures),
 			Categories: scannedCategories,
 			TotalSize:  totalSize,
 			TotalFiles: totalFiles,
@@ -570,7 +575,7 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeResults // Show error in results view
 		return m, nil
 	}
-	m.scanWarning = msg.Error
+	m.scanWarning = msg.Warning
 
 	// Load scan results from cache
 	if cache, err := m.loadSessionCache(); err == nil {
@@ -650,7 +655,7 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 				matched := false
 				for _, cat := range m.cfg.Categories {
 					for _, path := range cat.Paths {
-						if strings.HasPrefix(file.Path, path) {
+						if paths.MatchesPathOrDescendant(path, file.Path) {
 							if info, exists := categoryMap[cat.Name]; exists {
 								info.Files++
 								sizeByCategory[cat.Name] += file.Size
@@ -725,6 +730,8 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	m.cleanFilesDeleted = 0
 	m.cleanFilesTruncated = 0
 	m.cleanBytesFreed = 0
+	m.cleanError = ""
+	m.cleanWarning = ""
 	m.currentPhase = "Cleaning in progress..."
 
 	// Build a filtered category with only files from enabled categories
@@ -763,7 +770,7 @@ func (m Model) buildFilteredCache() *config.SessionCache {
 				continue
 			}
 			for _, catPath := range configCat.Paths {
-				if strings.HasPrefix(file.Path, catPath) {
+				if paths.MatchesPathOrDescendant(catPath, file.Path) {
 					filteredFiles = append(filteredFiles, file)
 					break
 				}
@@ -864,16 +871,24 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			}
 		}
 
-		errorMsg := ""
+		warning := ""
 		if len(errors) > 0 {
-			errorMsg = fmt.Sprintf("%d files failed to delete", len(errors))
+			actionLabel := "actions"
+			if len(errors) == 1 {
+				actionLabel = "action"
+			}
+			warning = fmt.Sprintf("%d cleanup %s failed", len(errors), actionLabel)
 		}
 		if skipped > 0 {
-			note := fmt.Sprintf("%d scanned files skipped (no longer verify against config)", skipped)
-			if errorMsg == "" {
-				errorMsg = note
+			fileLabel := "files"
+			if skipped == 1 {
+				fileLabel = "file"
+			}
+			note := fmt.Sprintf("%d scanned %s skipped (no longer verify against config)", skipped, fileLabel)
+			if warning == "" {
+				warning = note
 			} else {
-				errorMsg += "; " + note
+				warning += "; " + note
 			}
 		}
 
@@ -882,7 +897,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			FilesDeleted:   deletedFiles,
 			FilesTruncated: truncatedFiles,
 			BytesFreed:     deletedBytes,
-			Error:          errorMsg,
+			Warning:        warning,
 		}
 	}
 }
@@ -893,18 +908,20 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 
 	if msg.Success {
 		m.mode = ModeComplete
-		m.cleanError = msg.Error
+		m.cleanError = ""
+		m.cleanWarning = msg.Warning
 		m.cleanFilesDeleted = msg.FilesDeleted
 		m.cleanFilesTruncated = msg.FilesTruncated
 		m.cleanBytesFreed = msg.BytesFreed
-		if msg.Error == "" {
+		// A complete clean invalidates the cache; partial cleanup keeps it so failed actions can be retried.
+		if msg.Warning == "" {
 			if sessionMgr, err := session.NewManager(); err == nil {
 				_ = sessionMgr.Clear()
 			}
 		}
-		if msg.Error != "" {
-			m.currentPhase = fmt.Sprintf("Deleted %d files and truncated %d files (%s) with some errors: %s",
-				msg.FilesDeleted, msg.FilesTruncated, utils.HumanizeBytes(msg.BytesFreed), msg.Error)
+		if msg.Warning != "" {
+			m.currentPhase = fmt.Sprintf("Partial cleanup: deleted %d files and truncated %d files (%s): %s",
+				msg.FilesDeleted, msg.FilesTruncated, utils.HumanizeBytes(msg.BytesFreed), msg.Warning)
 		} else {
 			m.currentPhase = fmt.Sprintf("Deleted %d files and truncated %d files, freed %s",
 				msg.FilesDeleted, msg.FilesTruncated, utils.HumanizeBytes(msg.BytesFreed))
@@ -912,6 +929,7 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 	} else {
 		m.currentPhase = "Cleaning failed: " + msg.Error
 		m.cleanError = msg.Error
+		m.cleanWarning = ""
 		m.mode = ModeResults // Return to results view on error
 	}
 	return m, nil
@@ -1291,7 +1309,7 @@ func (m Model) renderSelect() string {
 		scanSummary += "\n\n"
 	}
 	if m.scanWarning != "" {
-		scanSummary += errorStyle.Render(m.scanWarning) + "\n\n"
+		scanSummary += lipgloss.NewStyle().Foreground(Warning).Render(m.scanWarning) + "\n\n"
 	}
 
 	// Build viewport content with categories using clean checkboxes
@@ -1518,7 +1536,7 @@ func (m Model) selectedCleanActionCounts() (deleted, truncated int) {
 				for _, category := range m.cfg.Categories {
 					matched := false
 					for _, path := range category.Paths {
-						if strings.HasPrefix(file.Path, path) {
+						if paths.MatchesPathOrDescendant(path, file.Path) {
 							action = category.Action
 							matched = true
 							break
@@ -1637,12 +1655,12 @@ func (m Model) renderComplete() string {
 	content.WriteString("\n\n")
 
 	// Warning if there were errors
-	if m.cleanError != "" {
+	if m.cleanWarning != "" {
 		warnMarker := lipgloss.NewStyle().
 			Foreground(Warning).
 			Render("[WARN]")
 
-		content.WriteString(fmt.Sprintf("%s Some files could not be deleted: %s", warnMarker, m.cleanError))
+		content.WriteString(fmt.Sprintf("%s Some cleanup actions failed. The scan cache is retained for retry: %s", warnMarker, m.cleanWarning))
 		content.WriteString("\n\n")
 	}
 
@@ -1726,6 +1744,7 @@ type scanProgressMsg struct {
 type scanCompleteMsg struct {
 	Success    bool
 	Error      string
+	Warning    string
 	Output     string
 	Categories []config.Category
 	TotalSize  uint64
@@ -1736,16 +1755,20 @@ func formatScanFailures(failures []string) string {
 	if len(failures) == 0 {
 		return ""
 	}
-	unit := "categories"
-	if len(failures) == 1 {
-		unit = "category"
+	return strings.Join(failures, "; ")
+}
+
+func partialScanWarning(failures []string) string {
+	if len(failures) == 0 {
+		return ""
 	}
-	return fmt.Sprintf("Partial scan: %d %s failed: %s", len(failures), unit, strings.Join(failures, "; "))
+	return "Partial scan; some categories could not be scanned: " + formatScanFailures(failures)
 }
 
 type cleanCompleteMsg struct {
 	Success        bool
 	Error          string
+	Warning        string
 	Output         string
 	FilesDeleted   int
 	FilesTruncated int
@@ -2294,8 +2317,8 @@ func (m Model) renderDockerConfirm() string {
 	var content strings.Builder
 
 	detail := "Invalid Docker cleanup operation."
-	if _, args, ok := dockerCleanupSpec(m.dockerOperation); ok {
-		detail = "Command: docker " + strings.Join(args, " ")
+	if spec, ok := docker.PruneSpecFor(m.dockerOperation); ok {
+		detail = "Command: docker " + strings.Join(spec.Args, " ")
 	}
 
 	content.WriteString(lipgloss.NewStyle().
@@ -2328,17 +2351,6 @@ func (m Model) renderDockerConfirm() string {
 	return content.String()
 }
 
-func dockerCleanupSpec(operation string) (string, []string, bool) {
-	switch operation {
-	case "images":
-		return "prune_images", []string{"image", "prune", "-a", "-f"}, true
-	case "all":
-		return "prune_all", []string{"system", "prune", "-a", "--volumes", "-f"}, true
-	default:
-		return "", nil, false
-	}
-}
-
 // dockerCompleteMsg contains the result of a Docker cleanup operation
 type dockerCompleteMsg struct {
 	success bool
@@ -2361,7 +2373,7 @@ func runDockerCleanup(operation string) tea.Cmd {
 			defer auditLog.Close()
 		}
 
-		operationName, args, ok := dockerCleanupSpec(operation)
+		spec, ok := docker.PruneSpecFor(operation)
 		if !ok {
 			return dockerCompleteMsg{success: false, message: "❌ Invalid Docker operation"}
 		}
@@ -2378,7 +2390,7 @@ func runDockerCleanup(operation string) tea.Cmd {
 			}
 		}
 
-		cmd := exec.Command("docker", args...)
+		cmd := exec.Command("docker", spec.Args...)
 
 		// Capture output
 		var output strings.Builder
@@ -2392,7 +2404,7 @@ func runDockerCleanup(operation string) tea.Cmd {
 		}
 
 		if auditLog != nil {
-			auditLog.LogDockerOperation(operationName, args, result, err)
+			auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
 		}
 
 		if err != nil {
@@ -2403,7 +2415,7 @@ func runDockerCleanup(operation string) tea.Cmd {
 		}
 
 		outputStr := output.String()
-		if operation == "images" {
+		if operation == docker.OperationImages {
 			return dockerCompleteMsg{
 				success: true,
 				message: "✅ Docker images cleaned successfully!\n" + outputStr,

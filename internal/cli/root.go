@@ -13,6 +13,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/docker"
 	"github.com/Nomadcxx/moonbit/internal/duplicates"
 	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
@@ -658,12 +659,15 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 	}
 
 	// Build fallback metadata for cache files created before file-level provenance existed.
-	riskByPath := make(map[string]config.RiskLevel)
-	selectedByPath := make(map[string]bool)
+	type pathRule struct {
+		path     string
+		risk     config.RiskLevel
+		selected bool
+	}
+	var rules []pathRule
 	for _, cat := range cfg.Categories {
 		for _, path := range cat.Paths {
-			riskByPath[path] = cat.Risk
-			selectedByPath[path] = cat.Selected
+			rules = append(rules, pathRule{path: path, risk: cat.Risk, selected: cat.Selected})
 		}
 	}
 
@@ -677,10 +681,10 @@ func filterCacheByMode(cache *config.SessionCache, cfg *config.Config, mode stri
 		if file.CategoryName == "" {
 			risk = config.Low
 			selected = true
-			for catPath, catRisk := range riskByPath {
-				if strings.HasPrefix(file.Path, catPath) {
-					risk = catRisk
-					selected = selectedByPath[catPath]
+			for _, rule := range rules {
+				if paths.MatchesPathOrDescendant(rule.path, file.Path) {
+					risk = rule.risk
+					selected = rule.selected
 					break
 				}
 			}
@@ -977,9 +981,14 @@ var dockerCmd = &cobra.Command{
 }
 
 var dockerImagesCmd = &cobra.Command{
-	Use:   "images",
+	Use:   docker.OperationImages,
 	Short: "Remove unused Docker images",
 	Run: func(cmd *cobra.Command, args []string) {
+		spec, ok := docker.PruneSpecFor(docker.OperationImages)
+		if !ok {
+			fmt.Println("❌ Invalid Docker cleanup operation")
+			return
+		}
 		auditLog, _ := audit.NewLogger()
 		if auditLog != nil {
 			defer auditLog.Close()
@@ -991,7 +1000,7 @@ var dockerImagesCmd = &cobra.Command{
 		if err := checkCmd.Run(); err != nil {
 			fmt.Println("❌ Docker is not installed or not running")
 			if auditLog != nil {
-				auditLog.LogDockerOperation("prune_images", []string{}, "failed", err)
+				auditLog.LogDockerOperation(spec.AuditOperation, []string{}, "failed", err)
 			}
 			return
 		}
@@ -1001,9 +1010,9 @@ var dockerImagesCmd = &cobra.Command{
 		dfCmd.Stderr = os.Stderr
 		dfCmd.Run()
 
-		fmt.Println("\n🗑️  Running: docker image prune -a")
+		fmt.Printf("\n🗑️  Running: docker %s\n", strings.Join(spec.Args, " "))
 
-		pruneCmd := exec.Command("docker", "image", "prune", "-a", "-f")
+		pruneCmd := exec.Command("docker", spec.Args...)
 		pruneCmd.Stdout = os.Stdout
 		pruneCmd.Stderr = os.Stderr
 
@@ -1013,7 +1022,7 @@ var dockerImagesCmd = &cobra.Command{
 			if err != nil {
 				result = "failed"
 			}
-			auditLog.LogDockerOperation("prune_images", []string{"-a", "-f"}, result, err)
+			auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
 		}
 
 		if err != nil {
@@ -1026,9 +1035,14 @@ var dockerImagesCmd = &cobra.Command{
 }
 
 var dockerAllCmd = &cobra.Command{
-	Use:   "all",
+	Use:   docker.OperationAll,
 	Short: "Remove all unused Docker resources",
 	Run: func(cmd *cobra.Command, args []string) {
+		spec, ok := docker.PruneSpecFor(docker.OperationAll)
+		if !ok {
+			fmt.Println("❌ Invalid Docker cleanup operation")
+			return
+		}
 		auditLog, _ := audit.NewLogger()
 		if auditLog != nil {
 			defer auditLog.Close()
@@ -1040,7 +1054,7 @@ var dockerAllCmd = &cobra.Command{
 		if err := checkCmd.Run(); err != nil {
 			fmt.Println("❌ Docker is not installed or not running")
 			if auditLog != nil {
-				auditLog.LogDockerOperation("prune_all", []string{}, "failed", err)
+				auditLog.LogDockerOperation(spec.AuditOperation, []string{}, "failed", err)
 			}
 			return
 		}
@@ -1051,9 +1065,9 @@ var dockerAllCmd = &cobra.Command{
 		dfCmd.Stderr = os.Stderr
 		dfCmd.Run()
 
-		fmt.Println("\n🗑️  Running: docker system prune -a --volumes")
+		fmt.Printf("\n🗑️  Running: docker %s\n", strings.Join(spec.Args, " "))
 
-		pruneCmd := exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
+		pruneCmd := exec.Command("docker", spec.Args...)
 		pruneCmd.Stdout = os.Stdout
 		pruneCmd.Stderr = os.Stderr
 
@@ -1063,7 +1077,7 @@ var dockerAllCmd = &cobra.Command{
 			if err != nil {
 				result = "failed"
 			}
-			auditLog.LogDockerOperation("prune_all", []string{"-a", "--volumes", "-f"}, result, err)
+			auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
 		}
 
 		if err != nil {

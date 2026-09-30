@@ -169,6 +169,23 @@ func TestFilterCacheByModeUsesFileCategoryProvenance(t *testing.T) {
 	assert.Equal(t, 1, filtered.TotalFiles)
 }
 
+func TestFilterCacheByModeMatchesGlobRootsWithoutPrefixSiblings(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "app-one", "cache")
+	require.NoError(t, os.MkdirAll(root, 0755))
+	cache := &config.SessionCache{ScanResults: &config.Category{Files: []config.FileInfo{
+		{Path: filepath.Join(root, "nested", "deep.bin")},
+		{Path: root + "-old/safe.bin"},
+	}}}
+	cfg := &config.Config{Categories: []config.Category{{
+		Name: "Deep Glob Cache", Paths: []string{filepath.Join(base, "app-*", "cache")}, Risk: config.High, Selected: false,
+	}}}
+
+	filtered := filterCacheByMode(cache, cfg, "quick")
+	require.Len(t, filtered.ScanResults.Files, 1)
+	assert.Equal(t, root+"-old/safe.bin", filtered.ScanResults.Files[0].Path)
+}
+
 func TestCategoryPathExistsMatchesGlobPaths(t *testing.T) {
 	tempDir := t.TempDir()
 	cacheDir := filepath.Join(tempDir, "app", "cache")

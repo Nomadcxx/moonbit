@@ -235,13 +235,16 @@ func TestHandleCleanCompletePreservesCacheAfterPartialFailure(t *testing.T) {
 	model := NewModel()
 	updated, cmd := model.handleCleanComplete(cleanCompleteMsg{
 		Success: true,
-		Error:   "1 file failed to delete",
+		Warning: "1 cleanup action failed",
 	})
 
 	assert.Nil(t, cmd)
 	result := updated.(Model)
 	assert.Equal(t, ModeComplete, result.mode)
-	assert.Contains(t, result.renderComplete(), "1 file failed to delete")
+	assert.Empty(t, result.cleanError)
+	assert.Equal(t, "1 cleanup action failed", result.cleanWarning)
+	assert.Contains(t, result.renderComplete(), "Some cleanup actions failed")
+	assert.Contains(t, result.renderComplete(), "scan cache is retained for retry: 1 cleanup action failed")
 	assert.True(t, sessionMgr.Exists(), "partial clean must preserve scan data for retry")
 	loaded, err := sessionMgr.Load()
 	require.NoError(t, err)
@@ -252,7 +255,7 @@ func TestHandleCleanCompletePreservesCacheAfterPartialFailure(t *testing.T) {
 func TestRunCleanCmdReportsTruncationSeparately(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MOONBIT_HOME", home)
-	path := filepath.Join(t.TempDir(), "active.log")
+	path := filepath.Join(home, "active.log")
 	require.NoError(t, os.WriteFile(path, []byte("daemon output"), 0600))
 	cfg := &config.Config{Categories: []config.Category{{
 		Name: "Active Logs", Paths: []string{filepath.Dir(path)}, Risk: config.Low, Action: config.ActionTruncate,
@@ -268,7 +271,7 @@ func TestRunCleanCmdReportsTruncationSeparately(t *testing.T) {
 
 	msg := runCleanCmd(cfg, cache)().(cleanCompleteMsg)
 
-	assert.True(t, msg.Success)
+	require.Truef(t, msg.Success, "clean command failed: %s", msg.Error)
 	assert.Zero(t, msg.FilesDeleted)
 	assert.Equal(t, 1, msg.FilesTruncated)
 	info, err := os.Stat(path)
@@ -351,13 +354,13 @@ func TestScanCompleteReportsPartialCategoryFailures(t *testing.T) {
 	model := NewModel()
 	updated, _ := model.handleScanComplete(scanCompleteMsg{
 		Success:    true,
-		Error:      "Partial scan: Broken Cache: read failed",
+		Warning:    "Partial scan; some categories could not be scanned: Broken Cache: read failed",
 		Categories: []config.Category{{Name: "Working Cache", FileCount: 1}},
 	})
 
 	result := updated.(Model)
 	assert.Equal(t, ModeSelect, result.mode)
-	assert.Contains(t, result.renderSelect(), "Partial scan: Broken Cache: read failed")
+	assert.Contains(t, result.renderSelect(), "Partial scan; some categories could not be scanned: Broken Cache: read failed")
 }
 
 func TestHandleCleanCompleteClearsSessionCache(t *testing.T) {
@@ -511,6 +514,34 @@ func TestBuildFilteredCacheUsesCategoryProvenance(t *testing.T) {
 	require.Len(t, filtered.ScanResults.Files, 1)
 	assert.Equal(t, "/not-under-config/safe.tmp", filtered.ScanResults.Files[0].Path)
 	assert.Equal(t, uint64(10), filtered.TotalSize)
+}
+
+func TestLegacyCachePathMatchingUsesGlobRootsAndComponentBoundaries(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "app-one", "cache")
+	require.NoError(t, os.MkdirAll(root, 0755))
+	model := NewModel()
+	model.cfg = &config.Config{Categories: []config.Category{{
+		Name: "Glob Cache", Paths: []string{filepath.Join(base, "app-*", "cache")}, Action: config.ActionTruncate,
+	}}}
+	model.categories = []CategoryInfo{{Name: "Glob Cache", Enabled: true}}
+	cache := &config.SessionCache{ScanResults: &config.Category{Files: []config.FileInfo{
+		{Path: filepath.Join(root, "nested", "active.log")},
+		{Path: root + "-old/keep.log"},
+	}}, TotalFiles: 2}
+
+	model.parseScanResults(cache, nil)
+	require.Len(t, model.categories, 1)
+	assert.Equal(t, "Glob Cache", model.categories[0].Name)
+	assert.Equal(t, 1, model.categories[0].Files)
+
+	model.scanResults = cache
+	filtered := model.buildFilteredCache()
+	require.Len(t, filtered.ScanResults.Files, 1)
+	assert.Equal(t, filepath.Join(root, "nested", "active.log"), filtered.ScanResults.Files[0].Path)
+	deleted, truncated := model.selectedCleanActionCounts()
+	assert.Zero(t, deleted)
+	assert.Equal(t, 1, truncated)
 }
 
 func TestUICategoryPathExistsMatchesGlobPaths(t *testing.T) {

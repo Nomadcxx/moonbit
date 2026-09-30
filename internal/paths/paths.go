@@ -25,6 +25,29 @@ func IsWithin(root, path string) bool {
 	return err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// MatchesPathOrDescendant reports whether candidate is a configured path
+// match or a descendant of a glob-expanded configured path.
+func MatchesPathOrDescendant(pattern, candidate string) bool {
+	if pattern == "" || candidate == "" {
+		return false
+	}
+
+	roots := []string{pattern}
+	if strings.ContainsAny(pattern, "*?[") {
+		var err error
+		roots, err = filepath.Glob(pattern)
+		if err != nil {
+			return false
+		}
+	}
+	for _, root := range roots {
+		if IsWithin(root, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 // homeFromPasswd resolves a home directory through the passwd database rather
 // than assuming /home/<name>. Non-standard layouts (LDAP/SSSD, /export/home,
 // per-team roots) break that assumption, and the failure is silent: the caller
