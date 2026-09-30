@@ -84,6 +84,8 @@ type taskCompleteMsg struct {
 	error   string
 }
 
+const sourceBinaryPath = "/usr/local/bin/moonbit"
+
 func newModel() model {
 	s := spinner.New()
 	s.Style = lipgloss.NewStyle().Foreground(Secondary)
@@ -382,30 +384,30 @@ func (m model) renderInstalling() string {
 	return b.String()
 }
 
-func (m model) renderComplete() string {
-	// Check for critical failures
-	hasCriticalFailure := false
+func (m model) hasCriticalFailure() bool {
 	for _, task := range m.tasks {
 		if task.status == statusFailed && !task.optional {
-			hasCriticalFailure = true
-			break
+			return true
 		}
 	}
+	return false
+}
 
-	if hasCriticalFailure {
-		return lipgloss.NewStyle().Foreground(ErrorColor).Render(
-			"Installation failed.\nCheck errors above.\n\nPress Enter to exit")
-	}
+func (m model) renderComplete() string {
+	hasCriticalFailure := m.hasCriticalFailure()
+	var content string
 
-	// Success
 	if m.uninstallMode {
-		// Be explicit about what was NOT removed. Backups can hold the only
-		// remaining copy of files moonbit deleted, so keeping them is correct --
-		// but "moonbit has been removed" overstated what happened.
-		return `Uninstall complete.
+		switch {
+		case hasCriticalFailure:
+			content = lipgloss.NewStyle().Foreground(ErrorColor).Render("Uninstall failed.")
+		case len(m.errors) > 0:
+			content = lipgloss.NewStyle().Foreground(WarningColor).Render("Uninstall completed with warnings.")
+		default:
+			content = `Uninstall complete.
 
 Removed:
-  /usr/local/bin/moonbit, /usr/bin/moonbit
+  /usr/local/bin/moonbit
   /etc/systemd/system/moonbit-*.{service,timer}
   /usr/share/applications/moonbit.desktop and its icon
 
@@ -418,29 +420,45 @@ Kept (may hold the only copy of deleted files, or your config):
 
 To remove those too:
   sudo rm -rf /var/log/moonbit /var/lib/moonbit
-  rm -rf ~/.config/moonbit ~/.cache/moonbit ~/.local/share/moonbit
+  rm -rf ~/.config/moonbit ~/.cache/moonbit ~/.local/share/moonbit`
+		}
+	} else if hasCriticalFailure {
+		content = lipgloss.NewStyle().Foreground(ErrorColor).Render("Installation failed.")
+	} else if len(m.errors) > 0 {
+		content = lipgloss.NewStyle().Foreground(WarningColor).Render("Installation completed with warnings.")
+	} else {
+		scheduleMsg := ""
+		switch m.scheduleName {
+		case "daemon":
+			scheduleMsg = "Daemon mode installed and started:\n  - Long-running background service (systemd)\n\n"
+		case "daily":
+			scheduleMsg = "Automated cleaning scheduled:\n  - Scan: Daily at 2 AM\n  - Clean: Weekly on Sunday at 3 AM\n\n"
+		case "weekly":
+			scheduleMsg = "Automated cleaning scheduled:\n  - Scan & Clean: Weekly on Sunday at 3 AM\n\n"
+		case "manual":
+			scheduleMsg = "No automation configured.\nRun 'sudo moonbit' manually as needed.\n\n"
+		}
 
-Press Enter to exit`
-	}
-
-	scheduleMsg := ""
-	switch m.scheduleName {
-	case "daemon":
-		scheduleMsg = "Daemon mode installed and started:\n  - Long-running background service (systemd)\n\n"
-	case "daily":
-		scheduleMsg = "Automated cleaning scheduled:\n  - Scan: Daily at 2 AM\n  - Clean: Weekly on Sunday at 3 AM\n\n"
-	case "weekly":
-		scheduleMsg = "Automated cleaning scheduled:\n  - Scan & Clean: Weekly on Sunday at 3 AM\n\n"
-	case "manual":
-		scheduleMsg = "No automation configured.\nRun 'sudo moonbit' manually as needed.\n\n"
-	}
-
-	return fmt.Sprintf(`Installation complete!
+		content = fmt.Sprintf(`Installation complete!
 
 %sYou can now run 'moonbit' from any terminal.
-If root access is needed, you'll be prompted for your password.
+If root access is needed, you'll be prompted for your password.`, scheduleMsg)
+	}
 
-Press Enter to exit`, scheduleMsg)
+	if len(m.errors) > 0 {
+		heading := "Task warnings:"
+		color := WarningColor
+		if hasCriticalFailure {
+			heading = "Task errors:"
+			color = ErrorColor
+		}
+		content += "\n\n" + heading + "\n"
+		for _, err := range m.errors {
+			content += lipgloss.NewStyle().Foreground(color).Render(err) + "\n"
+		}
+	}
+
+	return content + "\nPress Enter to exit"
 }
 
 func (m model) getHelpText() string {
@@ -533,13 +551,13 @@ func installBinary(m *model) error {
 	}
 
 	// Copy binary to /usr/local/bin
-	cmd := exec.Command("install", "-m", "755", "moonbit", "/usr/local/bin/moonbit")
+	cmd := exec.Command("install", "-m", "755", "moonbit", sourceBinaryPath)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to install binary: %v", err)
 	}
 
 	// Verify installation
-	if _, err := os.Stat("/usr/local/bin/moonbit"); err != nil {
+	if _, err := os.Stat(sourceBinaryPath); err != nil {
 		return fmt.Errorf("failed to verify binary installation")
 	}
 
@@ -709,12 +727,14 @@ func disableService(m *model) error {
 }
 
 func removeBinary(m *model) error {
-	// /usr/local/bin is where this installer puts it; /usr/bin is where the
-	// distro package puts it. Remove whichever are present.
-	for _, path := range []string{"/usr/local/bin/moonbit", "/usr/bin/moonbit"} {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove %s: %v", path, err)
-		}
+	// Only remove the binary installed by this source installer. /usr/bin is
+	// package-manager-owned and is outside this installer's lifecycle.
+	return removeBinaryPath(sourceBinaryPath)
+}
+
+func removeBinaryPath(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove %s: %v", path, err)
 	}
 	return nil
 }
@@ -763,8 +783,23 @@ func main() {
 	}
 
 	p := tea.NewProgram(newModel())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error running installer: %v\n", err)
 		os.Exit(1)
 	}
+	if code := installerExitCode(finalModel); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func installerExitCode(final tea.Model) int {
+	completed, ok := final.(model)
+	if !ok || completed.step != stepComplete {
+		return 2
+	}
+	if completed.hasCriticalFailure() {
+		return 1
+	}
+	return 0
 }

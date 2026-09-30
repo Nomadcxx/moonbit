@@ -2,6 +2,8 @@ package cli
 
 import (
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -43,4 +45,25 @@ func TestPerformCleanUsesLiveClean(t *testing.T) {
 
 	assert.False(t, gotDryRun, "scheduled daemon clean should actually clean")
 	assert.Equal(t, 1, daemonState.stats().CleanCount)
+}
+
+func TestCheckTimerConflictsRejectsActiveMoonbitTimer(t *testing.T) {
+	dir := t.TempDir()
+	systemctl := filepath.Join(dir, "systemctl")
+	script := "#!/bin/sh\n[ \"$3\" = moonbit-scan.timer ] && exit 0\nexit 3\n"
+	require.NoError(t, os.WriteFile(systemctl, []byte(script), 0755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := checkTimerConflicts()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "moonbit-scan.timer")
+}
+
+func TestCheckTimerConflictsAllowsInactiveMoonbitTimers(t *testing.T) {
+	dir := t.TempDir()
+	systemctl := filepath.Join(dir, "systemctl")
+	require.NoError(t, os.WriteFile(systemctl, []byte("#!/bin/sh\nexit 3\n"), 0755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	assert.NoError(t, checkTimerConflicts())
 }

@@ -2,6 +2,7 @@
 Description=MoonBit System Cleaner Daemon
 Documentation=https://github.com/Nomadcxx/moonbit
 After=network.target
+Conflicts=moonbit-scan.service moonbit-clean.service moonbit-scan.timer moonbit-clean.timer
 
 [Service]
 Type=simple

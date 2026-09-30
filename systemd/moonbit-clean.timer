@@ -1,6 +1,7 @@
 [Unit]
 Description=MoonBit Weekly Cleanup Timer
 Documentation=https://github.com/Nomadcxx/moonbit
+Conflicts=moonbit-daemon.service
 
 [Timer]
 # Run weekly on Sunday at 3 AM
