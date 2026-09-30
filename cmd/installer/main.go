@@ -384,27 +384,26 @@ func (m model) renderInstalling() string {
 	return b.String()
 }
 
-func (m model) renderComplete() string {
-	// Check for critical failures
-	hasCriticalFailure := false
+func (m model) hasCriticalFailure() bool {
 	for _, task := range m.tasks {
 		if task.status == statusFailed && !task.optional {
-			hasCriticalFailure = true
-			break
+			return true
 		}
 	}
+	return false
+}
 
+func (m model) renderComplete() string {
+	hasCriticalFailure := m.hasCriticalFailure()
 	var content string
-	if hasCriticalFailure {
-		content = lipgloss.NewStyle().Foreground(ErrorColor).Render("Installation failed.")
-	} else if len(m.errors) > 0 {
-		content = lipgloss.NewStyle().Foreground(WarningColor).Render("Installation completed with errors.")
-	} else {
-		content = ""
-	}
 
 	if m.uninstallMode {
-		if len(m.errors) == 0 {
+		switch {
+		case hasCriticalFailure:
+			content = lipgloss.NewStyle().Foreground(ErrorColor).Render("Uninstall failed.")
+		case len(m.errors) > 0:
+			content = lipgloss.NewStyle().Foreground(WarningColor).Render("Uninstall completed with warnings.")
+		default:
 			content = `Uninstall complete.
 
 Removed:
@@ -422,10 +421,12 @@ Kept (may hold the only copy of deleted files, or your config):
 To remove those too:
   sudo rm -rf /var/log/moonbit /var/lib/moonbit
   rm -rf ~/.config/moonbit ~/.cache/moonbit ~/.local/share/moonbit`
-		} else {
-			content = "Uninstall incomplete."
 		}
-	} else if len(m.errors) == 0 && !hasCriticalFailure {
+	} else if hasCriticalFailure {
+		content = lipgloss.NewStyle().Foreground(ErrorColor).Render("Installation failed.")
+	} else if len(m.errors) > 0 {
+		content = lipgloss.NewStyle().Foreground(WarningColor).Render("Installation completed with warnings.")
+	} else {
 		scheduleMsg := ""
 		switch m.scheduleName {
 		case "daemon":
@@ -445,9 +446,15 @@ If root access is needed, you'll be prompted for your password.`, scheduleMsg)
 	}
 
 	if len(m.errors) > 0 {
-		content += "\n\nTask errors:\n"
+		heading := "Task warnings:"
+		color := WarningColor
+		if hasCriticalFailure {
+			heading = "Task errors:"
+			color = ErrorColor
+		}
+		content += "\n\n" + heading + "\n"
 		for _, err := range m.errors {
-			content += lipgloss.NewStyle().Foreground(ErrorColor).Render(err) + "\n"
+			content += lipgloss.NewStyle().Foreground(color).Render(err) + "\n"
 		}
 	}
 
@@ -788,7 +795,10 @@ func main() {
 
 func installerExitCode(final tea.Model) int {
 	completed, ok := final.(model)
-	if !ok || len(completed.errors) > 0 {
+	if !ok || completed.step != stepComplete {
+		return 2
+	}
+	if completed.hasCriticalFailure() {
 		return 1
 	}
 	return 0

@@ -144,9 +144,21 @@ func TestRemoveBinaryPathLeavesPackageOwnedBinary(t *testing.T) {
 	}
 }
 
-func TestInstallerExitCodeReflectsTaskFailures(t *testing.T) {
-	if got := installerExitCode(newModel()); got != 0 {
-		t.Fatalf("successful installer exit code = %d, want 0", got)
+func TestInstallerExitCodesTrackCompletionAndCriticalFailures(t *testing.T) {
+	if got := installerExitCode(newModel()); got != 2 {
+		t.Fatalf("welcome screen exit code = %d, want aborted code 2", got)
+	}
+	if got := installerExitCode(nil); got != 2 {
+		t.Fatalf("unknown final model exit code = %d, want aborted code 2", got)
+	}
+
+	success := newModel()
+	success.step = stepComplete
+	for i := range success.tasks {
+		success.tasks[i].status = statusComplete
+	}
+	if got := installerExitCode(success); got != 0 {
+		t.Fatalf("completed installer exit code = %d, want 0", got)
 	}
 
 	failed := newModel()
@@ -156,22 +168,35 @@ func TestInstallerExitCodeReflectsTaskFailures(t *testing.T) {
 	updated, _ := failed.Update(taskCompleteMsg{index: 0, error: "permission denied"})
 	completed := updated.(model)
 	if got := installerExitCode(completed); got != 1 {
-		t.Fatalf("failed installer exit code = %d, want 1", got)
+		t.Fatalf("critical task failure exit code = %d, want 1", got)
 	}
-	if got := completed.renderComplete(); !strings.Contains(got, "permission denied") {
-		t.Fatalf("completion view does not show task failure: %q", got)
+	if got := completed.renderComplete(); !strings.Contains(got, "Installation failed.") || !strings.Contains(got, "permission denied") {
+		t.Fatalf("completion view does not show critical task failure: %q", got)
 	}
 
 	optional := newModel()
+	optional.step = stepInstalling
 	optional.tasks = []installTask{{name: "Optional task", optional: true, status: statusRunning}}
 	optional.currentTaskIndex = 0
 	updated, _ = optional.Update(taskCompleteMsg{index: 0, error: "optional operation failed"})
 	completed = updated.(model)
-	if got := installerExitCode(completed); got != 1 {
-		t.Fatalf("optional task failure exit code = %d, want 1", got)
+	if got := installerExitCode(completed); got != 0 {
+		t.Fatalf("optional task warning exit code = %d, want 0", got)
 	}
-	if got := completed.renderComplete(); !strings.Contains(got, "optional operation failed") {
-		t.Fatalf("completion view does not show optional task failure: %q", got)
+	if got := completed.renderComplete(); !strings.Contains(got, "Installation completed with warnings.") ||
+		!strings.Contains(got, "Task warnings:") || !strings.Contains(got, "optional operation failed") {
+		t.Fatalf("completion view does not show optional task warning: %q", got)
+	}
+
+	uninstallFailure := model{
+		step:          stepComplete,
+		uninstallMode: true,
+		tasks:         []installTask{{name: "Remove binary", status: statusFailed}},
+		errors:        []string{"Remove binary: permission denied"},
+	}
+	if got := uninstallFailure.renderComplete(); !strings.Contains(got, "Uninstall failed.") ||
+		strings.Contains(got, "Uninstall completed with warnings.") {
+		t.Fatalf("uninstall completion view lost critical severity: %q", got)
 	}
 }
 
