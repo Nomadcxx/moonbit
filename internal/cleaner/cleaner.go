@@ -362,7 +362,12 @@ func (c *Cleaner) deleteFileExpected(path string, shredEnabled bool, expected *c
 		}
 	}
 
-	err = paths.Remove(path)
+	err = paths.RemoveIf(path, func(info os.FileInfo) error {
+		if err := matchesScannedIdentity(info, expected); err != nil {
+			return fmt.Errorf("file identity changed before unlink: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		if os.IsPermission(err) {
 			return 0, moonbiterrors.NewPermissionDeniedError(path, err)
@@ -383,11 +388,7 @@ func matchesScannedIdentity(info os.FileInfo, expected *config.FileInfo) error {
 		return fmt.Errorf("file size changed since scan")
 	}
 	if expected.ModTime != "" {
-		format := time.RFC3339
-		if expected.FileID != "" {
-			format = time.RFC3339Nano
-		}
-		if info.ModTime().Format(format) != expected.ModTime {
+		if info.ModTime().Format(time.RFC3339Nano) != expected.ModTime {
 			return fmt.Errorf("file modification time changed since scan")
 		}
 	}
@@ -510,7 +511,7 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 
 			// Check if path starts with protected directory
 			if candidate == protected || strings.HasPrefix(candidate, protectedWithSep) {
-				if (protected == "/home" || protected == "/root") && pathWithin(c.homePath, candidate) {
+				if (protected == "/home" || protected == "/root") && paths.IsWithin(c.homePath, candidate) {
 					continue
 				}
 				return true
@@ -519,14 +520,6 @@ func (c *Cleaner) isProtectedPath(path string) bool {
 	}
 
 	return false
-}
-
-func pathWithin(root, path string) bool {
-	if root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func safeRestoreCategories(cfg *config.Config) ([]config.Category, string, error) {
@@ -574,7 +567,7 @@ func categoryPathsWithinHome(category config.Category, home string) bool {
 		}
 		for _, match := range matches {
 			absPath, err := filepath.Abs(match)
-			if err != nil || !pathWithin(home, absPath) {
+			if err != nil || !paths.IsWithin(home, absPath) {
 				return false
 			}
 		}
@@ -898,7 +891,7 @@ func RestoreBackup(backupPath string) error {
 		return fmt.Errorf("failed to close backup metadata: %w", err)
 	}
 
-	cfg, err := config.Load("")
+	cfg, err := config.LoadReadOnly("")
 	if err != nil {
 		return fmt.Errorf("failed to load config for restore: %w", err)
 	}
@@ -1024,18 +1017,21 @@ func ListBackups() ([]string, error) {
 	}
 
 	var backups []string
-	seen := make(map[string]struct{})
 	for _, entry := range entries {
 		name := entry.Name()
-		backupName := name
-		if strings.HasSuffix(name, ".backup.json") {
-			backupName = strings.TrimSuffix(name, ".json")
-		} else if !strings.HasSuffix(name, ".backup") {
+		if !strings.HasSuffix(name, ".backup.json") {
 			continue
 		}
-		if _, ok := seen[backupName]; !ok {
+		metadata, err := paths.OpenFile(filepath.Join(backupDir, name), os.O_RDONLY, 0)
+		if err != nil {
+			continue
+		}
+		if err := metadata.Close(); err != nil {
+			continue
+		}
+		backupName := strings.TrimSuffix(name, ".json")
+		if _, err := paths.ReadDir(filepath.Join(backupDir, backupName+".files")); err == nil {
 			backups = append(backups, backupName)
-			seen[backupName] = struct{}{}
 		}
 	}
 

@@ -298,3 +298,60 @@ func TestAtomicWriteFileRejectsSymlinkAndFIFO(t *testing.T) {
 		t.Fatal("expected FIFO destination to be rejected")
 	}
 }
+
+func TestRemoveIfLeavesFileWhenValidationFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("identity changed")
+	err := RemoveIf(path, func(info os.FileInfo) error {
+		if !info.Mode().IsRegular() {
+			t.Errorf("opened target mode = %v, want regular file", info.Mode())
+		}
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("RemoveIf error = %v, want %v", err, wantErr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("rejected target was removed: %v", err)
+	}
+}
+
+func TestRemoveIfCanRemoveReadOnlyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "readonly")
+	if err := os.WriteFile(path, []byte("remove"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveIf(path, func(os.FileInfo) error { return nil }); err != nil {
+		t.Fatalf("RemoveIf failed for read-only file: %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only file still exists: %v", err)
+	}
+}
+
+func TestIsWithinUsesPathComponentBoundaries(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "cache")
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{root, true},
+		{filepath.Join(root, "nested", "file"), true},
+		{root + "-old/file", false},
+		{filepath.Dir(root), false},
+	}
+	for _, tt := range tests {
+		if got := IsWithin(root, tt.path); got != tt.want {
+			t.Errorf("IsWithin(%q, %q) = %v, want %v", root, tt.path, got, tt.want)
+		}
+	}
+	if IsWithin("", root) {
+		t.Fatal("empty root must not contain a path")
+	}
+}
