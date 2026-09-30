@@ -53,6 +53,7 @@ var (
 	daemonPidFile       string
 	daemonSocket        string
 	daemonSocketMode    string
+	daemonInitialScan   bool
 )
 
 // DaemonState tracks the running daemon state
@@ -262,8 +263,20 @@ Examples:
 		defer scanTicker.Stop()
 		defer cleanTicker.Stop()
 
-		// Do initial scan immediately
-		go performScan()
+		// Do initial scan immediately, unless a panel socket is configured:
+		// a full scan holds opSem for its whole duration (a deep scan of a
+		// large cache runs into the tens of minutes), and while it runs the
+		// panel socket answers every scan/clean with "another operation in
+		// progress" -- so the panel would be unusable after every daemon
+		// start. With a socket present the scan is skipped by default and the
+		// scheduled tickers still scan; pass --initial-scan to force it back.
+		initialScan := shouldInitialScan(daemonSocket, cmd.Flags().Changed("initial-scan"), daemonInitialScan)
+		if initialScan {
+			go performScan()
+		} else {
+			fmt.Fprintf(daemonOut, "%s Initial scan skipped: panel socket active (use --initial-scan to force)\\n",
+				S.Muted("•"))
+		}
 
 		// Main daemon loop
 		for {
@@ -357,6 +370,17 @@ var daemonStatusCmd = &cobra.Command{
 		fmt.Println(S.Muted("View logs: journalctl -u moonbit-daemon -f"))
 		return nil
 	},
+}
+
+// shouldInitialScan reports whether the daemon scans on start. A configured
+// panel socket means a UI is attached that needs the socket responsive
+// immediately, so the startup scan is skipped unless --initial-scan was passed
+// explicitly.
+func shouldInitialScan(socket string, explicitlySet, value bool) bool {
+	if socket != "" && !explicitlySet {
+		return false
+	}
+	return value
 }
 
 func performScan() {
@@ -518,5 +542,6 @@ func init() {
 	daemonCmd.Flags().StringVar(&daemonPidFile, "pid", DefaultPidFile, "PID file path")
 	daemonCmd.Flags().StringVar(&daemonSocket, "socket", "", "Unix socket path for panel control (e.g. /run/moonbit/panel.sock)")
 	daemonCmd.Flags().StringVar(&daemonSocketMode, "socket-mode", "0666", "Socket file permissions (octal)")
+	daemonCmd.Flags().BoolVar(&daemonInitialScan, "initial-scan", true, "Run a scan immediately on start (default false when --socket is set)")
 	daemonStatusCmd.Flags().String("pid", DefaultPidFile, "PID file path to check")
 }

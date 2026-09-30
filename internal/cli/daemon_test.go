@@ -67,3 +67,17 @@ func TestCheckTimerConflictsAllowsInactiveMoonbitTimers(t *testing.T) {
 
 	assert.NoError(t, checkTimerConflicts())
 }
+
+func TestShouldInitialScan(t *testing.T) {
+	// No socket: the flag value wins, so the default scan stays on.
+	assert.True(t, shouldInitialScan("", false, true))
+	assert.False(t, shouldInitialScan("", false, false))
+
+	// A panel socket skips the blocking startup scan unless the flag was set
+	// explicitly, so the panel is usable the moment the daemon comes up.
+	assert.False(t, shouldInitialScan("/run/moonbit/panel.sock", false, true),
+		"panel socket must skip the startup scan by default")
+	assert.True(t, shouldInitialScan("/run/moonbit/panel.sock", true, true),
+		"--initial-scan=true must force the scan even with a socket")
+	assert.False(t, shouldInitialScan("/run/moonbit/panel.sock", true, false))
+}
