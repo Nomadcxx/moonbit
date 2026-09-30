@@ -1,6 +1,7 @@
 [Unit]
 Description=MoonBit Daily Scan Timer
 Documentation=https://github.com/Nomadcxx/moonbit
+Conflicts=moonbit-daemon.service
 
 [Timer]
 # Run daily at 2 AM

@@ -4,6 +4,7 @@ Documentation=https://github.com/Nomadcxx/moonbit
 After=network.target
 # Ensure scan has run before cleaning
 After=moonbit-scan.service
+Conflicts=moonbit-daemon.service
 
 [Service]
 Type=oneshot
@@ -14,7 +15,7 @@ Environment=XDG_DATA_HOME=/var/lib
 StateDirectory=moonbit
 CacheDirectory=moonbit
 # Run with --force to actually clean (not dry-run)
-ExecStartPre=/usr/local/bin/moonbit scan --mode quick
+ExecStartPre=/usr/local/bin/moonbit scan --mode quick --no-prompt
 ExecStart=/usr/local/bin/moonbit clean --force --mode quick
 StandardOutput=journal
 StandardError=journal
