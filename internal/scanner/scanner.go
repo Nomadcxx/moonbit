@@ -197,15 +197,6 @@ func (s *Scanner) scanPath(ctx context.Context, pathPattern string, stats *confi
 	return nil
 }
 
-// WalkDirectory performs the actual directory walking
-func (s *Scanner) walkDirectory(ctx context.Context, rootPath string, stats *config.Category, progressCh chan<- ScanMsg) error {
-	seenPaths := make(map[string]struct{}, len(stats.Files))
-	for _, file := range stats.Files {
-		seenPaths[filepath.Clean(file.Path)] = struct{}{}
-	}
-	return s.walkDirectoryWithRules(ctx, rootPath, stats, progressCh, compileCategoryRules(stats), seenPaths)
-}
-
 func (s *Scanner) walkDirectoryWithRules(ctx context.Context, rootPath string, stats *config.Category, progressCh chan<- ScanMsg, rules categoryRules, seenPaths map[string]struct{}) error {
 	if info, err := s.fs.Stat(rootPath); err != nil {
 		if os.IsNotExist(err) {

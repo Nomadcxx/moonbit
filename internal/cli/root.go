@@ -1292,6 +1292,8 @@ var duplicatesCleanCmd = &cobra.Command{
 			return fmt.Errorf("scan duplicates: %w", err)
 		}
 		if printDuplicateScanErrors(result) {
+			// An unreadable subtree could contain the oldest copy; partial scans
+			// cannot safely honor the keep-oldest rule.
 			fmt.Println(S.Error("Refusing cleanup because the duplicate scan is incomplete."))
 			return fmt.Errorf("duplicate scan is incomplete; cleanup refused")
 		}
@@ -1383,7 +1385,8 @@ var duplicatesCleanCmd = &cobra.Command{
 			return nil
 		}
 
-		// Validate paths before deletion
+		// Keep this preflight for per-path user feedback; RemoveDuplicates repeats
+		// validation at the destructive-operation boundary.
 		var validatedPaths []duplicates.FileInfo
 		for _, file := range filesToRemove {
 			if err := validation.ValidateFilePath(file.Path); err != nil {

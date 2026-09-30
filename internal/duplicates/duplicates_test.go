@@ -93,6 +93,44 @@ func TestScanReportsIncompleteWhenRootCannotBeRead(t *testing.T) {
 	}
 }
 
+func TestScanReportsIncompleteWhenNestedDirectoryCannotBeRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can bypass directory permissions")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("visible"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "hidden.txt"), []byte("hidden"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(blocked, 0700)
+	if err := os.Chmod(blocked, 0000); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(ScanOptions{Paths: []string{root}, MinSize: 1})
+	progressCh := make(chan ScanProgress, 16)
+	go func() {
+		for range progressCh {
+		}
+	}()
+
+	result, err := scanner.Scan(progressCh)
+	if err != nil {
+		t.Fatalf("expected partial scan result, got error: %v", err)
+	}
+	if !result.Incomplete || len(result.ScanErrors) == 0 {
+		t.Fatalf("nested permission error must mark scan incomplete, got %+v", result)
+	}
+	if result.FilesScanned != 1 {
+		t.Fatalf("expected only the readable file, scanned %d", result.FilesScanned)
+	}
+}
+
 func TestNewScanner(t *testing.T) {
 	opts := ScanOptions{
 		Paths: []string{"/tmp"},

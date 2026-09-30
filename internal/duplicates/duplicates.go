@@ -38,7 +38,7 @@ type ScanOptions struct {
 	MinSize        int64 // Minimum file size to consider (default: 1KB)
 	MaxSize        int64 // Maximum file size to consider (0 = unlimited)
 	IgnorePatterns []string
-	MaxDepth       int
+	MaxDepth       int // Relative path depth: root is 0; directories at the limit are not traversed.
 }
 
 // ScanProgress reports scanning progress
@@ -109,7 +109,7 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 	var scanErrors []string
 
 	for _, rootPath := range s.opts.Paths {
-		err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				scanErrors = append(scanErrors, fmt.Sprintf("%s: %v", path, err))
 				return nil // Skip errors, continue scanning
@@ -164,10 +164,6 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 
 			return nil
 		})
-
-		if err != nil {
-			scanErrors = append(scanErrors, fmt.Sprintf("%s: %v", rootPath, err))
-		}
 	}
 
 	// Phase 2: Hash files with duplicate sizes

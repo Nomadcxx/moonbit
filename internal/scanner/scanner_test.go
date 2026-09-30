@@ -559,7 +559,7 @@ func TestNewScannerWithFs(t *testing.T) {
 	assert.NotNil(t, s.filter)
 }
 
-func TestWalkDirectory_NonexistentPath(t *testing.T) {
+func TestWalkDirectoryWithRules_NonexistentPath(t *testing.T) {
 	cfg := &config.Config{
 		Scan: struct {
 			MaxDepth       int      `toml:"max_depth"`
@@ -579,6 +579,6 @@ func TestWalkDirectory_NonexistentPath(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with nonexistent path (should return nil, not error)
-	err := s.walkDirectory(ctx, "/nonexistent/path/that/does/not/exist", category, progressCh)
+	err := s.walkDirectoryWithRules(ctx, "/nonexistent/path/that/does/not/exist", category, progressCh, compileCategoryRules(category), make(map[string]struct{}))
 	assert.NoError(t, err)
 }
