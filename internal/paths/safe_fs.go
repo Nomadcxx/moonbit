@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 var errNotRegularFile = errors.New("not a regular file")
@@ -113,6 +115,52 @@ func Remove(path string) error {
 		return &os.PathError{Op: "remove", Path: path, Err: err}
 	}
 	defer syscall.Close(dirFD)
+	if err := syscall.Unlinkat(dirFD, name); err != nil {
+		return &os.PathError{Op: "remove", Path: path, Err: err}
+	}
+	return nil
+}
+
+// RemoveIf reopens a regular file under its parent directory and validates its
+// identity immediately before unlinking it. Linux has no unlink-by-descriptor;
+// a same-UID writer can still swap the name in the small gap before unlinkat.
+func RemoveIf(path string, validate func(os.FileInfo) error) error {
+	if path == "" {
+		return &os.PathError{Op: "remove", Path: path, Err: syscall.ENOENT}
+	}
+	if validate == nil {
+		return fmt.Errorf("remove validation is required")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return &os.PathError{Op: "remove", Path: path, Err: err}
+	}
+	name := filepath.Base(abs)
+	if name == "." || name == string(filepath.Separator) {
+		return &os.PathError{Op: "remove", Path: path, Err: syscall.EISDIR}
+	}
+	dirFD, err := openDir(filepath.Dir(abs), false, 0)
+	if err != nil {
+		return &os.PathError{Op: "remove", Path: path, Err: err}
+	}
+	defer syscall.Close(dirFD)
+
+	fd, err := syscall.Openat(dirFD, name, unix.O_PATH|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open for removal", Path: path, Err: err}
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return &os.PathError{Op: "stat for removal", Path: path, Err: err}
+	}
+	if !info.Mode().IsRegular() {
+		return &os.PathError{Op: "remove", Path: path, Err: errNotRegularFile}
+	}
+	if err := validate(info); err != nil {
+		return err
+	}
 	if err := syscall.Unlinkat(dirFD, name); err != nil {
 		return &os.PathError{Op: "remove", Path: path, Err: err}
 	}

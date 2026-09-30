@@ -2,6 +2,7 @@ package validation
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,7 +13,9 @@ import (
 func TestValidateFilePath(t *testing.T) {
 	t.Setenv("SUDO_USER", "")
 	t.Setenv("PKEXEC_UID", "")
-	t.Setenv("MOONBIT_HOME", "/home/user")
+	home, err := os.Getwd()
+	require.NoError(t, err)
+	t.Setenv("MOONBIT_HOME", home)
 	tests := []struct {
 		name    string
 		path    string
@@ -34,7 +37,7 @@ func TestValidateFilePath(t *testing.T) {
 		{"Safe path with protected prefix only", "/etcetera/file", false},
 		{"Safe path with command prefix only", "/binish/file", false},
 		{"Safe path /tmp", "/tmp/test", false},
-		{"Safe path /home", "/home/user/test", false},
+		{"Safe path under home", filepath.Join(home, "test"), false},
 		{"Safe path /var", "/var/log/test", false},
 	}
 

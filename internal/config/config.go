@@ -478,6 +478,16 @@ func DefaultConfig() *Config {
 
 // Load loads configuration from file
 func Load(path string) (*Config, error) {
+	return load(path, true)
+}
+
+// LoadReadOnly loads configuration without creating a default config file when
+// the requested file is missing. Missing files use in-memory defaults.
+func LoadReadOnly(path string) (*Config, error) {
+	return load(path, false)
+}
+
+func load(path string, createMissing bool) (*Config, error) {
 	cfg := DefaultConfig()
 
 	if path == "" {
@@ -491,12 +501,13 @@ func Load(path string) (*Config, error) {
 
 	file, err := paths.OpenFile(path, os.O_RDONLY, 0)
 	if os.IsNotExist(err) {
-		// Create default config file
 		if err := cfg.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid default config: %w", err)
 		}
-		if err := Save(cfg, path); err != nil {
-			return nil, fmt.Errorf("failed to save default config: %w", err)
+		if createMissing {
+			if err := Save(cfg, path); err != nil {
+				return nil, fmt.Errorf("failed to save default config: %w", err)
+			}
 		}
 		return cfg, nil
 	}
@@ -517,6 +528,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
 	cfg.Normalize()
+	// Invalid rules must fail closed; defaults could widen cleanup selections.
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
