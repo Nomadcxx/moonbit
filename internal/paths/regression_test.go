@@ -355,3 +355,29 @@ func TestIsWithinUsesPathComponentBoundaries(t *testing.T) {
 		t.Fatal("empty root must not contain a path")
 	}
 }
+
+func TestMatchesPathOrDescendantUsesGlobRootsAndComponentBoundaries(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "app-one", "cache")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	pattern := filepath.Join(base, "app-*", "cache")
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "glob root", path: root, want: true},
+		{name: "glob descendant", path: filepath.Join(root, "nested", "file"), want: true},
+		{name: "similarly prefixed sibling", path: root + "-old/file", want: false},
+		{name: "outside sibling", path: filepath.Join(base, "app-two", "cache-old/file"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MatchesPathOrDescendant(pattern, tt.path); got != tt.want {
+				t.Fatalf("MatchesPathOrDescendant(%q, %q) = %v, want %v", pattern, tt.path, got, tt.want)
+			}
+		})
+	}
+}

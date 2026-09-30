@@ -23,7 +23,7 @@ func FileID(info os.FileInfo) string {
 	if !ok {
 		return ""
 	}
-	return strconv.FormatUint(uint64(stat.Dev), 16) + ":" + strconv.FormatUint(uint64(stat.Ino), 16)
+	return strconv.FormatUint(stat.Dev, 16) + ":" + strconv.FormatUint(stat.Ino, 16)
 }
 
 // MkdirAll creates path components without following symbolic links.
@@ -70,7 +70,7 @@ func OpenFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
-	defer syscall.Close(dirFD)
+	defer func() { _ = syscall.Close(dirFD) }()
 
 	fd, err := syscall.Openat(dirFD, name,
 		flag&^syscall.O_TRUNC|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK,
@@ -114,7 +114,7 @@ func Remove(path string) error {
 	if err != nil {
 		return &os.PathError{Op: "remove", Path: path, Err: err}
 	}
-	defer syscall.Close(dirFD)
+	defer func() { _ = syscall.Close(dirFD) }()
 	if err := syscall.Unlinkat(dirFD, name); err != nil {
 		return &os.PathError{Op: "remove", Path: path, Err: err}
 	}
@@ -143,7 +143,7 @@ func RemoveIf(path string, validate func(os.FileInfo) error) error {
 	if err != nil {
 		return &os.PathError{Op: "remove", Path: path, Err: err}
 	}
-	defer syscall.Close(dirFD)
+	defer func() { _ = syscall.Close(dirFD) }()
 
 	fd, err := syscall.Openat(dirFD, name, unix.O_PATH|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -205,7 +205,7 @@ func AtomicWriteFile(path string, perm os.FileMode, write func(*os.File) error) 
 	if err != nil {
 		return &os.PathError{Op: "open directory", Path: path, Err: err}
 	}
-	defer syscall.Close(dirFD)
+	defer func() { _ = syscall.Close(dirFD) }()
 
 	existingFD, err := syscall.Openat(dirFD, name,
 		syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
@@ -231,10 +231,11 @@ func AtomicWriteFile(path string, perm os.FileMode, write func(*os.File) error) 
 	committed := false
 	defer func() {
 		if temp != nil {
-			temp.Close()
+			_ = temp.Close()
 		}
 		if tempName != "" && !committed {
-			syscall.Unlinkat(dirFD, tempName)
+			// Preserve the primary error; temporary-file cleanup is best effort.
+			_ = syscall.Unlinkat(dirFD, tempName)
 		}
 	}()
 
@@ -300,17 +301,20 @@ func openDir(path string, create bool, perm os.FileMode) (int, error) {
 			syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		if errors.Is(openErr, syscall.ENOENT) && create {
 			if mkdirErr := syscall.Mkdirat(fd, part, uint32(perm.Perm())); mkdirErr != nil && !errors.Is(mkdirErr, syscall.EEXIST) {
-				syscall.Close(fd)
+				_ = syscall.Close(fd)
 				return -1, mkdirErr
 			}
 			next, openErr = syscall.Openat(fd, part,
 				syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		}
 		if openErr != nil {
-			syscall.Close(fd)
+			_ = syscall.Close(fd)
 			return -1, openErr
 		}
-		syscall.Close(fd)
+		if closeErr := syscall.Close(fd); closeErr != nil {
+			_ = syscall.Close(next)
+			return -1, closeErr
+		}
 		fd = next
 	}
 	return fd, nil
