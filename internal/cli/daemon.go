@@ -51,6 +51,8 @@ var (
 	daemonCleanInterval string
 	daemonLogFile       string
 	daemonPidFile       string
+	daemonSocket        string
+	daemonSocketMode    string
 )
 
 // DaemonState tracks the running daemon state
@@ -211,6 +213,23 @@ Examples:
 				return fmt.Errorf("failed to write PID file: %w", err)
 			}
 			defer os.Remove(daemonPidFile)
+		}
+
+		// Panel control socket (optional): lets a TTY-less desktop panel drive
+		// scan/clean/status with the same NDJSON events as --json.
+		var panelSrv *panelServer
+		if daemonSocket != "" {
+			mode, err := strconv.ParseUint(daemonSocketMode, 8, 32)
+			if err != nil {
+				return fmt.Errorf("invalid --socket-mode: %w", err)
+			}
+			panelSrv, err = listenPanelSocket(daemonSocket, os.FileMode(mode))
+			if err != nil {
+				return fmt.Errorf("panel socket: %w", err)
+			}
+			defer func() { panelSrv.Close(); os.Remove(daemonSocket) }()
+			go panelSrv.Serve()
+			fmt.Fprintf(daemonOut, "  Panel socket:   %s\n", S.Muted(daemonSocket))
 		}
 
 		fmt.Fprintln(daemonOut, S.ASCIIHeader())
@@ -497,5 +516,7 @@ func init() {
 	daemonCmd.Flags().StringVar(&daemonCleanInterval, "clean", "24h", "Clean interval (e.g., 12h, 24h, 7d)")
 	daemonCmd.Flags().StringVar(&daemonLogFile, "log", "/var/log/moonbit/daemon.log", "Log file path")
 	daemonCmd.Flags().StringVar(&daemonPidFile, "pid", DefaultPidFile, "PID file path")
+	daemonCmd.Flags().StringVar(&daemonSocket, "socket", "", "Unix socket path for panel control (e.g. /run/moonbit/panel.sock)")
+	daemonCmd.Flags().StringVar(&daemonSocketMode, "socket-mode", "0666", "Socket file permissions (octal)")
 	daemonStatusCmd.Flags().String("pid", DefaultPidFile, "PID file path to check")
 }

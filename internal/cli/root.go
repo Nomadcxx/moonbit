@@ -583,35 +583,42 @@ func cleanBegin(cache *config.SessionCache, files []config.FileInfo, dryRun bool
 	if !jsonOut {
 		return
 	}
-	type cat struct {
-		Name  string `json:"name"`
-		Files int    `json:"files"`
-		Bytes uint64 `json:"bytes"`
-	}
+	jsonEmit.emit("clean_begin", map[string]any{
+		"files":      cache.TotalFiles,
+		"bytes":      cache.TotalSize,
+		"dry_run":    dryRun,
+		"categories": categoryRollup(files),
+	})
+}
+
+// CategoryStat is a per-category file/byte rollup of a file list.
+type CategoryStat struct {
+	Name  string `json:"name"`
+	Files int    `json:"files"`
+	Bytes uint64 `json:"bytes"`
+}
+
+// categoryRollup aggregates files by CategoryName in first-seen order.
+func categoryRollup(files []config.FileInfo) []CategoryStat {
 	var order []string
-	agg := map[string]*cat{}
+	agg := map[string]*CategoryStat{}
 	for _, f := range files {
 		name := f.CategoryName
 		if name == "" {
 			name = "Other"
 		}
 		if _, ok := agg[name]; !ok {
-			agg[name] = &cat{Name: name}
+			agg[name] = &CategoryStat{Name: name}
 			order = append(order, name)
 		}
 		agg[name].Files++
 		agg[name].Bytes += f.Size
 	}
-	cats := make([]cat, 0, len(order))
+	cats := make([]CategoryStat, 0, len(order))
 	for _, n := range order {
 		cats = append(cats, *agg[n])
 	}
-	jsonEmit.emit("clean_begin", map[string]any{
-		"files":      cache.TotalFiles,
-		"bytes":      cache.TotalSize,
-		"dry_run":    dryRun,
-		"categories": cats,
-	})
+	return cats
 }
 
 // displayScanResults shows the final scan results summary
