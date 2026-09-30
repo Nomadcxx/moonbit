@@ -49,6 +49,23 @@ func TestNewLoggerWithoutHomeEnv(t *testing.T) {
 	assert.Equal(t, filepath.Join(tmpDir, ".local", "share", "moonbit", "logs", "audit.log"), logger.filePath)
 }
 
+func TestNewLoggerRejectsSymlinkedDataDirectory(t *testing.T) {
+	base := t.TempDir()
+	dataHome := filepath.Join(base, "xdg-data")
+	outside := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(dataHome, 0700))
+	require.NoError(t, os.Mkdir(outside, 0700))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dataHome, "moonbit")))
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	logger, err := NewLogger()
+	require.Error(t, err)
+	if logger != nil {
+		_ = logger.Close()
+	}
+	assert.NoFileExists(t, filepath.Join(outside, "logs", "audit.log"))
+}
+
 func TestLogger_Log(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "moonbit-audit-test-*")
 	require.NoError(t, err)

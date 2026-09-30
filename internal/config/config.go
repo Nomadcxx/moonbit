@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -88,6 +89,7 @@ type FileInfo struct {
 	Path             string    `json:"path"`
 	Size             uint64    `json:"size"`
 	ModTime          string    `json:"mod_time"`
+	FileID           string    `json:"file_id,omitempty"`
 	CategoryName     string    `json:"category_name,omitempty"`
 	CategoryRisk     RiskLevel `json:"category_risk,omitempty"`
 	CategorySelected bool      `json:"category_selected,omitempty"`
@@ -127,7 +129,7 @@ type Config struct {
 		IgnorePatterns []string `toml:"ignore_patterns"`
 		EnableAll      bool     `toml:"enable_all"`
 		DryRunDefault  bool     `toml:"dry_run_default"`
-		WorkerCount    int      `toml:"worker_count"` // Number of parallel workers (0 = auto-detect)
+		WorkerCount    int      `toml:"worker_count"` // Deprecated and ignored; retained for existing config files.
 	} `toml:"scan"`
 	Categories []Category `toml:"categories"`
 }
@@ -163,10 +165,11 @@ func DynamicCategories() []Category {
 	thumbnailPath := filepath.Join(home, ".cache", "thumbnails")
 	if _, err := os.Stat(thumbnailPath); err == nil {
 		categories = append(categories, Category{
-			Name:     "Thumbnail Cache",
-			Paths:    []string{thumbnailPath},
-			Risk:     Low,
-			Selected: true,
+			Name:       "Thumbnail Cache",
+			Paths:      []string{thumbnailPath},
+			Risk:       Low,
+			Selected:   true,
+			MinAgeDays: 30,
 		})
 	}
 
@@ -181,7 +184,19 @@ func AuthoritativeCategories(cfg *Config) []Category {
 		return DynamicCategories()
 	}
 	all := append([]Category{}, cfg.Categories...)
-	return append(all, DynamicCategories()...)
+	seen := make(map[string]struct{}, len(all))
+	for _, category := range all {
+		seen[strings.ToLower(strings.TrimSpace(category.Name))] = struct{}{}
+	}
+	for _, category := range DynamicCategories() {
+		name := strings.ToLower(strings.TrimSpace(category.Name))
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		all = append(all, category)
+		seen[name] = struct{}{}
+	}
+	return all
 }
 
 // DefaultConfig returns a comprehensive configuration with real cleaning targets
@@ -199,7 +214,7 @@ func DefaultConfig() *Config {
 			IgnorePatterns: []string{"node_modules", ".git", ".svn", ".hg"},
 			EnableAll:      true,
 			DryRunDefault:  true,
-			WorkerCount:    0, // 0 = auto-detect based on CPU count
+			WorkerCount:    0, // Deprecated and ignored; retained for existing config files.
 		},
 		Categories: []Category{
 			{
@@ -474,20 +489,37 @@ func Load(path string) (*Config, error) {
 		path = configPath
 	}
 
-	// Check if file exists
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	file, err := paths.OpenFile(path, os.O_RDONLY, 0)
+	if os.IsNotExist(err) {
 		// Create default config file
+		if err := cfg.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid default config: %w", err)
+		}
 		if err := Save(cfg, path); err != nil {
 			return nil, fmt.Errorf("failed to save default config: %w", err)
 		}
 		return cfg, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to open config file: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat config file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("config path is not a regular file: %s", path)
+	}
 
 	// Load config file
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
+	if _, err := toml.NewDecoder(file).Decode(cfg); err != nil {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
 	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	return cfg, nil
 }
@@ -551,21 +583,33 @@ func mergeStrings(existing, additions []string) []string {
 func Save(cfg *Config, path string) error {
 	// Create directory if it doesn't exist
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := paths.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create config directory: %w", err)
 		}
 	}
 
-	// Create file
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create config file: %w", err)
+	perm := os.FileMode(0644)
+	if existing, err := paths.OpenFile(path, os.O_WRONLY, 0); err == nil {
+		info, statErr := existing.Stat()
+		closeErr := existing.Close()
+		if statErr != nil {
+			return fmt.Errorf("failed to stat existing config file: %w", statErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("failed to close existing config file: %w", closeErr)
+		}
+		perm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect config file: %w", err)
 	}
-	defer f.Close()
 
-	// Encode config
-	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
-		return fmt.Errorf("failed to encode config: %w", err)
+	if err := paths.AtomicWriteFile(path, perm, func(file *os.File) error {
+		if err := toml.NewEncoder(file).Encode(cfg); err != nil {
+			return fmt.Errorf("failed to encode config: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
 	return nil
@@ -573,16 +617,59 @@ func Save(cfg *Config, path string) error {
 
 // Validate validates the configuration
 func (cfg *Config) Validate() error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
 	if cfg.Scan.MaxDepth < 1 || cfg.Scan.MaxDepth > 10 {
 		return fmt.Errorf("max_depth must be between 1 and 10, got %d", cfg.Scan.MaxDepth)
 	}
+	for _, pattern := range cfg.Scan.IgnorePatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("invalid scan ignore pattern %q: %w", pattern, err)
+		}
+	}
 
+	seen := make(map[string]struct{}, len(cfg.Categories))
 	for i, cat := range cfg.Categories {
-		if cat.Name == "" {
+		name := strings.ToLower(strings.TrimSpace(cat.Name))
+		if name == "" {
 			return fmt.Errorf("category %d has empty name", i)
 		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("category %q duplicates an existing category name", cat.Name)
+		}
+		seen[name] = struct{}{}
 		if len(cat.Paths) == 0 {
 			return fmt.Errorf("category %s has no paths", cat.Name)
+		}
+		if cat.Risk < Low || cat.Risk > High {
+			return fmt.Errorf("category %q has invalid risk level %d", cat.Name, cat.Risk)
+		}
+		if cat.MinAgeDays < 0 {
+			return fmt.Errorf("category %q has negative min_age_days", cat.Name)
+		}
+		switch cat.Action {
+		case ActionDelete, ActionTruncate:
+		default:
+			return fmt.Errorf("category %q has unknown action %q", cat.Name, cat.Action)
+		}
+		for _, path := range cat.Paths {
+			if strings.TrimSpace(path) == "" {
+				return fmt.Errorf("category %q has an empty path", cat.Name)
+			}
+			if _, err := filepath.Glob(path); err != nil {
+				return fmt.Errorf("category %q has invalid path pattern %q: %w", cat.Name, path, err)
+			}
+		}
+		for _, pattern := range cat.Filters {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("category %q has invalid filter %q: %w", cat.Name, pattern, err)
+			}
+		}
+		for _, pattern := range cat.ExcludePatterns {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("category %q has invalid exclude pattern %q: %w", cat.Name, pattern, err)
+			}
 		}
 	}
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 var (
@@ -30,14 +32,29 @@ func ValidateFilePath(path string) error {
 		return fmt.Errorf("invalid path: %w", err)
 	}
 
-	protectedPaths := []string{"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/sys", "/proc", "/dev"}
+	protectedPaths := []string{"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/etc", "/boot", "/sys", "/proc", "/dev", "/home", "/root"}
+	homePath := ""
+	if home, err := paths.HomeDir(); err == nil {
+		homePath, _ = filepath.Abs(home)
+	}
 	for _, protected := range protectedPaths {
-		if strings.HasPrefix(absPath, protected) {
+		if absPath == protected || strings.HasPrefix(absPath, protected+string(filepath.Separator)) {
+			if (protected == "/home" || protected == "/root") && pathWithin(homePath, absPath) {
+				continue
+			}
 			return fmt.Errorf("cannot operate on protected system path: %s", absPath)
 		}
 	}
 
 	return nil
+}
+
+func pathWithin(root, path string) bool {
+	if root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ValidatePackage checks if a package name is valid

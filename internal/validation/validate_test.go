@@ -10,6 +10,9 @@ import (
 )
 
 func TestValidateFilePath(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("PKEXEC_UID", "")
+	t.Setenv("MOONBIT_HOME", "/home/user")
 	tests := []struct {
 		name    string
 		path    string
@@ -21,12 +24,15 @@ func TestValidateFilePath(t *testing.T) {
 		{"Path with traversal", "../../etc/passwd", true},
 		{"Path with traversal in clean", "/tmp/../bin/ls", true}, // Cleaned to /bin/ls which is protected
 		{"Protected path /bin", "/bin/ls", true},
+		{"Protected path /etc", "/etc/passwd", true},
 		{"Protected path /usr/bin", "/usr/bin/git", true},
 		{"Protected path /sbin", "/sbin/init", true},
 		{"Protected path /boot", "/boot/vmlinuz", true},
 		{"Protected path /sys", "/sys/kernel", true},
 		{"Protected path /proc", "/proc/1", true},
 		{"Protected path /dev", "/dev/null", true},
+		{"Safe path with protected prefix only", "/etcetera/file", false},
+		{"Safe path with command prefix only", "/binish/file", false},
 		{"Safe path /tmp", "/tmp/test", false},
 		{"Safe path /home", "/home/user/test", false},
 		{"Safe path /var", "/var/log/test", false},
@@ -42,6 +48,16 @@ func TestValidateFilePath(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateFilePathProtectsOtherHomes(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("PKEXEC_UID", "")
+	t.Setenv("MOONBIT_HOME", "/home/moonbit-validation-test")
+
+	require.NoError(t, ValidateFilePath("/home/moonbit-validation-test/.cache/file"))
+	require.Error(t, ValidateFilePath("/home/another-user/.ssh/authorized_keys"))
+	require.Error(t, ValidateFilePath("/root/.bashrc"))
 }
 
 func TestValidatePackage(t *testing.T) {

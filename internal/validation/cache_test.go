@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/paths"
 )
 
 // helper: write a file and return the FileInfo the scanner would have recorded.
@@ -22,7 +23,8 @@ func scanned(t *testing.T, path string, contents []byte, category string) config
 	return config.FileInfo{
 		Path:         path,
 		Size:         uint64(st.Size()),
-		ModTime:      st.ModTime().Format(time.RFC3339),
+		ModTime:      st.ModTime().Format(time.RFC3339Nano),
+		FileID:       paths.FileID(st),
 		CategoryName: category,
 	}
 }
@@ -37,6 +39,34 @@ func cacheOf(files ...config.FileInfo) *config.SessionCache {
 		TotalSize:   total,
 		TotalFiles:  len(files),
 		ScannedAt:   time.Now(),
+	}
+}
+
+func TestRestorePathValidatorMatchesRulesAgainstRelativePath(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		filters  []string
+		excludes []string
+		wantErr  bool
+	}{
+		{name: "anchored exclude", filters: []string{`\.tmp$`}, excludes: []string{`^cache/private/`}, wantErr: true},
+		{name: "anchored filter", filters: []string{`^cache/private/.*\.tmp$`}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			validator, err := NewRestorePathValidator([]config.Category{{
+				Name: "Relative Cache", Paths: []string{"cache"}, Filters: tt.filters, ExcludePatterns: tt.excludes,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validator.ValidatePath("cache/private/file.tmp", "Relative Cache")
+			if tt.wantErr && err == nil {
+				t.Fatal("expected anchored rules to match the relative path")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("anchored rule should match the relative path: %v", err)
+			}
+		})
 	}
 }
 
@@ -303,6 +333,90 @@ func TestRevalidateRejectsChangedFiles(t *testing.T) {
 	}
 	if report.Dropped[DropChanged] != 1 {
 		t.Errorf("expected changed drop, got %v", report.Dropped)
+	}
+}
+
+func TestRevalidateRejectsSubsecondMtimeChanges(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "x.tmp")
+	if err := os.WriteFile(path, []byte("same size"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-48 * time.Hour).Truncate(time.Second).Add(100 * time.Millisecond)
+	if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	entry := scanned(t, path, []byte("same size"), "Test Cache")
+	oldInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.ModTime = oldInfo.ModTime().Format(time.RFC3339Nano)
+	entry.FileID = paths.FileID(oldInfo)
+	newTime := oldInfo.ModTime().Add(300 * time.Millisecond)
+	if err := os.Chtimes(path, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+
+	out, report, err := RevalidateCache(cacheOf(entry), []config.Category{{
+		Name: "Test Cache", Paths: []string{tmp}, Filters: []string{`\.tmp$`},
+	}}, CacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TotalFiles != 0 || report.Dropped[DropChanged] != 1 {
+		t.Fatalf("same-size subsecond mutation must be rejected: files=%d dropped=%v", out.TotalFiles, report.Dropped)
+	}
+}
+
+func TestRevalidateUpgradesLegacyMtimeBeforeBindingFileIdentity(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "legacy.tmp")
+	if err := os.WriteFile(path, []byte("legacy cache"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Now().Add(-48 * time.Hour).Truncate(time.Second).Add(100 * time.Millisecond)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := config.FileInfo{
+		Path: path, Size: uint64(info.Size()),
+		ModTime:      info.ModTime().Format(time.RFC3339),
+		CategoryName: "Test Cache",
+	}
+	category := config.Category{Name: "Test Cache", Paths: []string{tmp}, Filters: []string{`\.tmp$`}}
+
+	validated, _, err := RevalidateCache(cacheOf(entry), []config.Category{category}, CacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated.TotalFiles != 1 {
+		t.Fatalf("legacy cache entry should validate, got %d files", validated.TotalFiles)
+	}
+	got := validated.ScanResults.Files[0]
+	if got.FileID == "" {
+		t.Fatal("accepted legacy cache entry must be bound to the current file identity")
+	}
+	if want := info.ModTime().Format(time.RFC3339Nano); got.ModTime != want {
+		t.Fatalf("accepted legacy cache mtime = %q, want authoritative nanosecond value %q", got.ModTime, want)
+	}
+}
+
+func TestRevalidateDeduplicatesPaths(t *testing.T) {
+	tmp := t.TempDir()
+	entry := scanned(t, filepath.Join(tmp, "x.tmp"), []byte("same"), "Test Cache")
+	out, report, err := RevalidateCache(cacheOf(entry, entry), []config.Category{{
+		Name: "Test Cache", Paths: []string{tmp}, Filters: []string{`\.tmp$`},
+	}}, CacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TotalFiles != 1 || report.Dropped[DropDuplicate] != 1 {
+		t.Fatalf("duplicate path should appear once: files=%d dropped=%v", out.TotalFiles, report.Dropped)
 	}
 }
 

@@ -6,18 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/config"
+	"github.com/Nomadcxx/moonbit/internal/paths"
+	"github.com/Nomadcxx/moonbit/internal/validation"
 )
 
-func runClean(t *testing.T, cat *config.Category) (deleted int, freed uint64, errs []string) {
+func runClean(t *testing.T, cat *config.Category) (deleted, truncated int, freed uint64, errs []string) {
 	t.Helper()
 	ch := make(chan CleanMsg, 64)
 	c := NewCleaner(&config.Config{})
 	go c.CleanCategory(context.Background(), cat, false, ch)
 	for msg := range ch {
 		if msg.Complete != nil {
-			deleted, freed, errs = msg.Complete.FilesDeleted, msg.Complete.BytesFreed, msg.Complete.Errors
+			deleted, truncated, freed, errs = msg.Complete.FilesDeleted, msg.Complete.FilesTruncated, msg.Complete.BytesFreed, msg.Complete.Errors
 		}
 	}
 	return
@@ -30,6 +33,228 @@ func sha(t *testing.T, path string) [32]byte {
 		t.Fatal(err)
 	}
 	return sha256.Sum256(b)
+}
+
+func revalidatedCategory(t *testing.T, path string, category config.Category) *config.Category {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categoryName := category.Name
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name: categoryName,
+			Files: []config.FileInfo{{
+				Path: path, Size: uint64(info.Size()), ModTime: info.ModTime().Format(time.RFC3339), CategoryName: categoryName,
+			}},
+		},
+		ScannedAt: time.Now(),
+	}
+	validated, _, err := validation.RevalidateCache(cache, []config.Category{category}, validation.CacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated.TotalFiles != 1 {
+		t.Fatalf("expected scanned file to validate, got %d", validated.TotalFiles)
+	}
+	if validated.ScanResults.Files[0].FileID == "" {
+		t.Fatal("revalidation must bind the accepted path to its current file identity")
+	}
+	return validated.ScanResults
+}
+
+func TestCleanCategoryRejectsParentSymlinkSwapAfterRevalidation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		action config.CleanAction
+		shred  bool
+	}{
+		{name: "truncate", action: config.ActionTruncate},
+		{name: "unlink", action: config.ActionDelete},
+		{name: "shred and unlink", action: config.ActionDelete, shred: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			allowedRoot := filepath.Join(base, "allowed")
+			parent := filepath.Join(allowedRoot, "nested")
+			outsideRoot := filepath.Join(base, "outside")
+			path := filepath.Join(parent, "target.txt")
+			outsidePath := filepath.Join(outsideRoot, "target.txt")
+			if err := os.MkdirAll(parent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(outsideRoot, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("scanned cache data"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			victim := []byte("outside victim data")
+			if err := os.WriteFile(outsidePath, victim, 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			category := config.Category{
+				Name: "Test Cache", Paths: []string{allowedRoot}, Risk: config.Low,
+				Action: tt.action, ShredEnabled: tt.shred,
+			}
+			validated := revalidatedCategory(t, path, category)
+			movedParent := parent + ".original"
+			if err := os.Rename(parent, movedParent); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outsideRoot, parent); err != nil {
+				t.Fatal(err)
+			}
+
+			cleaner := &Cleaner{safetyConfig: GetDefaultSafetyConfig()}
+			progress := make(chan CleanMsg, 4)
+			err := cleaner.CleanCategory(context.Background(), validated, false, progress)
+			if err == nil {
+				t.Fatal("clean should reject a parent symlink introduced after cache validation")
+			}
+			for range progress {
+			}
+
+			got, err := os.ReadFile(outsidePath)
+			if err != nil {
+				t.Fatalf("outside victim was removed: %v", err)
+			}
+			if string(got) != string(victim) {
+				t.Fatalf("outside victim was modified: %q", got)
+			}
+			original, err := os.ReadFile(filepath.Join(movedParent, "target.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(original) != "scanned cache data" {
+				t.Fatalf("scanned file was modified through the replacement path: %q", original)
+			}
+		})
+	}
+}
+
+func TestCleanCategoryRejectsFileReplacementAfterRevalidation(t *testing.T) {
+	base := t.TempDir()
+	allowedRoot := filepath.Join(base, "allowed")
+	path := filepath.Join(allowedRoot, "target.txt")
+	if err := os.MkdirAll(allowedRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("first"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	category := config.Category{
+		Name: "Test Cache", Paths: []string{allowedRoot}, Risk: config.Low, Action: config.ActionTruncate,
+	}
+	validated := revalidatedCategory(t, path, category)
+
+	replacement := path + ".replacement"
+	if err := os.WriteFile(replacement, []byte("other"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	newTime := oldTime
+	if err := os.Chtimes(replacement, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	cleaner := &Cleaner{safetyConfig: GetDefaultSafetyConfig()}
+	progress := make(chan CleanMsg, 4)
+	err := cleaner.CleanCategory(context.Background(), validated, false, progress)
+	if err == nil {
+		t.Fatal("clean should reject a regular-file replacement after cache validation")
+	}
+	for range progress {
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "other" {
+		t.Fatalf("replacement file was modified: %q", got)
+	}
+}
+
+func TestCleanCategoryRejectsInPlaceMutationAfterRevalidation(t *testing.T) {
+	for _, action := range []config.CleanAction{config.ActionDelete, config.ActionTruncate} {
+		for _, changedSize := range []bool{false, true} {
+			name := string(action)
+			if name == "" {
+				name = "delete"
+			}
+			if changedSize {
+				name += "/size changed"
+			} else {
+				name += "/same-size content changed"
+			}
+			t.Run(name, func(t *testing.T) {
+				base := t.TempDir()
+				root := filepath.Join(base, "cache")
+				path := filepath.Join(root, "target.txt")
+				if err := os.MkdirAll(root, 0700); err != nil {
+					t.Fatal(err)
+				}
+				original := []byte("initial")
+				if err := os.WriteFile(path, original, 0600); err != nil {
+					t.Fatal(err)
+				}
+				category := config.Category{
+					Name: "Test Cache", Paths: []string{root}, Risk: config.Low, Action: action,
+				}
+				validated := revalidatedCategory(t, path, category)
+				before, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				changed := []byte("changed")
+				if changedSize {
+					changed = []byte("larger replacement")
+				}
+				if err := os.WriteFile(path, changed, 0600); err != nil {
+					t.Fatal(err)
+				}
+				newMtime := before.ModTime()
+				if !changedSize {
+					newMtime = newMtime.Add(time.Second)
+				}
+				if err := os.Chtimes(path, newMtime, newMtime); err != nil {
+					t.Fatal(err)
+				}
+				after, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if paths.FileID(before) != paths.FileID(after) {
+					t.Fatal("test mutation unexpectedly replaced the file inode")
+				}
+
+				cleaner := &Cleaner{safetyConfig: GetDefaultSafetyConfig()}
+				progress := make(chan CleanMsg, 4)
+				err = cleaner.CleanCategory(context.Background(), validated, false, progress)
+				if err == nil {
+					t.Fatal("clean should reject an in-place mutation after cache validation")
+				}
+				for range progress {
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("changed file was removed: %v", err)
+				}
+				if string(got) != string(changed) {
+					t.Fatalf("changed file was modified: %q", got)
+				}
+			})
+		}
+	}
 }
 
 // SEC-1: shredding must never reach through a symlink and destroy the target.
@@ -61,7 +286,7 @@ func TestShredDoesNotFollowSymlinks(t *testing.T) {
 
 	// Worst case: the cache claims the target's size and turns shredding on.
 	st, _ := os.Stat(link)
-	deleted, freed, _ := runClean(t, &config.Category{
+	deleted, _, freed, _ := runClean(t, &config.Category{
 		Name:         "Test",
 		Risk:         config.Low,
 		ShredEnabled: true,
@@ -143,7 +368,7 @@ func TestReportedBytesReflectDiskNotCache(t *testing.T) {
 	os.WriteFile(shrunk, make([]byte, 1024), 0644)
 	os.Remove(gone)
 
-	deleted, freed, errs := runClean(t, cat)
+	deleted, _, freed, errs := runClean(t, cat)
 
 	if freed != 1024 {
 		t.Errorf("expected 1024 bytes freed (actual size on disk), got %d", freed)
@@ -189,7 +414,7 @@ func TestTruncateActionReclaimsWithoutUnlinking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleted, freed, errs := runClean(t, &config.Category{
+	deleted, truncated, freed, errs := runClean(t, &config.Category{
 		Name:   "Docker Container Logs",
 		Risk:   config.Medium,
 		Action: config.ActionTruncate,
@@ -200,8 +425,11 @@ func TestTruncateActionReclaimsWithoutUnlinking(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	if deleted != 1 {
-		t.Errorf("expected 1 file processed, got %d", deleted)
+	if deleted != 0 {
+		t.Errorf("expected 0 files deleted, got %d", deleted)
+	}
+	if truncated != 1 {
+		t.Errorf("expected 1 file truncated, got %d", truncated)
 	}
 	if freed != 8192 {
 		t.Errorf("expected 8192 bytes reclaimed, got %d", freed)
@@ -223,7 +451,7 @@ func TestPerFileTruncateActionIsHonoured(t *testing.T) {
 	logFile := filepath.Join(tmp, "x.log")
 	os.WriteFile(logFile, make([]byte, 512), 0644)
 
-	_, freed, errs := runClean(t, &config.Category{
+	_, _, freed, errs := runClean(t, &config.Category{
 		Name:  "Aggregate",
 		Risk:  config.Low,
 		Files: []config.FileInfo{{Path: logFile, Size: 512, CategoryAction: config.ActionTruncate}},

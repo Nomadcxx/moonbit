@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -114,6 +115,23 @@ func TestManager_Load_NonExistent(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to read cache file")
 }
 
+func TestManager_LoadRejectsOversizedCache(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", base)
+	manager, err := NewManager()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(manager.Path()), 0700))
+
+	file, err := os.Create(manager.Path())
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate((64<<20)+1))
+	require.NoError(t, file.Close())
+
+	_, err = manager.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
 func TestManager_Clear(t *testing.T) {
 	// Use a temporary directory for testing
 	tmpDir, err := os.MkdirTemp("", "moonbit-session-test-*")
@@ -214,4 +232,84 @@ func TestManager_Save_CreatesDirectory(t *testing.T) {
 	// Directory should exist
 	_, err = os.Stat(cacheDir)
 	assert.NoError(t, err)
+}
+
+func TestManager_SaveRejectsSymlinkedCacheDirectory(t *testing.T) {
+	base := t.TempDir()
+	cacheHome := filepath.Join(base, "xdg-cache")
+	outside := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(cacheHome, 0700))
+	require.NoError(t, os.Mkdir(outside, 0700))
+	require.NoError(t, os.Symlink(outside, filepath.Join(cacheHome, "moonbit")))
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	manager, err := NewManager()
+	require.NoError(t, err)
+	err = manager.Save(&config.SessionCache{ScanResults: &config.Category{Name: "Test"}})
+	require.Error(t, err)
+	assert.NoFileExists(t, filepath.Join(outside, "scan_results.json"))
+}
+
+func TestManager_SaveRejectsFIFO(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(base, "xdg-cache"))
+	manager, err := NewManager()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(manager.Path()), 0700))
+	require.NoError(t, syscall.Mkfifo(manager.Path(), 0600))
+	reader, err := os.OpenFile(manager.Path(), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	require.NoError(t, err)
+	defer reader.Close()
+
+	err = manager.Save(&config.SessionCache{ScanResults: &config.Category{Name: "Test"}})
+	require.Error(t, err)
+	buf := make([]byte, 4096)
+	n, _ := reader.Read(buf)
+	assert.Zero(t, n, "cache contents must not be written to a FIFO")
+}
+
+func TestManager_LoadRejectsSymlinkedCacheFile(t *testing.T) {
+	base := t.TempDir()
+	cacheHome := filepath.Join(base, "xdg-cache")
+	outside := filepath.Join(base, "external.json")
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	manager, err := NewManager()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(manager.Path()), 0700))
+	require.NoError(t, os.WriteFile(outside, []byte(`{"scan_results":{"name":"external"}}`), 0600))
+	require.NoError(t, os.Symlink(outside, manager.Path()))
+
+	_, err = manager.Load()
+	require.Error(t, err)
+}
+
+func TestManager_ClearDoesNotFollowSymlinkedCacheDirectory(t *testing.T) {
+	base := t.TempDir()
+	cacheHome := filepath.Join(base, "xdg-cache")
+	outside := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(cacheHome, 0700))
+	require.NoError(t, os.Mkdir(outside, 0700))
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	manager, err := NewManager()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "scan_results.json"), []byte("precious"), 0600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(cacheHome, "moonbit")))
+
+	err = manager.Clear()
+	require.Error(t, err)
+	assert.FileExists(t, filepath.Join(outside, "scan_results.json"))
+}
+
+func TestManager_ExistsRejectsSymlinkedCacheFile(t *testing.T) {
+	base := t.TempDir()
+	cacheHome := filepath.Join(base, "xdg-cache")
+	outside := filepath.Join(base, "external.json")
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	manager, err := NewManager()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(manager.Path()), 0700))
+	require.NoError(t, os.WriteFile(outside, []byte(`{"scan_results":{"name":"external"}}`), 0600))
+	require.NoError(t, os.Symlink(outside, manager.Path()))
+
+	assert.False(t, manager.Exists())
 }
