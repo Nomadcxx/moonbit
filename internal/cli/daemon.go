@@ -274,7 +274,7 @@ Examples:
 		if initialScan {
 			go performScan()
 		} else {
-			fmt.Fprintf(daemonOut, "%s Initial scan skipped: panel socket active (use --initial-scan to force)\\n",
+			fmt.Fprintf(daemonOut, "%s Initial scan skipped: panel socket active (use --initial-scan to force)\n",
 				S.Muted("•"))
 		}
 
