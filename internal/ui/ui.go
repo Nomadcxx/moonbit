@@ -93,17 +93,19 @@ type Model struct {
 	scanProgress    float64
 	currentPhase    string
 	scanError       string
+	scanWarning     string
 	filesScanned    int
 	bytesScanned    uint64
 	currentFile     string
 	totalFilesGuess int
 
 	// Clean state
-	cleanActive       bool
-	cleanStarted      time.Time
-	cleanError        string
-	cleanFilesDeleted int
-	cleanBytesFreed   uint64
+	cleanActive         bool
+	cleanStarted        time.Time
+	cleanError          string
+	cleanFilesDeleted   int
+	cleanFilesTruncated int
+	cleanBytesFreed     uint64
 
 	// Categories for selection
 	categories    []CategoryInfo
@@ -117,6 +119,7 @@ type Model struct {
 	// Settings
 	cfg             *config.Config
 	dockerOperation string
+	scheduleStatus  *scheduleStatusMsg
 }
 
 // NewModel creates a new MoonBit model
@@ -221,7 +224,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCleanComplete(msg)
 	case timerCommandMsg:
 		m.currentPhase = msg.message
-		// Stay in schedule mode and refresh
+		// Refresh status asynchronously after applying a systemd change.
+		if m.mode == ModeSchedule {
+			return m, runScheduleStatus()
+		}
+		return m, nil
+	case scheduleStatusMsg:
+		m.scheduleStatus = &msg
 		return m, nil
 	case dockerCompleteMsg:
 		return m.handleDockerComplete(msg)
@@ -245,6 +254,7 @@ func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
 	m.menuIndex = 0
 	// Clear clean results
 	m.cleanFilesDeleted = 0
+	m.cleanFilesTruncated = 0
 	m.cleanBytesFreed = 0
 	return m, nil
 }
@@ -462,6 +472,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 		s := scanner.NewScanner(cfg)
 
 		var scannedCategories []config.Category
+		var scanFailures []string
 		var totalSize uint64
 		var totalFiles int
 		var totalFilesScanned int
@@ -497,12 +508,14 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 					break
 				}
 				if msg.Error != nil {
-					return scanCompleteMsg{
-						Success: false,
-						Error:   msg.Error.Error(),
-					}
+					scanFailures = append(scanFailures, fmt.Sprintf("%s: %v", category.Name, msg.Error))
+					break
 				}
 			}
+		}
+
+		if len(scanFailures) > 0 && len(scannedCategories) == 0 {
+			return scanCompleteMsg{Success: false, Error: formatScanFailures(scanFailures)}
 		}
 
 		// Save to cache
@@ -538,6 +551,7 @@ func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 
 		return scanCompleteMsg{
 			Success:    true,
+			Error:      formatScanFailures(scanFailures),
 			Categories: scannedCategories,
 			TotalSize:  totalSize,
 			TotalFiles: totalFiles,
@@ -552,9 +566,11 @@ func (m Model) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	if !msg.Success {
 		m.currentPhase = "Scan failed: " + msg.Error
 		m.scanError = msg.Error
+		m.scanWarning = ""
 		m.mode = ModeResults // Show error in results view
 		return m, nil
 	}
+	m.scanWarning = msg.Error
 
 	// Load scan results from cache
 	if cache, err := m.loadSessionCache(); err == nil {
@@ -668,7 +684,6 @@ func (m *Model) parseScanResults(cache *config.SessionCache, categories []config
 			})
 		}
 	}
-
 	m.updateSelectedCount()
 }
 
@@ -707,6 +722,9 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	m.menuIndex = 0
 	m.cleanActive = true
 	m.cleanStarted = time.Now()
+	m.cleanFilesDeleted = 0
+	m.cleanFilesTruncated = 0
+	m.cleanBytesFreed = 0
 	m.currentPhase = "Cleaning in progress..."
 
 	// Build a filtered category with only files from enabled categories
@@ -824,6 +842,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 		go func() { _ = c.CleanCategory(ctx, verified.ScanResults, false, progressCh) }()
 
 		var deletedFiles int
+		var truncatedFiles int
 		var deletedBytes uint64
 		var errors []string
 
@@ -831,6 +850,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 		for msg := range progressCh {
 			if msg.Complete != nil {
 				deletedFiles = msg.Complete.FilesDeleted
+				truncatedFiles = msg.Complete.FilesTruncated
 				deletedBytes = msg.Complete.BytesFreed
 				errors = msg.Complete.Errors
 				break
@@ -858,10 +878,11 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 		}
 
 		return cleanCompleteMsg{
-			Success:      true,
-			FilesDeleted: deletedFiles,
-			BytesFreed:   deletedBytes,
-			Error:        errorMsg,
+			Success:        true,
+			FilesDeleted:   deletedFiles,
+			FilesTruncated: truncatedFiles,
+			BytesFreed:     deletedBytes,
+			Error:          errorMsg,
 		}
 	}
 }
@@ -872,18 +893,21 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 
 	if msg.Success {
 		m.mode = ModeComplete
-		m.cleanError = ""
+		m.cleanError = msg.Error
 		m.cleanFilesDeleted = msg.FilesDeleted
+		m.cleanFilesTruncated = msg.FilesTruncated
 		m.cleanBytesFreed = msg.BytesFreed
-		if sessionMgr, err := session.NewManager(); err == nil {
-			_ = sessionMgr.Clear()
+		if msg.Error == "" {
+			if sessionMgr, err := session.NewManager(); err == nil {
+				_ = sessionMgr.Clear()
+			}
 		}
 		if msg.Error != "" {
-			m.currentPhase = fmt.Sprintf("Cleaned %d files (%s) with some errors: %s",
-				msg.FilesDeleted, utils.HumanizeBytes(msg.BytesFreed), msg.Error)
+			m.currentPhase = fmt.Sprintf("Deleted %d files and truncated %d files (%s) with some errors: %s",
+				msg.FilesDeleted, msg.FilesTruncated, utils.HumanizeBytes(msg.BytesFreed), msg.Error)
 		} else {
-			m.currentPhase = fmt.Sprintf("Successfully cleaned %d files, freed %s",
-				msg.FilesDeleted, utils.HumanizeBytes(msg.BytesFreed))
+			m.currentPhase = fmt.Sprintf("Deleted %d files and truncated %d files, freed %s",
+				msg.FilesDeleted, msg.FilesTruncated, utils.HumanizeBytes(msg.BytesFreed))
 		}
 	} else {
 		m.currentPhase = "Cleaning failed: " + msg.Error
@@ -1266,6 +1290,9 @@ func (m Model) renderSelect() string {
 				len(m.categories), m.scanResults.TotalFiles, utils.HumanizeBytes(m.scanResults.TotalSize)))
 		scanSummary += "\n\n"
 	}
+	if m.scanWarning != "" {
+		scanSummary += errorStyle.Render(m.scanWarning) + "\n\n"
+	}
 
 	// Build viewport content with categories using clean checkboxes
 	for i, cat := range m.categories {
@@ -1405,9 +1432,11 @@ func (m Model) renderConfirm() string {
 	content.WriteString("\n\n")
 
 	// Warning text with clean formatting
+	deleted, truncated := m.selectedCleanActionCounts()
+	deletedLabel, truncatedLabel := fileCountLabel(deleted), fileCountLabel(truncated)
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(FgPrimary).
-		Render("You are about to permanently delete:"))
+		Render(fmt.Sprintf("This will delete %d %s and truncate %d %s:", deleted, deletedLabel, truncated, truncatedLabel)))
 	content.WriteString("\n\n")
 
 	for _, cat := range m.categories {
@@ -1459,6 +1488,55 @@ func (m Model) renderConfirm() string {
 	}
 
 	return content.String()
+}
+
+func fileCountLabel(count int) string {
+	if count == 1 {
+		return "file"
+	}
+	return "files"
+}
+
+func (m Model) selectedCleanActionCounts() (deleted, truncated int) {
+	if m.cfg == nil || m.scanResults == nil {
+		return 0, 0
+	}
+	cache := m.buildFilteredCache()
+	if cache == nil || cache.ScanResults == nil {
+		return 0, 0
+	}
+	actions := make(map[string]config.CleanAction, len(m.cfg.Categories))
+	for _, category := range m.cfg.Categories {
+		actions[category.Name] = category.Action
+	}
+	for _, file := range cache.ScanResults.Files {
+		action := file.CategoryAction
+		if action == config.ActionDelete {
+			if file.CategoryName != "" {
+				action = actions[file.CategoryName]
+			} else {
+				for _, category := range m.cfg.Categories {
+					matched := false
+					for _, path := range category.Paths {
+						if strings.HasPrefix(file.Path, path) {
+							action = category.Action
+							matched = true
+							break
+						}
+					}
+					if matched {
+						break
+					}
+				}
+			}
+		}
+		if action == config.ActionTruncate {
+			truncated++
+		} else {
+			deleted++
+		}
+	}
+	return deleted, truncated
 }
 
 // renderClean renders the cleaning progress screen
@@ -1551,6 +1629,10 @@ func (m Model) renderComplete() string {
 	content.WriteString("\n")
 	content.WriteString(lipgloss.NewStyle().
 		Foreground(FgPrimary).
+		Render(fmt.Sprintf("Files Truncated: %d", m.cleanFilesTruncated)))
+	content.WriteString("\n")
+	content.WriteString(lipgloss.NewStyle().
+		Foreground(FgPrimary).
 		Render(fmt.Sprintf("Space Freed:    %s", utils.HumanizeBytes(m.cleanBytesFreed))))
 	content.WriteString("\n\n")
 
@@ -1560,7 +1642,7 @@ func (m Model) renderComplete() string {
 			Foreground(Warning).
 			Render("[WARN]")
 
-		content.WriteString(fmt.Sprintf("%s Some files could not be deleted", warnMarker))
+		content.WriteString(fmt.Sprintf("%s Some files could not be deleted: %s", warnMarker, m.cleanError))
 		content.WriteString("\n\n")
 	}
 
@@ -1650,12 +1732,24 @@ type scanCompleteMsg struct {
 	TotalFiles int
 }
 
+func formatScanFailures(failures []string) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	unit := "categories"
+	if len(failures) == 1 {
+		unit = "category"
+	}
+	return fmt.Sprintf("Partial scan: %d %s failed: %s", len(failures), unit, strings.Join(failures, "; "))
+}
+
 type cleanCompleteMsg struct {
-	Success      bool
-	Error        string
-	Output       string
-	FilesDeleted int
-	BytesFreed   uint64
+	Success        bool
+	Error          string
+	Output         string
+	FilesDeleted   int
+	FilesTruncated int
+	BytesFreed     uint64
 }
 
 type tickMsg time.Time
@@ -1796,7 +1890,8 @@ func (m Model) showSchedule() (tea.Model, tea.Cmd) {
 	m.mode = ModeSchedule
 	m.menuIndex = 0
 	m.currentPhase = "" // Clear any previous status messages
-	return m, nil
+	m.scheduleStatus = nil
+	return m, runScheduleStatus()
 }
 
 // renderSchedule renders the schedule management screen
@@ -1809,10 +1904,14 @@ func (m Model) renderSchedule() string {
 		Render("Schedule Automated Cleaning"))
 	content.WriteString("\n\n")
 
-	// Check current timer status
-	scanEnabled, scanStatus := checkTimerStatus("moonbit-scan.timer")
-	cleanEnabled, cleanStatus := checkTimerStatus("moonbit-clean.timer")
-	daemonEnabled, daemonStatus := checkDaemonStatus()
+	scanEnabled, scanStatus := false, "Checking..."
+	cleanEnabled, cleanStatus := false, "Checking..."
+	daemonEnabled, daemonStatus := false, "Checking..."
+	if m.scheduleStatus != nil {
+		scanEnabled, scanStatus = m.scheduleStatus.scanEnabled, m.scheduleStatus.scanStatus
+		cleanEnabled, cleanStatus = m.scheduleStatus.cleanEnabled, m.scheduleStatus.cleanStatus
+		daemonEnabled, daemonStatus = m.scheduleStatus.daemonEnabled, m.scheduleStatus.daemonStatus
+	}
 
 	// Display current status
 	content.WriteString(lipgloss.NewStyle().
@@ -1826,7 +1925,7 @@ func (m Model) renderSchedule() string {
 		daemonStatusColor = Accent
 	}
 	content.WriteString(fmt.Sprintf("  %s  Daemon Service: %s\n",
-		getStatusIcon(daemonEnabled),
+		m.scheduleStatusIcon(daemonEnabled),
 		lipgloss.NewStyle().Foreground(daemonStatusColor).Render(daemonStatus)))
 
 	// Scan timer status
@@ -1835,7 +1934,7 @@ func (m Model) renderSchedule() string {
 		scanStatusColor = Accent
 	}
 	content.WriteString(fmt.Sprintf("  %s  Scan Timer: %s\n",
-		getStatusIcon(scanEnabled),
+		m.scheduleStatusIcon(scanEnabled),
 		lipgloss.NewStyle().Foreground(scanStatusColor).Render(scanStatus)))
 
 	// Clean timer status
@@ -1844,7 +1943,7 @@ func (m Model) renderSchedule() string {
 		cleanStatusColor = Accent
 	}
 	content.WriteString(fmt.Sprintf("  %s  Clean Timer: %s\n",
-		getStatusIcon(cleanEnabled),
+		m.scheduleStatusIcon(cleanEnabled),
 		lipgloss.NewStyle().Foreground(cleanStatusColor).Render(cleanStatus)))
 
 	content.WriteString("\n")
@@ -1916,6 +2015,35 @@ func (m Model) renderSchedule() string {
 	}
 
 	return content.String()
+}
+
+func (m Model) scheduleStatusIcon(enabled bool) string {
+	if m.scheduleStatus == nil {
+		return "…"
+	}
+	return getStatusIcon(enabled)
+}
+
+func runScheduleStatus() tea.Cmd {
+	return func() tea.Msg {
+		scanEnabled, scanStatus := checkTimerStatus("moonbit-scan.timer")
+		cleanEnabled, cleanStatus := checkTimerStatus("moonbit-clean.timer")
+		daemonEnabled, daemonStatus := checkDaemonStatus()
+		return scheduleStatusMsg{
+			scanEnabled: scanEnabled, scanStatus: scanStatus,
+			cleanEnabled: cleanEnabled, cleanStatus: cleanStatus,
+			daemonEnabled: daemonEnabled, daemonStatus: daemonStatus,
+		}
+	}
+}
+
+type scheduleStatusMsg struct {
+	scanEnabled   bool
+	scanStatus    string
+	cleanEnabled  bool
+	cleanStatus   string
+	daemonEnabled bool
+	daemonStatus  string
 }
 
 // checkTimerStatus checks if a systemd timer is enabled and active
@@ -2165,9 +2293,9 @@ func (m Model) renderDockerMenu() string {
 func (m Model) renderDockerConfirm() string {
 	var content strings.Builder
 
-	detail := "This will remove unused Docker images."
-	if m.dockerOperation == "all" {
-		detail = "This will remove unused Docker images, containers, build cache, and volumes."
+	detail := "Invalid Docker cleanup operation."
+	if _, args, ok := dockerCleanupSpec(m.dockerOperation); ok {
+		detail = "Command: docker " + strings.Join(args, " ")
 	}
 
 	content.WriteString(lipgloss.NewStyle().
@@ -2200,6 +2328,17 @@ func (m Model) renderDockerConfirm() string {
 	return content.String()
 }
 
+func dockerCleanupSpec(operation string) (string, []string, bool) {
+	switch operation {
+	case "images":
+		return "prune_images", []string{"image", "prune", "-a", "-f"}, true
+	case "all":
+		return "prune_all", []string{"system", "prune", "-a", "--volumes", "-f"}, true
+	default:
+		return "", nil, false
+	}
+}
+
 // dockerCompleteMsg contains the result of a Docker cleanup operation
 type dockerCompleteMsg struct {
 	success bool
@@ -2222,6 +2361,11 @@ func runDockerCleanup(operation string) tea.Cmd {
 			defer auditLog.Close()
 		}
 
+		operationName, args, ok := dockerCleanupSpec(operation)
+		if !ok {
+			return dockerCompleteMsg{success: false, message: "❌ Invalid Docker operation"}
+		}
+
 		// Check if Docker is available
 		checkCmd := exec.Command("docker", "version")
 		if err := checkCmd.Run(); err != nil {
@@ -2234,24 +2378,7 @@ func runDockerCleanup(operation string) tea.Cmd {
 			}
 		}
 
-		var cmd *exec.Cmd
-		var operationName string
-		var args []string
-
-		if operation == "images" {
-			operationName = "prune_images"
-			cmd = exec.Command("docker", "image", "prune", "-a", "-f")
-			args = []string{"-a", "-f"}
-		} else if operation == "all" {
-			operationName = "prune_all"
-			cmd = exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
-			args = []string{"-a", "--volumes", "-f"}
-		} else {
-			return dockerCompleteMsg{
-				success: false,
-				message: "❌ Invalid Docker operation",
-			}
-		}
+		cmd := exec.Command("docker", args...)
 
 		// Capture output
 		var output strings.Builder

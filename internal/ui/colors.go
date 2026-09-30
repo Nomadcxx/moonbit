@@ -1,37 +1,8 @@
 package ui
 
 import (
-	"log"
-	"os"
-	"path/filepath"
-
-	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/charmbracelet/lipgloss"
 )
-
-// Logging for debugging
-var debugLog *log.Logger
-
-func init() {
-	// Initialize debug logger with user-specific location
-	var logFile *os.File
-	var err error
-
-	cacheFile, pathErr := paths.CacheFile()
-	if pathErr == nil {
-		logDir := filepath.Dir(cacheFile)
-		_ = os.MkdirAll(logDir, 0700) // best-effort; OpenFile below reports failure
-		logPath := filepath.Join(logDir, "debug.log")
-		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // User-only read/write
-	}
-
-	// Only create debug logger if file was successfully opened
-	// Don't fallback to stderr to avoid console spam
-	if logFile != nil && err == nil {
-		debugLog = log.New(logFile, "[MOONBIT] ", log.Ldate|log.Ltime|log.Lshortfile)
-	}
-	// If file can't be opened, debugLog remains nil (silent)
-}
 
 // Color palette for MoonBit TUI (Eldritch theme)
 var (

@@ -2,7 +2,9 @@ package ui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +177,187 @@ func TestDockerConfirmCancelReturnsToDockerMenu(t *testing.T) {
 	assert.Nil(t, cmd)
 	assert.Equal(t, ModeDocker, result.mode)
 	assert.Equal(t, "", result.dockerOperation)
+}
+
+func TestDockerConfirmShowsExecutedPruneCommand(t *testing.T) {
+	tests := []struct {
+		operation string
+		command   string
+	}{
+		{"images", "docker image prune -a -f"},
+		{"all", "docker system prune -a --volumes -f"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			model := NewModel()
+			model.dockerOperation = tt.operation
+			assert.Contains(t, model.renderDockerConfirm(), tt.command)
+		})
+	}
+}
+
+func TestCleanConfirmationSeparatesDeleteAndTruncateActions(t *testing.T) {
+	model := NewModel()
+	model.cfg = &config.Config{Categories: []config.Category{
+		{Name: "Package Cache", Paths: []string{"/cache"}, Action: config.ActionDelete},
+		{Name: "Active Logs", Paths: []string{"/logs"}, Action: config.ActionTruncate},
+	}}
+	model.categories = []CategoryInfo{
+		{Name: "Package Cache", Enabled: true},
+		{Name: "Active Logs", Enabled: true},
+	}
+	model.scanResults = &config.SessionCache{ScanResults: &config.Category{Files: []config.FileInfo{
+		{Path: "/cache/pkg", CategoryName: "Package Cache"},
+		{Path: "/logs/active.log", CategoryName: "Active Logs", CategoryAction: config.ActionTruncate},
+	}}}
+
+	assert.Contains(t, model.renderConfirm(), "delete 1 file and truncate 1 file")
+	model.scanResults.ScanResults.Files = []config.FileInfo{
+		{Path: "/cache/legacy-package.cache"},
+		{Path: "/logs/legacy-active.log"},
+	}
+	assert.Contains(t, model.renderConfirm(), "delete 1 file and truncate 1 file")
+}
+
+func TestHandleCleanCompletePreservesCacheAfterPartialFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{{Path: "/tmp/retry-me", Size: 10}}},
+		TotalFiles:  1,
+		TotalSize:   10,
+		ScannedAt:   time.Now(),
+	}
+	require.NoError(t, sessionMgr.Save(cache))
+
+	model := NewModel()
+	updated, cmd := model.handleCleanComplete(cleanCompleteMsg{
+		Success: true,
+		Error:   "1 file failed to delete",
+	})
+
+	assert.Nil(t, cmd)
+	result := updated.(Model)
+	assert.Equal(t, ModeComplete, result.mode)
+	assert.Contains(t, result.renderComplete(), "1 file failed to delete")
+	assert.True(t, sessionMgr.Exists(), "partial clean must preserve scan data for retry")
+	loaded, err := sessionMgr.Load()
+	require.NoError(t, err)
+	require.Len(t, loaded.ScanResults.Files, 1)
+	assert.Equal(t, "/tmp/retry-me", loaded.ScanResults.Files[0].Path)
+}
+
+func TestRunCleanCmdReportsTruncationSeparately(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MOONBIT_HOME", home)
+	path := filepath.Join(t.TempDir(), "active.log")
+	require.NoError(t, os.WriteFile(path, []byte("daemon output"), 0600))
+	cfg := &config.Config{Categories: []config.Category{{
+		Name: "Active Logs", Paths: []string{filepath.Dir(path)}, Risk: config.Low, Action: config.ActionTruncate,
+	}}}
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{{
+			Path: path, Size: uint64(len("daemon output")), CategoryName: "Active Logs", CategoryAction: config.ActionTruncate,
+		}}},
+		TotalFiles: 1,
+		TotalSize:  uint64(len("daemon output")),
+		ScannedAt:  time.Now(),
+	}
+
+	msg := runCleanCmd(cfg, cache)().(cleanCompleteMsg)
+
+	assert.True(t, msg.Success)
+	assert.Zero(t, msg.FilesDeleted)
+	assert.Equal(t, 1, msg.FilesTruncated)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Zero(t, info.Size())
+	updated, _ := NewModel().handleCleanComplete(msg)
+	assert.Contains(t, updated.(Model).renderComplete(), "Files Deleted:  0")
+	assert.Contains(t, updated.(Model).renderComplete(), "Files Truncated: 1")
+}
+
+func TestScheduleRenderDoesNotRunSystemctl(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "systemctl-called")
+	systemctl := filepath.Join(binDir, "systemctl")
+	script := "#!/bin/sh\n: > " + marker + "\n"
+	require.NoError(t, os.WriteFile(systemctl, []byte(script), 0700))
+	t.Setenv("PATH", binDir)
+
+	model := NewModel()
+	model.mode = ModeSchedule
+	model.renderSchedule()
+
+	assert.NoFileExists(t, marker, "schedule status checks must not run during rendering")
+}
+
+func TestShowScheduleRefreshesStatusAsynchronously(t *testing.T) {
+	model := NewModel()
+	updated, cmd := model.showSchedule()
+
+	assert.Equal(t, ModeSchedule, updated.(Model).mode)
+	assert.NotNil(t, cmd, "systemd status should be loaded by a tea command")
+}
+
+func TestScheduleActionRefreshesAndDisplaysStatus(t *testing.T) {
+	model := NewModel()
+	model.mode = ModeSchedule
+	updated, refresh := model.Update(timerCommandMsg{success: true, message: "Successfully enabled timers"})
+	assert.NotNil(t, refresh)
+
+	updated, _ = updated.(Model).Update(scheduleStatusMsg{
+		scanEnabled: true, scanStatus: "Enabled & Active",
+		cleanEnabled: true, cleanStatus: "Enabled (Inactive)",
+		daemonStatus: "Disabled",
+	})
+	screen := updated.(Model).renderSchedule()
+	assert.Contains(t, screen, "Enabled & Active")
+	assert.Contains(t, screen, "Enabled (Inactive)")
+}
+
+func TestNoDebugLogCreatedAtStartup(t *testing.T) {
+	if os.Getenv("MOONBIT_STARTUP_CHILD") == "1" {
+		return
+	}
+
+	cacheHome := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestNoDebugLogCreatedAtStartup$")
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "MOONBIT_STARTUP_CHILD=") ||
+			strings.HasPrefix(entry, "XDG_CACHE_HOME=") || strings.HasPrefix(entry, "HOME=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env, "MOONBIT_STARTUP_CHILD=1", "XDG_CACHE_HOME="+cacheHome, "HOME="+cacheHome)
+	require.NoError(t, cmd.Run())
+	assert.NoFileExists(t, filepath.Join(cacheHome, "moonbit", "debug.log"))
+}
+
+func TestScanCompleteReportsPartialCategoryFailures(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	require.NoError(t, sessionMgr.Save(&config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{{Path: "/tmp/found"}}},
+		TotalFiles:  1,
+		ScannedAt:   time.Now(),
+	}))
+
+	model := NewModel()
+	updated, _ := model.handleScanComplete(scanCompleteMsg{
+		Success:    true,
+		Error:      "Partial scan: Broken Cache: read failed",
+		Categories: []config.Category{{Name: "Working Cache", FileCount: 1}},
+	})
+
+	result := updated.(Model)
+	assert.Equal(t, ModeSelect, result.mode)
+	assert.Contains(t, result.renderSelect(), "Partial scan: Broken Cache: read failed")
 }
 
 func TestHandleCleanCompleteClearsSessionCache(t *testing.T) {
