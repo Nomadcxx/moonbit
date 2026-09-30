@@ -228,7 +228,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("panel socket: %w", err)
 			}
-			defer func() { panelSrv.Close(); os.Remove(daemonSocket) }()
+			defer func() { _ = panelSrv.Close(); _ = os.Remove(daemonSocket) }()
 			go panelSrv.Serve()
 			fmt.Fprintf(daemonOut, "  Panel socket:   %s\n", S.Muted(daemonSocket))
 		}

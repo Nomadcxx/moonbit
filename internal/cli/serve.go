@@ -63,7 +63,7 @@ func listenPanelSocket(path string, mode os.FileMode) (*panelServer, error) {
 	}
 	if mode != 0 {
 		if err := os.Chmod(path, mode); err != nil {
-			ln.Close()
+			_ = ln.Close()
 			return nil, err
 		}
 	}
@@ -85,7 +85,7 @@ func (s *panelServer) Serve() {
 
 // handlePanelConn serves exactly one request, then closes.
 func handlePanelConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
 	if err != nil {
