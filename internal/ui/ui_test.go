@@ -234,8 +234,9 @@ func TestHandleCleanCompletePreservesCacheAfterPartialFailure(t *testing.T) {
 
 	model := NewModel()
 	updated, cmd := model.handleCleanComplete(cleanCompleteMsg{
-		Success: true,
-		Warning: "1 cleanup action failed",
+		Success:       true,
+		FailedActions: 1,
+		Warning:       "1 cleanup action failed",
 	})
 
 	assert.Nil(t, cmd)
@@ -250,6 +251,30 @@ func TestHandleCleanCompletePreservesCacheAfterPartialFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, loaded.ScanResults.Files, 1)
 	assert.Equal(t, "/tmp/retry-me", loaded.ScanResults.Files[0].Path)
+}
+
+func TestHandleCleanCompleteClearsCacheWhenOnlyStaleFilesWereSkipped(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	require.NoError(t, sessionMgr.Save(&config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{{Path: "/tmp/now-stale", Size: 10}}},
+		TotalFiles:  1,
+		ScannedAt:   time.Now(),
+	}))
+
+	model := NewModel()
+	updated, cmd := model.handleCleanComplete(cleanCompleteMsg{
+		Success: true,
+		Warning: "1 cached file skipped (no longer verify against config)",
+	})
+	assert.Nil(t, cmd)
+	result := updated.(Model)
+	assert.Equal(t, 0, result.cleanActionFailures)
+	assert.False(t, sessionMgr.Exists(), "stale entries cannot be retried from the old cache")
+	assert.Contains(t, result.renderComplete(), "Some cached files no longer verify")
+	assert.Contains(t, result.renderComplete(), "Scan again to refresh")
+	assert.NotContains(t, result.renderComplete(), "retained for retry")
 }
 
 func TestRunCleanCmdReportsTruncationSeparately(t *testing.T) {

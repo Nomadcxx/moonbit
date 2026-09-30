@@ -106,6 +106,7 @@ type Model struct {
 	cleanStarted        time.Time
 	cleanError          string
 	cleanWarning        string
+	cleanActionFailures int
 	cleanFilesDeleted   int
 	cleanFilesTruncated int
 	cleanBytesFreed     uint64
@@ -261,6 +262,7 @@ func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
 	m.cleanBytesFreed = 0
 	m.cleanError = ""
 	m.cleanWarning = ""
+	m.cleanActionFailures = 0
 	return m, nil
 }
 
@@ -732,6 +734,7 @@ func (m Model) executeClean() (tea.Model, tea.Cmd) {
 	m.cleanBytesFreed = 0
 	m.cleanError = ""
 	m.cleanWarning = ""
+	m.cleanActionFailures = 0
 	m.currentPhase = "Cleaning in progress..."
 
 	// Build a filtered category with only files from enabled categories
@@ -884,7 +887,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			if skipped == 1 {
 				fileLabel = "file"
 			}
-			note := fmt.Sprintf("%d scanned %s skipped (no longer verify against config)", skipped, fileLabel)
+			note := fmt.Sprintf("%d cached %s skipped (no longer verify against config)", skipped, fileLabel)
 			if warning == "" {
 				warning = note
 			} else {
@@ -897,6 +900,7 @@ func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 			FilesDeleted:   deletedFiles,
 			FilesTruncated: truncatedFiles,
 			BytesFreed:     deletedBytes,
+			FailedActions:  len(errors),
 			Warning:        warning,
 		}
 	}
@@ -910,11 +914,12 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeComplete
 		m.cleanError = ""
 		m.cleanWarning = msg.Warning
+		m.cleanActionFailures = msg.FailedActions
 		m.cleanFilesDeleted = msg.FilesDeleted
 		m.cleanFilesTruncated = msg.FilesTruncated
 		m.cleanBytesFreed = msg.BytesFreed
-		// A complete clean invalidates the cache; partial cleanup keeps it so failed actions can be retried.
-		if msg.Warning == "" {
+		// Keep the cache only when failed actions can be retried; skipped entries need a fresh scan.
+		if msg.FailedActions == 0 {
 			if sessionMgr, err := session.NewManager(); err == nil {
 				_ = sessionMgr.Clear()
 			}
@@ -930,6 +935,7 @@ func (m Model) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 		m.currentPhase = "Cleaning failed: " + msg.Error
 		m.cleanError = msg.Error
 		m.cleanWarning = ""
+		m.cleanActionFailures = 0
 		m.mode = ModeResults // Return to results view on error
 	}
 	return m, nil
@@ -1659,8 +1665,11 @@ func (m Model) renderComplete() string {
 		warnMarker := lipgloss.NewStyle().
 			Foreground(Warning).
 			Render("[WARN]")
-
-		content.WriteString(fmt.Sprintf("%s Some cleanup actions failed. The scan cache is retained for retry: %s", warnMarker, m.cleanWarning))
+		if m.cleanActionFailures > 0 {
+			content.WriteString(fmt.Sprintf("%s Some cleanup actions failed. The scan cache is retained for retry: %s", warnMarker, m.cleanWarning))
+		} else {
+			content.WriteString(fmt.Sprintf("%s Some cached files no longer verify against the current config and were skipped. Scan again to refresh: %s", warnMarker, m.cleanWarning))
+		}
 		content.WriteString("\n\n")
 	}
 
@@ -1773,6 +1782,7 @@ type cleanCompleteMsg struct {
 	FilesDeleted   int
 	FilesTruncated int
 	BytesFreed     uint64
+	FailedActions  int
 }
 
 type tickMsg time.Time
