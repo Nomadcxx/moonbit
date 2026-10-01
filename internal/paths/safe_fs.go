@@ -292,6 +292,7 @@ func openDir(path string, create bool, perm os.FileMode) (int, error) {
 	}
 
 	parts := strings.Split(strings.TrimPrefix(filepath.Clean(abs), string(filepath.Separator)), string(filepath.Separator))
+	// ponytail: Ignore directory-fd close errors here; preserve the path-operation result.
 	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
@@ -300,17 +301,17 @@ func openDir(path string, create bool, perm os.FileMode) (int, error) {
 			syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		if errors.Is(openErr, syscall.ENOENT) && create {
 			if mkdirErr := syscall.Mkdirat(fd, part, uint32(perm.Perm())); mkdirErr != nil && !errors.Is(mkdirErr, syscall.EEXIST) {
-				syscall.Close(fd)
+				_ = syscall.Close(fd)
 				return -1, mkdirErr
 			}
 			next, openErr = syscall.Openat(fd, part,
 				syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		}
 		if openErr != nil {
-			syscall.Close(fd)
+			_ = syscall.Close(fd)
 			return -1, openErr
 		}
-		syscall.Close(fd)
+		_ = syscall.Close(fd)
 		fd = next
 	}
 	return fd, nil

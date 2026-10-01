@@ -10,10 +10,9 @@ on:
       - '.github/workflows/release.yml'
       - 'nfpm.yaml'
 
-# Releases must not be cancelled mid-flight, so superseded runs queue rather
-# than cancel. This still stops a burst of tag pushes from running in parallel.
+# Serialize tag releases without cancelling a release already in progress.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/tags/') && 'tags' || github.ref }}
   cancel-in-progress: false
 
 permissions:
