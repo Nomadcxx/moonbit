@@ -6,6 +6,16 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+# Supersede in-flight runs for the same branch or PR: a new push cancels the
+# previous run instead of queueing another full build behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
