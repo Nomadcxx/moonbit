@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -23,6 +24,29 @@ func IsWithin(root, path string) bool {
 	}
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// MatchesPathOrDescendant reports whether candidate is a configured path
+// match or a descendant of a glob-expanded configured path.
+func MatchesPathOrDescendant(pattern, candidate string) bool {
+	if pattern == "" || candidate == "" {
+		return false
+	}
+
+	roots := []string{pattern}
+	if strings.ContainsAny(pattern, "*?[") {
+		var err error
+		roots, err = filepath.Glob(pattern)
+		if err != nil {
+			return false
+		}
+	}
+	for _, root := range roots {
+		if IsWithin(root, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // homeFromPasswd resolves a home directory through the passwd database rather
@@ -139,4 +163,29 @@ func DataDir(parts ...string) (string, error) {
 
 	allParts := append([]string{base}, parts...)
 	return filepath.Join(allParts...), nil
+}
+
+// OwnerID reports the uid/gid of the human behind an elevation (sudo or
+// pkexec), when running as root. Root-created files in the user's home are
+// otherwise unreadable by that user.
+func OwnerID() (uid, gid int, ok bool) {
+	if os.Geteuid() != 0 {
+		return 0, 0, false
+	}
+	if name := os.Getenv("SUDO_USER"); name != "" {
+		if u, err := user.Lookup(name); err == nil {
+			return atoi(u.Uid), atoi(u.Gid), true
+		}
+	}
+	if id := os.Getenv("PKEXEC_UID"); id != "" {
+		if u, err := user.LookupId(id); err == nil {
+			return atoi(u.Uid), atoi(u.Gid), true
+		}
+	}
+	return 0, 0, false
+}
+
+func atoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }

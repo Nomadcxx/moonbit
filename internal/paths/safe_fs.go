@@ -231,9 +231,10 @@ func AtomicWriteFile(path string, perm os.FileMode, write func(*os.File) error) 
 	committed := false
 	defer func() {
 		if temp != nil {
-			temp.Close()
+			_ = temp.Close()
 		}
 		if tempName != "" && !committed {
+			// Preserve the primary error; temporary-file cleanup is best effort.
 			_ = syscall.Unlinkat(dirFD, tempName)
 		}
 	}()
@@ -292,7 +293,6 @@ func openDir(path string, create bool, perm os.FileMode) (int, error) {
 	}
 
 	parts := strings.Split(strings.TrimPrefix(filepath.Clean(abs), string(filepath.Separator)), string(filepath.Separator))
-	// ponytail: Ignore directory-fd close errors here; preserve the path-operation result.
 	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
@@ -311,7 +311,10 @@ func openDir(path string, create bool, perm os.FileMode) (int, error) {
 			_ = syscall.Close(fd)
 			return -1, openErr
 		}
-		_ = syscall.Close(fd)
+		if closeErr := syscall.Close(fd); closeErr != nil {
+			_ = syscall.Close(next)
+			return -1, closeErr
+		}
 		fd = next
 	}
 	return fd, nil

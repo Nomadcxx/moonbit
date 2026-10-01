@@ -165,8 +165,6 @@ func (s *Scanner) Scan(progressCh chan<- ScanProgress) (*ScanResult, error) {
 			return nil
 		})
 		if walkErr != nil {
-			// The callback returns nil, so a non-nil result means the walk
-			// itself failed (for example an unreadable root path).
 			scanErrors = append(scanErrors, fmt.Sprintf("%s: %v", rootPath, walkErr))
 		}
 	}

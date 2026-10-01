@@ -55,6 +55,13 @@ func (m *Manager) Save(cache *config.SessionCache) error {
 		return fmt.Errorf("failed to write cache file: %w", err)
 	}
 
+	// Root-run (sudo/pkexec) results must stay readable by the invoking user's
+	// panel plugin; chown dir+file back to them.
+	if uid, gid, ok := paths.OwnerID(); ok {
+		_ = os.Chown(cacheDir, uid, gid)
+		_ = os.Chown(m.cachePath, uid, gid)
+	}
+
 	return nil
 }
 
