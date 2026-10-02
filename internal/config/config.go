@@ -190,13 +190,38 @@ func AuthoritativeCategories(cfg *Config) []Category {
 	}
 	for _, category := range DynamicCategories() {
 		name := strings.ToLower(strings.TrimSpace(category.Name))
-		if _, exists := seen[name]; exists {
+		if _, exists := seen[name]; exists || coveredByConfig(category, cfg.Categories) {
 			continue
 		}
 		all = append(all, category)
 		seen[name] = struct{}{}
 	}
 	return all
+}
+
+// coveredByConfig reports whether every path of a detected category already
+// sits under a configured one. The default config's Thumbnails and the
+// detected Thumbnail Cache both name ~/.cache/thumbnails; listing both made a
+// scan count each file twice, and the clean's duplicate check then emptied
+// the second category.
+func coveredByConfig(detected Category, configured []Category) bool {
+	if len(detected.Paths) == 0 {
+		return false
+	}
+	for _, p := range detected.Paths {
+		covered := false
+		for _, c := range configured {
+			for _, root := range c.Paths {
+				if paths.IsWithin(root, p) {
+					covered = true
+				}
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultConfig returns a comprehensive configuration with real cleaning targets

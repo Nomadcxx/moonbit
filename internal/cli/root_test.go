@@ -676,3 +676,55 @@ func TestCleanSessionRefusesAReplacedScan(t *testing.T) {
 	cleanScannedAt = reviewed
 	captureStdout(t, func() { require.NoError(t, CleanSession(true)) })
 }
+
+// The panel narrows a clean to the categories the user kept. One whose files
+// all fail verification cleans nothing; it must not fail the whole clean as an
+// unknown category, which is what a duplicated Thumbnail Cache did.
+func TestCleanSessionSurvivesASelectedCategoryThatVerifiesToNothing(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	t.Setenv("HOME", home)
+	t.Setenv("MOONBIT_HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	originalMode, originalIncludes := scanMode, includeCategories
+	scanMode, includeCategories = "", []string{"Test Package Cache", "Ghost Cache"}
+	defer func() { scanMode, includeCategories = originalMode, originalIncludes }()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.cache")
+	require.NoError(t, os.WriteFile(path, []byte("cache"), 0600))
+	cfg := config.DefaultConfig()
+	cfg.Categories = append(cfg.Categories, config.Category{Name: "Test Package Cache", Paths: []string{dir}, Risk: config.Low})
+	require.NoError(t, config.Save(cfg, filepath.Join(configHome, "moonbit", "config.toml")))
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	require.NoError(t, sessionMgr.Save(&config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{
+			{Path: path, Size: 5, CategoryName: "Test Package Cache"},
+			{Path: filepath.Join(dir, "gone"), Size: 1, CategoryName: "Ghost Cache"},
+		}},
+		TotalFiles: 2, TotalSize: 6, ScannedAt: time.Now(),
+	}))
+
+	output := captureStdout(t, func() { require.NoError(t, CleanSession(true)) })
+	assert.Contains(t, output, "DRY RUN - Would delete 1 file")
+}
+
+func TestScanCategoriesListThumbnailsOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MOONBIT_HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cache", "thumbnails"), 0700))
+	cats, err := prepareScanCategories("deep", config.DefaultConfig())
+	require.NoError(t, err)
+	var thumbs []string
+	for _, c := range cats {
+		for _, p := range c.Paths {
+			if strings.Contains(p, ".cache/thumbnails") {
+				thumbs = append(thumbs, c.Name)
+			}
+		}
+	}
+	assert.Len(t, thumbs, 1, "thumbnail categories: %v", thumbs)
+}

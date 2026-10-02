@@ -358,9 +358,7 @@ func initializeScanner() (*config.Config, *scanner.Scanner, error) {
 
 // prepareScanCategories filters and prepares categories based on scan mode
 func prepareScanCategories(mode string, cfg *config.Config) ([]config.Category, error) {
-	availableCategories := detectAvailableCategories()
-	allCategories := append([]config.Category{}, cfg.Categories...)
-	allCategories = append(allCategories, availableCategories...)
+	allCategories := config.AuthoritativeCategories(cfg)
 
 	// Filter by mode
 	var filteredCategories []config.Category
@@ -725,6 +723,22 @@ func CleanSession(dryRun bool) error {
 		return nil
 	}
 
+	// Narrow to the chosen categories before verifying, so the names are
+	// checked against what the scan reported. A chosen category whose files
+	// then all fail verification cleans nothing; it is not an unknown name.
+	cache, err = filterCacheByCategorySelection(cache, includeCategories, excludeCategories)
+	if err != nil {
+		return err
+	}
+	if cache.TotalFiles == 0 {
+		if !jsonOut {
+			fmt.Println("No files to clean after category filters.")
+		} else {
+			jsonEmit.emit("clean_done", map[string]any{"deleted": 0, "freed": 0, "errors": []string{}})
+		}
+		return nil
+	}
+
 	// Load config and create cleaner
 	cfg, err := config.Load("")
 	if err != nil {
@@ -758,19 +772,6 @@ func CleanSession(dryRun bool) error {
 			}
 			return nil
 		}
-	}
-
-	cache, err = filterCacheByCategorySelection(cache, includeCategories, excludeCategories)
-	if err != nil {
-		return err
-	}
-	if cache.TotalFiles == 0 {
-		if !jsonOut {
-			fmt.Println("No files to clean after category filters.")
-		} else {
-			jsonEmit.emit("clean_done", map[string]any{"deleted": 0, "freed": 0, "errors": []string{}})
-		}
-		return nil
 	}
 
 	c := cleaner.NewCleaner(cfg)
@@ -907,11 +908,6 @@ func CleanSession(dryRun bool) error {
 	}
 
 	return nil
-}
-
-// detectAvailableCategories dynamically finds available cleaning targets
-func detectAvailableCategories() []config.Category {
-	return config.DynamicCategories()
 }
 
 func clearSessionCache() error {

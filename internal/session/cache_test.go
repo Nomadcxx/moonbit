@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -124,7 +125,7 @@ func TestManager_LoadRejectsOversizedCache(t *testing.T) {
 
 	file, err := os.Create(manager.Path())
 	require.NoError(t, err)
-	require.NoError(t, file.Truncate((64<<20)+1))
+	require.NoError(t, file.Truncate(maxCacheSize+1))
 	require.NoError(t, file.Close())
 
 	_, err = manager.Load()
@@ -312,4 +313,33 @@ func TestManager_ExistsRejectsSymlinkedCacheFile(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, manager.Path()))
 
 	assert.False(t, manager.Exists())
+}
+
+func TestManager_SaveWritesASummaryAndClearRemovesIt(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	manager, err := NewManager()
+	require.NoError(t, err)
+	scanned := time.Date(2026, 10, 2, 13, 36, 0, 0, time.UTC)
+	require.NoError(t, manager.Save(&config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{
+			{Path: "/a", Size: 10, CategoryName: "npm Cache"},
+			{Path: "/b", Size: 5, CategoryName: "Pacman Cache"},
+			{Path: "/c", Size: 1, CategoryName: "npm Cache"},
+		}},
+		TotalSize: 16, TotalFiles: 3, ScannedAt: scanned,
+	}))
+
+	summaryPath := filepath.Join(filepath.Dir(manager.Path()), summaryName)
+	raw, err := os.ReadFile(summaryPath)
+	require.NoError(t, err)
+	var got Summary
+	require.NoError(t, json.Unmarshal(raw, &got))
+	assert.Equal(t, Summary{TotalSize: 16, TotalFiles: 3, ScannedAt: scanned, Categories: []CategorySummary{
+		{Name: "npm Cache", Files: 2, Bytes: 11},
+		{Name: "Pacman Cache", Files: 1, Bytes: 5},
+	}}, got)
+
+	require.NoError(t, manager.Clear())
+	_, err = os.Stat(summaryPath)
+	assert.True(t, os.IsNotExist(err), "Clear left the summary behind")
 }
