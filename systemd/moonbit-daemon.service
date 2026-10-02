@@ -21,11 +21,13 @@ RestartSec=30
 # Security hardening (matching existing service files)
 PrivateTmp=yes
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
+# Match `sudo moonbit`: every category the TUI cleans lives under /var or a
+# user's home, so only /usr, /boot and /etc stay read-only.
+ProtectSystem=full
 RuntimeDirectory=moonbit
+# Keep /run/moonbit/op.lock: the TUI or the panel may hold it across a stop.
+RuntimeDirectoryPreserve=yes
 RuntimeDirectoryMode=0755
-ReadWritePaths=/var/cache/moonbit /var/cache /var/tmp /var/log/moonbit /var/lib/moonbit
 
 # Logging
 StandardOutput=journal

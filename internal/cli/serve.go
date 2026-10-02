@@ -3,31 +3,37 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/audit"
+	"github.com/Nomadcxx/moonbit/internal/docker"
 	"github.com/Nomadcxx/moonbit/internal/session"
+	"github.com/Nomadcxx/moonbit/internal/units"
 	"github.com/Nomadcxx/moonbit/internal/validation"
+	"github.com/spf13/cobra"
 )
 
-// Panel control socket. A desktop panel has no TTY, so it cannot use the
-// terminal+sudo launcher, and it cannot signal a root process - the daemon
-// serves one NDJSON command per connection and reuses the exact --json event
-// stream. Closing the connection cancels the running operation (EOF on the
-// connection reader cancels the context, same contract as --json on stdin).
+// Desktop panel protocol. A panel has no TTY, so it drives moonbit with one
+// NDJSON request and reads back the same event stream --json produces.
+// Closing the request side cancels a running operation (EOF on the request
+// reader cancels the context, the same contract as --json on stdin).
 //
-// Access model: the socket defaults to 0666, i.e. any local user may trigger
-// scan/clean. That is deliberate - those commands only ever act on the
-// daemon's own root-owned config and session cache under /var (the unit sets
-// ProtectHome + XDG_CACHE_HOME=/var/cache), so every local user already has
-// this power through the enabled system timers. Paths are revalidated against
-// root-owned config before deletion (validation.RevalidateCache); nothing
-// user-writable feeds the delete list. Use --socket-mode to tighten.
+// Two transports, two powers:
+//
+//   - `moonbit panel` reads one request from stdin. The panel starts it
+//     through `sudo -S`, asking the user's password every time, so it acts
+//     exactly as the TUI does under sudo: the invoking user's config and scan
+//     cache, every category, Docker, and the schedule units.
+//   - The daemon's --socket is open to every local user (0666 by default), so
+//     it answers only ping and status. Root reach without a password must not
+//     be one connect() away for every account on the machine.
 
 type panelRequest struct {
 	Cmd        string   `json:"cmd"`
@@ -38,6 +44,12 @@ type panelRequest struct {
 	// event carries it). Scheduled scans replace the cache, so without it the
 	// clean would act on files the user never saw.
 	ScannedAt time.Time `json:"scanned_at,omitempty"`
+	// Op names a Docker cleanup: images or all.
+	Op string `json:"op,omitempty"`
+	// Target (daemon or timers) and Action (enable or disable) drive the
+	// schedule, as the TUI's Schedule screen does.
+	Target string `json:"target,omitempty"`
+	Action string `json:"action,omitempty"`
 }
 
 // withPanelCategories applies a request's category selection to the same
@@ -87,26 +99,40 @@ func (s *panelServer) Serve() {
 	}
 }
 
-// handlePanelConn serves exactly one request, then closes.
+// handlePanelConn serves one read-only socket request, then closes.
 func handlePanelConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
-	br := bufio.NewReader(conn)
+	servePanel(conn, conn, false)
+}
+
+// servePanel answers exactly one request read from r. privileged is true only
+// for `moonbit panel`, which runs as root through sudo.
+func servePanel(r io.Reader, w io.Writer, privileged bool) {
+	br := bufio.NewReader(r)
 	line, err := br.ReadString('\n')
 	if err != nil {
 		return
 	}
 	var req panelRequest
 	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &req); err != nil {
-		writePanelEvent(conn, "error", map[string]any{"msg": "invalid request: " + err.Error()})
+		writePanelEvent(w, "error", map[string]any{"msg": "invalid request: " + err.Error()})
 		return
 	}
 	switch req.Cmd {
 	case "ping":
-		writePanelEvent(conn, "pong", nil)
+		writePanelEvent(w, "pong", nil)
+		return
 	case "status":
-		writePanelEvent(conn, "status", panelStatus())
+		writePanelEvent(w, "status", panelStatus())
+		return
+	}
+	if !privileged {
+		writePanelEvent(w, "error", map[string]any{"msg": "the daemon socket is read-only; run " + req.Cmd + " through `sudo moonbit panel`"})
+		return
+	}
+	switch req.Cmd {
 	case "scan":
-		runPanelOp(conn, br, "panel_scan", []string{req.Mode}, func() error {
+		runPanelOp(w, br, "panel_scan", []string{req.Mode}, func() error {
 			if req.Mode != "" {
 				if err := validation.ValidateMode(req.Mode); err != nil {
 					return err
@@ -123,7 +149,7 @@ func handlePanelConn(conn net.Conn) {
 			})
 		})
 	case "clean":
-		runPanelOp(conn, br, "panel_clean", []string{fmt.Sprintf("force=%t", req.Force)}, func() error {
+		runPanelOp(w, br, "panel_clean", []string{fmt.Sprintf("force=%t", req.Force)}, func() error {
 			if daemonState != nil {
 				daemonState.setLastCleanTime(time.Now())
 				daemonState.incrementCleanCount()
@@ -134,25 +160,112 @@ func handlePanelConn(conn net.Conn) {
 				return CleanSession(!req.Force)
 			})
 		})
+	case "docker":
+		runPanelOp(w, br, "panel_docker", []string{req.Op}, func() error { return panelDocker(req.Op) })
+	case "schedule":
+		panelSchedule(w, req.Target, req.Action)
 	default:
-		writePanelEvent(conn, "error", map[string]any{"msg": "unknown cmd: " + req.Cmd})
+		writePanelEvent(w, "error", map[string]any{"msg": "unknown cmd: " + req.Cmd})
 	}
 }
 
-// runPanelOp serializes with the timer loop via opSem, streams the same
-// NDJSON events as --json to the connection, and always ends with exactly one
-// terminal event (the operation functions emit done/clean_done themselves).
-func runPanelOp(conn net.Conn, cancel io.Reader, op string, args []string, fn func() error) {
-	select {
-	case opSem <- struct{}{}:
-		defer func() { <-opSem }()
-	default:
-		writePanelEvent(conn, "error", map[string]any{"msg": "another operation in progress"})
+// panelDocker runs the TUI's Docker cleanup and reports what Docker freed.
+func panelDocker(op string) error {
+	spec, ok := docker.PruneSpecFor(op)
+	if !ok {
+		return fmt.Errorf("unknown docker cleanup %q", op)
+	}
+	auditLog, _ := audit.NewLogger()
+	if auditLog != nil {
+		defer auditLog.Close()
+	}
+	if err := exec.Command("docker", "version").Run(); err != nil {
+		if auditLog != nil {
+			auditLog.LogDockerOperation(spec.AuditOperation, []string{}, "failed", err)
+		}
+		return fmt.Errorf("docker is not installed or not running")
+	}
+	out, err := exec.CommandContext(jsonContext(), "docker", spec.Args...).CombinedOutput()
+	if auditLog != nil {
+		result := "success"
+		if err != nil {
+			result = "failed"
+		}
+		auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
+	}
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("docker %s: %s", strings.Join(spec.Args, " "), lastLine(msg))
+		}
+		return err
+	}
+	jsonEmit.emit("docker_done", map[string]any{"op": op, "reclaimed": dockerReclaimed(string(out))})
+	return nil
+}
+
+// dockerReclaimed pulls "1.2GB" out of prune's "Total reclaimed space: 1.2GB".
+func dockerReclaimed(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Total reclaimed space:"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
+}
+
+// panelSchedule enables or disables the daemon or the timers, as the TUI's
+// Schedule screen does. The units conflict, so systemd stops one mode when
+// the other starts.
+func panelSchedule(w io.Writer, target, action string) {
+	if action != "enable" && action != "disable" {
+		writePanelEvent(w, "error", map[string]any{"msg": "schedule action must be enable or disable"})
 		return
 	}
-	initJSONTo(conn, cancel)
+	var names []string
+	switch target {
+	case "daemon":
+		names = []string{units.Daemon}
+	case "timers":
+		names = units.Timers
+	default:
+		writePanelEvent(w, "error", map[string]any{"msg": "schedule target must be daemon or timers"})
+		return
+	}
+	err := units.Apply(action, names...)
+	if auditLog, _ := audit.NewLogger(); auditLog != nil {
+		result := "success"
+		if err != nil {
+			result = "failed"
+		}
+		auditLog.LogSystemdOperation(action, strings.Join(names, ", "), result, err)
+		auditLog.Close()
+	}
+	if err != nil {
+		writePanelEvent(w, "error", map[string]any{"msg": err.Error()})
+		return
+	}
+	writePanelEvent(w, "schedule_done", map[string]any{"target": target, "action": action})
+}
+
+// runPanelOp takes the operation lock shared with the daemon, the timers and
+// the TUI, streams the same NDJSON events as --json, and always ends with
+// exactly one terminal event (the operations emit done/clean_done/docker_done
+// themselves).
+func runPanelOp(w io.Writer, cancel io.Reader, op string, args []string, fn func() error) {
+	release, err := acquireOp()
+	if err != nil {
+		writePanelEvent(w, "error", map[string]any{"msg": err.Error()})
+		return
+	}
+	defer release()
+	initJSONTo(w, cancel)
 	defer resetJSON()
-	err := fn()
+	err = fn()
 	panelAudit(op, args, err)
 	if err != nil {
 		emitTerminal(err)
@@ -205,4 +318,24 @@ func panelStatus() map[string]any {
 
 func writePanelEvent(w io.Writer, event string, fields map[string]any) {
 	newEmitterTo(w).emit(event, fields)
+}
+
+var panelCmd = &cobra.Command{
+	Use:    "panel",
+	Hidden: true,
+	Short:  "Serve one desktop-panel request on stdin (the panel runs it through sudo)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !isRunningAsRoot() {
+			return errors.New("moonbit panel must run as root; the desktop panel starts it through sudo")
+		}
+		// ready tells the panel sudo accepted the password and moonbit is
+		// listening, so it can send the request.
+		writePanelEvent(os.Stdout, "ready", nil)
+		servePanel(os.Stdin, os.Stdout, true)
+		return nil
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(panelCmd)
 }

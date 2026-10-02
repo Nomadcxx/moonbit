@@ -16,6 +16,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/docker"
 	"github.com/Nomadcxx/moonbit/internal/duplicates"
+	"github.com/Nomadcxx/moonbit/internal/oplock"
 	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
@@ -122,9 +123,15 @@ var scanCmd = &cobra.Command{
 			return
 		}
 
-		if err := ScanAndSave(); err != nil {
+		if err := withOpLock(ScanAndSave); err != nil {
 			if jsonOut {
 				jsonTerminal(err)
+			}
+			if errors.Is(err, oplock.ErrBusy) && scanNoPrompt {
+				// A timer firing while the daemon, the TUI or the panel is
+				// busy skips this run, as the daemon's own schedule does.
+				fmt.Println("Scan skipped: another moonbit operation is in progress.")
+				return
 			}
 			fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
 			os.Exit(1)
@@ -144,7 +151,7 @@ var scanCmd = &cobra.Command{
 
 		if strings.ToLower(response) == "y" || strings.ToLower(response) == "yes" {
 			fmt.Println()
-			if err := CleanSession(false); err != nil {
+			if err := withOpLock(func() error { return CleanSession(false) }); err != nil {
 				fmt.Fprintf(os.Stderr, "Clean failed: %v\n", err)
 				os.Exit(1)
 			}
@@ -173,7 +180,7 @@ var cleanCmd = &cobra.Command{
 			return
 		}
 
-		if err := CleanSession(dryRun); err != nil {
+		if err := withOpLock(func() error { return CleanSession(dryRun) }); err != nil {
 			if jsonOut {
 				jsonTerminal(err)
 			}

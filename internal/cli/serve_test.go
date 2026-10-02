@@ -36,6 +36,72 @@ func roundTrip(t *testing.T, req string) []map[string]any {
 	return events
 }
 
+// privilegedRoundTrip runs one request the way `moonbit panel` serves it
+// under sudo, over an in-memory pipe.
+func privilegedRoundTrip(t *testing.T, req string) []map[string]any {
+	t.Helper()
+	client, server := net.Pipe()
+	done := make(chan struct{})
+	go func() { servePanel(server, server, true); server.Close(); close(done) }()
+	if _, err := client.Write([]byte(req + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	var events []map[string]any
+	sc := bufio.NewScanner(client)
+	for sc.Scan() {
+		var e map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+			t.Fatalf("non-NDJSON line: %q", sc.Text())
+		}
+		events = append(events, e)
+	}
+	client.Close()
+	<-done
+	return events
+}
+
+// The daemon socket is open to every local user, so it must never start a
+// root operation: only ping and status answer.
+func TestPanelSocketIsReadOnly(t *testing.T) {
+	for _, req := range []string{
+		`{"cmd":"scan","mode":"quick"}`,
+		`{"cmd":"clean","force":true}`,
+		`{"cmd":"docker","op":"all"}`,
+		`{"cmd":"schedule","target":"timers","action":"enable"}`,
+	} {
+		evs := roundTrip(t, req)
+		if len(evs) != 1 || evs[0]["t"] != "error" || !strings.Contains(evs[0]["msg"].(string), "read-only") {
+			t.Errorf("%s over the socket = %v, want a read-only refusal", req, evs)
+		}
+	}
+}
+
+func TestPanelScheduleRejectsUnknownTargetsAndActions(t *testing.T) {
+	for _, req := range []string{
+		`{"cmd":"schedule","target":"everything","action":"enable"}`,
+		`{"cmd":"schedule","target":"daemon","action":"restart"}`,
+	} {
+		evs := privilegedRoundTrip(t, req)
+		if len(evs) != 1 || evs[0]["t"] != "error" {
+			t.Errorf("%s = %v, want a single error", req, evs)
+		}
+	}
+}
+
+func TestPanelDockerRejectsAnUnknownCleanup(t *testing.T) {
+	evs := privilegedRoundTrip(t, `{"cmd":"docker","op":"containers"}`)
+	if len(evs) == 0 || evs[len(evs)-1]["t"] != "error" {
+		t.Fatalf("unknown docker op = %v, want an error", evs)
+	}
+}
+
+func TestDockerReclaimedReadsPruneSummary(t *testing.T) {
+	out := "Deleted Images:\nuntagged: alpine\n\nTotal reclaimed space: 1.204GB\n"
+	if got := dockerReclaimed(out); got != "1.204GB" {
+		t.Fatalf("reclaimed = %q", got)
+	}
+}
+
 func TestPanelPing(t *testing.T) {
 	evs := roundTrip(t, `{"cmd":"ping"}`)
 	if len(evs) != 1 || evs[0]["t"] != "pong" {
@@ -70,7 +136,7 @@ func TestPanelStatusShape(t *testing.T) {
 func TestPanelBusy(t *testing.T) {
 	opSem <- struct{}{}
 	defer func() { <-opSem }()
-	evs := roundTrip(t, `{"cmd":"scan","mode":"quick"}`)
+	evs := privilegedRoundTrip(t, `{"cmd":"scan","mode":"quick"}`)
 	if len(evs) != 1 || evs[0]["t"] != "error" || !strings.Contains(evs[0]["msg"].(string), "progress") {
 		t.Fatalf("want busy error, got %v", evs)
 	}
@@ -117,7 +183,7 @@ func TestPanelScanModeDoesNotLeak(t *testing.T) {
 	scanMode = "quick"
 	defer func() { scanMode = orig }()
 
-	evs := roundTrip(t, `{"cmd":"scan","mode":"deep","categories":["No Such Category"]}`)
+	evs := privilegedRoundTrip(t, `{"cmd":"scan","mode":"deep","categories":["No Such Category"]}`)
 	if len(evs) == 0 || evs[len(evs)-1]["t"] != "error" {
 		t.Fatalf("want the unknown category to end in error, got %v", evs)
 	}

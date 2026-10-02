@@ -15,9 +15,11 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/cleaner"
 	"github.com/Nomadcxx/moonbit/internal/config"
 	"github.com/Nomadcxx/moonbit/internal/docker"
+	"github.com/Nomadcxx/moonbit/internal/oplock"
 	"github.com/Nomadcxx/moonbit/internal/paths"
 	"github.com/Nomadcxx/moonbit/internal/scanner"
 	"github.com/Nomadcxx/moonbit/internal/session"
+	"github.com/Nomadcxx/moonbit/internal/units"
 	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/Nomadcxx/moonbit/internal/validation"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -464,6 +466,12 @@ func (m Model) startScan() (tea.Model, tea.Cmd) {
 // runScanCmd executes the scan using the scanner package directly
 func runScanCmd(cfg *config.Config, scanMode string) tea.Cmd {
 	return func() tea.Msg {
+		// The daemon, the timers and the desktop panel write the same cache.
+		release, err := oplock.TryAcquire()
+		if err != nil {
+			return scanCompleteMsg{Success: false, Error: "Moonbit is busy: " + err.Error() + ". Try again in a moment."}
+		}
+		defer release()
 		// Count total categories to scan for progress calculation
 		totalCategories := 0
 		for _, category := range cfg.Categories {
@@ -821,6 +829,11 @@ func uiCategoryPathExists(category config.Category) bool {
 // runCleanCmd executes cleaning using the cleaner package
 func runCleanCmd(cfg *config.Config, cache *config.SessionCache) tea.Cmd {
 	return func() tea.Msg {
+		release, err := oplock.TryAcquire()
+		if err != nil {
+			return cleanCompleteMsg{Success: false, Error: "Moonbit is busy: " + err.Error() + ". Try again in a moment."}
+		}
+		defer release()
 		if cache == nil || cache.ScanResults == nil {
 			return cleanCompleteMsg{
 				Success: false,
@@ -2138,41 +2151,6 @@ func (m Model) executeDaemonCommand(action string) (tea.Model, tea.Cmd) {
 	return m, runDaemonCommand(action)
 }
 
-// unitInstalled reports whether systemd can see a unit at all. `systemctl cat`
-// searches every unit path and exits non-zero when the unit does not exist.
-func unitInstalled(unit string) bool {
-	return exec.Command("systemctl", "cat", unit).Run() == nil
-}
-
-// runSystemctl applies an action to units and returns systemd's own diagnostic
-// on failure. exec.Cmd.Run discards stderr, which is how a missing unit file
-// surfaced to users as an unactionable "exit status 1".
-func runSystemctl(action string, units ...string) error {
-	var missing []string
-	for _, u := range units {
-		if !unitInstalled(u) {
-			missing = append(missing, u)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("%s not installed on this system.\n"+
-			"Re-run the installer, or install the units manually:\n"+
-			"  sudo install -m644 systemd/moonbit-*.service systemd/moonbit-*.timer /etc/systemd/system/\n"+
-			"  sudo systemctl daemon-reload",
-			strings.Join(missing, ", "))
-	}
-
-	args := append([]string{action, "--now"}, units...)
-	out, err := exec.Command("systemctl", args...).CombinedOutput()
-	if err != nil {
-		if msg := strings.TrimSpace(string(out)); msg != "" {
-			return fmt.Errorf("%v: %s", err, msg)
-		}
-		return err
-	}
-	return nil
-}
-
 // runDaemonCommand executes systemctl command for moonbit-daemon.service asynchronously
 func runDaemonCommand(action string) tea.Cmd {
 	return func() tea.Msg {
@@ -2186,7 +2164,7 @@ func runDaemonCommand(action string) tea.Cmd {
 			return timerCommandMsg{success: false, message: "Invalid command"}
 		}
 
-		err := runSystemctl(action, serviceName)
+		err := units.Apply(action, serviceName)
 		if auditLog != nil {
 			result := "success"
 			if err != nil {
@@ -2231,10 +2209,9 @@ func runTimerCommands(action string) tea.Cmd {
 			return timerCommandMsg{success: false, message: "Invalid command"}
 		}
 
-		units := []string{"moonbit-scan.timer", "moonbit-clean.timer"}
-		timers := strings.Join(units, ", ")
+		timers := strings.Join(units.Timers, ", ")
 
-		err := runSystemctl(action, units...)
+		err := units.Apply(action, units.Timers...)
 		if auditLog != nil {
 			result := "success"
 			if err != nil {

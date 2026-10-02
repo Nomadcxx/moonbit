@@ -184,13 +184,12 @@ Log cleanup targets rotated files only. moonbit will not unlink a log a daemon s
 
 ## Automated Cleaning
 
-> **Scope:** automation cleans system-wide paths only. It never touches a
-> user's home directory. The units run as root with `HOME=/root` and
-> `ProtectHome=read-only`, so home-relative categories (User Cache, Thumbnails,
-> Trash, npm, pip, cargo) resolve under `/root`. On a desktop, your own caches
-> are the ones filling the disk, and automation will not reclaim them. Run
-> `moonbit scan && moonbit clean --force` from your session for those, or write
-> a `systemctl --user` unit. See [systemd/README.md](systemd/README.md).
+> **Scope:** the units run as root with `HOME=/root` and their own config at
+> `/var/lib/moonbit/config/moonbit/config.toml`, so home-relative categories
+> (User Cache, Thumbnails, Trash, npm, pip, cargo) resolve under `/root` unless
+> that config names your paths. The units clean what their config lists with
+> the same reach as `sudo moonbit`: only `/usr`, `/boot` and `/etc` are
+> read-only to them. See [systemd/README.md](systemd/README.md).
 
 moonbit has two automation modes. Use one at a time:
 

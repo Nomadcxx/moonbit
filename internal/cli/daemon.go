@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/audit"
+	"github.com/Nomadcxx/moonbit/internal/oplock"
 	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/spf13/cobra"
 )
@@ -138,6 +139,32 @@ func (ds *DaemonState) stats() daemonStats {
 var daemonState *DaemonState
 
 var opSem = make(chan struct{}, 1)
+
+// acquireOp takes this process's operation slot and the cross-process lock
+// shared with the timer services, the TUI and the panel helper.
+func acquireOp() (func(), error) {
+	select {
+	case opSem <- struct{}{}:
+	default:
+		return nil, oplock.ErrBusy
+	}
+	release, err := oplock.TryAcquire()
+	if err != nil {
+		<-opSem
+		return nil, err
+	}
+	return func() { release(); <-opSem }, nil
+}
+
+// withOpLock runs fn holding the operation lock, or returns oplock.ErrBusy.
+func withOpLock(fn func() error) error {
+	release, err := acquireOp()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
 
 var daemonOut io.Writer = os.Stdout
 var daemonErr io.Writer = os.Stderr
@@ -384,13 +411,12 @@ func shouldInitialScan(socket string, explicitlySet, value bool) bool {
 }
 
 func performScan() {
-	select {
-	case opSem <- struct{}{}:
-		defer func() { <-opSem }()
-	default:
+	release, err := acquireOp()
+	if err != nil {
 		fmt.Fprintf(daemonOut, "%s Skipping scan — another operation in progress\n", S.Warning("⚠"))
 		return
 	}
+	defer release()
 
 	now := time.Now()
 	daemonState.setLastScanTime(now)
@@ -430,13 +456,12 @@ func performScan() {
 }
 
 func performClean() {
-	select {
-	case opSem <- struct{}{}:
-		defer func() { <-opSem }()
-	default:
+	release, err := acquireOp()
+	if err != nil {
 		fmt.Fprintf(daemonOut, "%s Skipping clean — another operation in progress\n", S.Warning("⚠"))
 		return
 	}
+	defer release()
 
 	now := time.Now()
 	daemonState.setLastCleanTime(now)

@@ -7,24 +7,26 @@ Automated system cleaning with systemd. Two operational modes available:
 
 ⚠️ **Important:** Timer and daemon modes are mutually exclusive. Enable only ONE mode at a time.
 
-## Scope: what automation does and does not clean
+## Scope: what automation cleans
 
-**Timer and daemon modes clean system-wide paths only. They never touch any
-user's home directory.**
+**Timer and daemon modes clean what their own config lists, with the same
+reach as `sudo moonbit`.**
 
-The units run as root with `Environment=HOME=/root` and no `SUDO_USER`, so every
-home-relative category (User Cache, Thumbnails, Trash, npm, pip, cargo, gradle,
-go-build, fontconfig, mesa, and the per-application caches) resolves under
-`/root`, not under `/home/<you>`. `ProtectHome=read-only` enforces this at the
-kernel level: even a misconfigured unit cannot write to a real user's home.
+The units run as root with `Environment=HOME=/root` and no `SUDO_USER`, and
+read their config from `/var/lib/moonbit/config/moonbit/config.toml`. A config
+generated there resolves every home-relative category (User Cache, Thumbnails,
+Trash, npm, pip, cargo, gradle, go-build, fontconfig, mesa, and the
+per-application caches) under `/root`. A config that names your paths, for
+example one written by a `sudo moonbit` run, cleans those paths too: the units
+no longer mount `/home` read-only, so a scheduled clean reaches what the TUI
+reaches. Only `/usr`, `/boot` and `/etc` stay read-only (`ProtectSystem=full`).
 
-This is deliberate. A system service reaching into users' home directories to
-delete files is the wrong shape for the job -- it cannot know which caches are in
-use by a live session, and it would run as root over user-writable directories.
-
-**Consequence:** on a desktop, automation will not reclaim the caches that
-typically consume the most space. Those live in your home directory. Clean them
-from your own session:
+Every path is still re-checked against the root-owned config between scan and
+clean, symlinks are never followed, and logs a process holds open are
+truncated rather than unlinked. A scheduled run cannot know which caches a live
+session is using, so keep home-relative categories in the units' config to the
+ones you are happy to clear on a schedule. The desktop panel and the TUI clean
+your caches on demand from your own config:
 
 ```bash
 moonbit scan && moonbit clean --force
@@ -194,7 +196,7 @@ Services run with identical hardening:
 - Private /tmp
 - No new privileges
 - Protected system directories
-- Read-only home directory
-- Limited write access to cache/log directories
+- `/usr`, `/boot` and `/etc` read-only; everything moonbit cleans is under
+  `/var` or a home directory
 
 Daemon additionally logs to `/var/log/moonbit/daemon.log` with appropriate permissions.

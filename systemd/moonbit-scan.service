@@ -12,6 +12,9 @@ Environment=XDG_CACHE_HOME=/var/cache
 Environment=XDG_DATA_HOME=/var/lib
 StateDirectory=moonbit
 CacheDirectory=moonbit
+RuntimeDirectory=moonbit
+# Keep /run/moonbit/op.lock: the TUI or the panel may hold it across a stop.
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/local/bin/moonbit scan --mode quick --no-prompt
 StandardOutput=journal
 StandardError=journal
@@ -20,9 +23,9 @@ SyslogIdentifier=moonbit-scan
 # Security hardening
 PrivateTmp=yes
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/var/cache/moonbit /var/lib/moonbit
+# Match `sudo moonbit`: every category the TUI cleans lives under /var or a
+# user's home, so only /usr, /boot and /etc stay read-only.
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target
