@@ -477,7 +477,7 @@ func TestScanAllCategoriesReportsPartialFailures(t *testing.T) {
 	}
 
 	output := captureStdout(t, func() {
-		_, _, _, err := scanAllCategories(s, categories)
+		_, _, _, err := scanAllCategories(s, categories, time.Now())
 		require.NoError(t, err)
 	})
 
@@ -597,4 +597,82 @@ func TestIsRunningAsRoot(t *testing.T) {
 	// The result depends on whether the test is run as root
 	// We just verify it returns a boolean without panicking
 	assert.IsType(t, true, result)
+}
+
+func TestDropReadOnlyPathsJudgesGlobsByTheirPrefix(t *testing.T) {
+	orig := readOnlyFS
+	readOnlyFS = func(p string) bool { return strings.HasPrefix(p, "/ro") }
+	defer func() { readOnlyFS = orig }()
+
+	c := config.Category{Paths: []string{"/ro/npm", "/ro/logs/*.log", "/rw/cache"}}
+	if !dropReadOnlyPaths(&c) {
+		t.Fatal("read-only paths were not reported as dropped")
+	}
+	assert.Equal(t, []string{"/rw/cache"}, c.Paths)
+
+	c = config.Category{Paths: []string{"/rw/a"}}
+	assert.False(t, dropReadOnlyPaths(&c))
+	assert.Equal(t, []string{"/rw/a"}, c.Paths)
+}
+
+// Under the daemon unit /home is read-only, so a scan listing ~/.npm offered
+// files the clean could never delete.
+func TestScanSkipsCategoriesOnReadOnlyFilesystems(t *testing.T) {
+	roDir, rwDir := t.TempDir(), t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(roDir, "a.cache"), []byte("x"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(rwDir, "b.cache"), []byte("y"), 0600))
+	orig := readOnlyFS
+	readOnlyFS = func(p string) bool { return p == roDir }
+	defer func() { readOnlyFS = orig }()
+
+	s := scanner.NewScanner(config.DefaultConfig())
+	var files int
+	output := captureStdout(t, func() {
+		var err error
+		_, files, _, err = scanAllCategories(s, []config.Category{
+			{Name: "Home Cache", Paths: []string{roDir}},
+			{Name: "System Cache", Paths: []string{rwDir}},
+		}, time.Now())
+		require.NoError(t, err)
+	})
+	assert.Contains(t, output, "Skipping Home Cache (read-only to this process)")
+	assert.Equal(t, 1, files)
+}
+
+func TestCleanSessionRefusesAReplacedScan(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	t.Setenv("HOME", home)
+	t.Setenv("MOONBIT_HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	originalMode := scanMode
+	scanMode = ""
+	defer func() { scanMode, cleanScannedAt = originalMode, time.Time{} }()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.cache")
+	require.NoError(t, os.WriteFile(path, []byte("cache"), 0600))
+	cfg := config.DefaultConfig()
+	cfg.Categories = append(cfg.Categories, config.Category{Name: "Test Package Cache", Paths: []string{dir}, Risk: config.Low})
+	require.NoError(t, config.Save(cfg, filepath.Join(configHome, "moonbit", "config.toml")))
+	reviewed := time.Now()
+	sessionMgr, err := session.NewManager()
+	require.NoError(t, err)
+	require.NoError(t, sessionMgr.Save(&config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{{Path: path, Size: 5, CategoryName: "Test Package Cache"}}},
+		TotalFiles:  1,
+		TotalSize:   5,
+		ScannedAt:   reviewed,
+	}))
+
+	cleanScannedAt = reviewed.Add(-time.Hour) // the panel reviewed an older scan
+	captureStdout(t, func() {
+		err = CleanSession(true)
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "replaced by a newer one")
+
+	cleanScannedAt = reviewed
+	captureStdout(t, func() { require.NoError(t, CleanSession(true)) })
 }

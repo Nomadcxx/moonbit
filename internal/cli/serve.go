@@ -34,6 +34,10 @@ type panelRequest struct {
 	Mode       string   `json:"mode,omitempty"`
 	Force      bool     `json:"force,omitempty"`
 	Categories []string `json:"categories,omitempty"`
+	// ScannedAt binds a clean to the scan the panel reviewed (the scan's done
+	// event carries it). Scheduled scans replace the cache, so without it the
+	// clean would act on files the user never saw.
+	ScannedAt time.Time `json:"scanned_at,omitempty"`
 }
 
 // withPanelCategories applies a request's category selection to the same
@@ -108,12 +112,15 @@ func handlePanelConn(conn net.Conn) {
 					return err
 				}
 			}
-			scanMode = req.Mode
 			if daemonState != nil {
 				daemonState.setLastScanTime(time.Now())
 				daemonState.incrementScanCount()
 			}
-			return withPanelCategories(req.Categories, ScanAndSave)
+			// The mode is this request's alone: scheduled scans and cleans
+			// keep the daemon's own.
+			return withPanelCategories(req.Categories, func() error {
+				return ScanAndSaveWithMode(req.Mode)
+			})
 		})
 	case "clean":
 		runPanelOp(conn, br, "panel_clean", []string{fmt.Sprintf("force=%t", req.Force)}, func() error {
@@ -122,6 +129,8 @@ func handlePanelConn(conn net.Conn) {
 				daemonState.incrementCleanCount()
 			}
 			return withPanelCategories(req.Categories, func() error {
+				cleanScannedAt = req.ScannedAt
+				defer func() { cleanScannedAt = time.Time{} }()
 				return CleanSession(!req.Force)
 			})
 		})

@@ -23,6 +23,7 @@ import (
 	"github.com/Nomadcxx/moonbit/internal/utils"
 	"github.com/Nomadcxx/moonbit/internal/validation"
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -33,7 +34,10 @@ var (
 	listCategories    bool
 	includeCategories []string
 	excludeCategories []string
-	scanMode          string // "quick", "deep", or "" (all)
+	// cleanScannedAt, when set, binds a clean to the scan the caller
+	// reviewed: CleanSession refuses a cache from any other scan.
+	cleanScannedAt time.Time
+	scanMode       string // "quick", "deep", or "" (all)
 )
 
 // Constants for scan operations
@@ -270,12 +274,13 @@ func ScanAndSaveWithMode(mode string) error {
 		return err
 	}
 
-	totalSize, totalFiles, scanResults, err := scanAllCategories(s, categories)
+	scannedAt := time.Now()
+	totalSize, totalFiles, scanResults, err := scanAllCategories(s, categories, scannedAt)
 	if err != nil {
 		return err
 	}
 
-	if err := saveScanResults(totalSize, totalFiles, scanResults); err != nil {
+	if err := saveScanResults(totalSize, totalFiles, scanResults, scannedAt); err != nil {
 		return err
 	}
 
@@ -364,7 +369,7 @@ func prepareScanCategories(mode string, cfg *config.Config) ([]config.Category, 
 }
 
 // scanAllCategories scans all provided categories and aggregates results
-func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64, int, config.Category, error) {
+func scanAllCategories(s *scanner.Scanner, categories []config.Category, scannedAt time.Time) (uint64, int, config.Category, error) {
 	started := time.Now()
 	var totalSize uint64
 	var totalFiles int
@@ -377,6 +382,14 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 	for i, category := range categories {
 		if jsonOut && jsonCtx.Err() != nil {
 			return totalSize, totalFiles, scanResults, jsonCtx.Err()
+		}
+		if dropReadOnlyPaths(&category) && len(category.Paths) == 0 {
+			if jsonOut {
+				jsonEmit.emit("category_skipped", map[string]any{"name": category.Name, "reason": "read-only"})
+			} else {
+				fmt.Printf("Skipping %s (read-only to this process)\n", category.Name)
+			}
+			continue
 		}
 		if !categoryPathExists(&category) {
 			if !jsonOut {
@@ -416,12 +429,16 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 			}
 
 			if jsonOut {
-				jsonEmit.emit("category_done", map[string]any{
+				done := map[string]any{
 					"name":        category.Name,
 					"files":       len(stats.Files),
 					"bytes":       categorySize,
 					"duration_ms": categoryDuration.Milliseconds(),
-				})
+				}
+				if category.Action == config.ActionTruncate {
+					done["truncate"] = true
+				}
+				jsonEmit.emit("category_done", done)
 			} else {
 				fmt.Println(formatScanCategoryResult(len(stats.Files), categorySize, categoryDuration))
 			}
@@ -442,6 +459,7 @@ func scanAllCategories(s *scanner.Scanner, categories []config.Category) (uint64
 			"bytes":       totalSize,
 			"categories":  categoriesScanned,
 			"duration_ms": time.Since(started).Milliseconds(),
+			"scanned_at":  scannedAt,
 		}
 		if len(failedCategories) > 0 {
 			done["failed"] = failedCategories
@@ -502,6 +520,33 @@ func categoryPathExists(category *config.Category) bool {
 	return false
 }
 
+// readOnlyFS reports whether path sits on a filesystem this process cannot
+// write, such as /home under the daemon unit's ProtectHome=read-only. Nothing
+// there can be deleted, so a scan must not offer it.
+var readOnlyFS = func(path string) bool {
+	var st unix.Statfs_t
+	return unix.Statfs(path, &st) == nil && st.Flags&unix.ST_RDONLY != 0
+}
+
+// dropReadOnlyPaths removes the category paths on read-only filesystems and
+// reports whether it removed any. A glob is judged by its literal prefix.
+func dropReadOnlyPaths(category *config.Category) bool {
+	var kept []string
+	for _, p := range category.Paths {
+		root := p
+		if i := strings.IndexAny(p, "*?["); i >= 0 {
+			root = filepath.Dir(p[:i])
+		}
+		if readOnlyFS(root) {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	dropped := len(kept) != len(category.Paths)
+	category.Paths = kept
+	return dropped
+}
+
 // scanSingleCategory scans a single category and returns its stats
 func scanSingleCategory(s *scanner.Scanner, category *config.Category) (*config.Category, error) {
 	progressCh := make(chan scanner.ScanMsg, 10)
@@ -535,12 +580,12 @@ func jsonContext() context.Context {
 }
 
 // saveScanResults creates and saves the session cache
-func saveScanResults(totalSize uint64, totalFiles int, scanResults config.Category) error {
+func saveScanResults(totalSize uint64, totalFiles int, scanResults config.Category, scannedAt time.Time) error {
 	cache := &config.SessionCache{
 		ScanResults: &scanResults,
 		TotalSize:   totalSize,
 		TotalFiles:  totalFiles,
-		ScannedAt:   time.Now(),
+		ScannedAt:   scannedAt,
 	}
 
 	sessionMgr, err := session.NewManager()
@@ -659,6 +704,9 @@ func CleanSession(dryRun bool) error {
 	}
 	if cache.ScanResults == nil {
 		return fmt.Errorf("invalid scan results: missing scan result details")
+	}
+	if !cleanScannedAt.IsZero() && !cache.ScannedAt.Equal(cleanScannedAt) {
+		return fmt.Errorf("the reviewed scan was replaced by a newer one; scan again before cleaning")
 	}
 
 	if cache.TotalFiles == 0 {

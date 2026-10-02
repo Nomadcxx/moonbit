@@ -104,3 +104,24 @@ func TestPanelSocketRoundTrip(t *testing.T) {
 	}
 	conn.Close()
 }
+
+// A panel scan's mode belongs to that request; it must not become the mode of
+// the daemon's later scheduled scans and cleans.
+func TestPanelScanModeDoesNotLeak(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MOONBIT_HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home+"/config")
+	t.Setenv("XDG_CACHE_HOME", home+"/cache")
+	orig := scanMode
+	scanMode = "quick"
+	defer func() { scanMode = orig }()
+
+	evs := roundTrip(t, `{"cmd":"scan","mode":"deep","categories":["No Such Category"]}`)
+	if len(evs) == 0 || evs[len(evs)-1]["t"] != "error" {
+		t.Fatalf("want the unknown category to end in error, got %v", evs)
+	}
+	if scanMode != "quick" {
+		t.Fatalf("daemon scan mode = %q after a deep panel scan, want quick", scanMode)
+	}
+}
