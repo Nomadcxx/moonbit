@@ -247,7 +247,6 @@ func TestValidateRejectsUnsafeCategoryRules(t *testing.T) {
 		name string
 		edit func(*Config)
 	}{
-		{"scan ignore pattern", func(cfg *Config) { cfg.Scan.IgnorePatterns = []string{"("} }},
 		{"category filter", func(cfg *Config) { cfg.Categories[0].Filters = []string{"("} }},
 		{"category exclude", func(cfg *Config) { cfg.Categories[0].ExcludePatterns = []string{"("} }},
 		{"unknown action", func(cfg *Config) { cfg.Categories[0].Action = "wipe" }},
@@ -264,13 +263,17 @@ func TestValidateRejectsUnsafeCategoryRules(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsInvalidIgnorePattern(t *testing.T) {
+func TestLoadAcceptsLiteralIgnorePattern(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[scan]\nignore_patterns = [\"(\"]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("Load should reject an invalid ignore pattern")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load rejected a literal ignore pattern: %v", err)
+	}
+	if len(cfg.Scan.IgnorePatterns) != 1 || cfg.Scan.IgnorePatterns[0] != "(" {
+		t.Fatalf("ignore_patterns = %v, want [\"(\"]", cfg.Scan.IgnorePatterns)
 	}
 }
 

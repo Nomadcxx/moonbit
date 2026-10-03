@@ -156,7 +156,7 @@ func TestScannerFilterLogic(t *testing.T) {
 			DryRunDefault  bool     `toml:"dry_run_default"`
 			WorkerCount    int      `toml:"worker_count"`
 		}{
-			IgnorePatterns: []string{"node_modules", "\\.git", "\\.cache"},
+			IgnorePatterns: []string{"node_modules", ".git", ".cache"},
 			WorkerCount:    0, // Auto-detect
 		},
 	}

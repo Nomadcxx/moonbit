@@ -666,8 +666,8 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("max_depth must be between 1 and 10, got %d", cfg.Scan.MaxDepth)
 	}
 	for _, pattern := range cfg.Scan.IgnorePatterns {
-		if _, err := regexp.Compile(pattern); err != nil {
-			return fmt.Errorf("invalid scan ignore pattern %q: %w", pattern, err)
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("scan ignore pattern is empty")
 		}
 	}
 
