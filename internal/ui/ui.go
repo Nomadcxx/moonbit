@@ -25,6 +25,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // loadASCIIArt loads the ASCII art from ascii.txt file
@@ -117,7 +118,7 @@ type Model struct {
 	categories    []CategoryInfo
 	selectedCount int
 
-	// Shift+X file preview on the select screen
+	// Shift+X popup listing the highlighted category's files
 	filePreviewOpen   bool
 	filePreviewOffset int
 
@@ -274,34 +275,12 @@ func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
 
 // handleKey processes keyboard input
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if isShiftX(msg) {
-		if m.mode == ModeSelect {
-			m.filePreviewOpen = !m.filePreviewOpen
-			m.filePreviewOffset = 0
+	if m.mode == ModeSelect {
+		if m.filePreviewOpen {
+			return m.handleFilePreviewKey(msg)
 		}
-		return m, nil
-	}
-
-	if m.mode == ModeSelect && m.filePreviewOpen {
-		switch msg.String() {
-		case "pgup":
-			m.filePreviewOffset -= m.previewBodyHeight()
-			if m.filePreviewOffset < 0 {
-				m.filePreviewOffset = 0
-			}
-			return m, nil
-		case "pgdown":
-			files, _ := m.previewFiles()
-			maxOff := len(files) - m.previewBodyHeight()
-			if maxOff < 0 {
-				maxOff = 0
-			}
-			m.filePreviewOffset += m.previewBodyHeight()
-			if m.filePreviewOffset > maxOff {
-				m.filePreviewOffset = maxOff
-			}
-			return m, nil
-		case "home":
+		if isShiftX(msg) && m.menuIndex < len(m.categories) {
+			m.filePreviewOpen = true
 			m.filePreviewOffset = 0
 			return m, nil
 		}
@@ -323,17 +302,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		if m.menuIndex > 0 {
 			m.menuIndex--
-			if m.mode == ModeSelect {
-				m.filePreviewOffset = 0
-			}
 		}
 	case "down":
 		maxIndex := m.maxMenuIndex()
 		if m.menuIndex < maxIndex {
 			m.menuIndex++
-			if m.mode == ModeSelect {
-				m.filePreviewOffset = 0
-			}
 		}
 	case "enter", " ":
 		// Handle complete mode specially
@@ -346,8 +319,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleCompleteKey()
 		}
 		if m.mode != ModeWelcome {
-			m.filePreviewOpen = false
-			m.filePreviewOffset = 0
 			m.mode = ModeWelcome
 			m.menuIndex = 0
 		}
@@ -412,8 +383,6 @@ func (m Model) handleMenuSelect() (tea.Model, tea.Cmd) {
 		totalOptions := len(m.categories) + 3 // categories + Select All + Clean + Back
 
 		if m.menuIndex == totalOptions-1 { // Back
-			m.filePreviewOpen = false
-			m.filePreviewOffset = 0
 			m.mode = ModeResults
 			m.menuIndex = 0
 		} else if m.menuIndex == totalOptions-2 { // Clean Selected
@@ -1146,7 +1115,11 @@ func (m Model) View() string {
 		Height(m.height).
 		Align(lipgloss.Center, lipgloss.Top)
 
-	return bgStyle.Render(content.String())
+	screen := bgStyle.Render(content.String())
+	if m.mode == ModeSelect && m.filePreviewOpen {
+		return overlayCenter(screen, m.renderFilePreview(), m.width)
+	}
+	return screen
 }
 
 // renderWelcome renders the welcome screen (sysc-greet style)
@@ -1473,15 +1446,6 @@ func (m Model) renderSelect() string {
 	}
 
 	// Update viewport content and ensure selected item is visible
-	if m.filePreviewOpen {
-		leftW := m.width - m.previewPaneWidth() - 12
-		if leftW < 24 {
-			leftW = 24
-		}
-		m.categoryViewport.Width = leftW
-	} else if m.viewportReady {
-		m.categoryViewport.Width = m.width - 4
-	}
 	m.categoryViewport.SetContent(viewportContent.String())
 
 	// Auto-scroll to keep selected item visible
@@ -1496,123 +1460,126 @@ func (m Model) renderSelect() string {
 	selectedSize := m.calculateSelectedSize()
 	footer := selectionInfoStyle.Render(fmt.Sprintf("Selected: %d/%d categories (%s)", m.selectedCount, len(m.categories), selectedSize))
 
-	list := header.String() + scanSummary + m.categoryViewport.View() + "\n\n" + footer
-	if !m.filePreviewOpen {
-		return list
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, list, " ", m.renderFilePreview())
+	// Combine: header + scan summary + category viewport + footer
+	return header.String() + scanSummary + m.categoryViewport.View() + "\n\n" + footer
 }
 
 func isShiftX(msg tea.KeyMsg) bool {
 	s := msg.String()
-	return s == "shift+x" || s == "X"
+	return s == "X" || s == "shift+x"
 }
 
-const previewFileCap = 200
-
-func (m Model) previewFiles() ([]config.FileInfo, int) {
-	if m.menuIndex < 0 || m.menuIndex >= len(m.categories) {
-		return nil, 0
+// handleFilePreviewKey keeps the popup modal: keys scroll it or close it and
+// never reach the category list underneath.
+func (m Model) handleFilePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	page := m.previewBodyHeight()
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q", "X", "shift+x":
+		m.filePreviewOpen = false
+		m.filePreviewOffset = 0
+		return m, nil
+	case "up":
+		m.filePreviewOffset--
+	case "down":
+		m.filePreviewOffset++
+	case "pgup":
+		m.filePreviewOffset -= page
+	case "pgdown":
+		m.filePreviewOffset += page
+	case "home":
+		m.filePreviewOffset = 0
+	case "end":
+		m.filePreviewOffset = math.MaxInt
 	}
-	if m.scanResults == nil || m.scanResults.ScanResults == nil {
-		return nil, 0
+	files := m.previewFiles()
+	m.filePreviewOffset = max(0, min(m.filePreviewOffset, len(files)-page))
+	return m, nil
+}
+
+// previewFiles returns the scanned files of the highlighted category.
+func (m Model) previewFiles() []config.FileInfo {
+	if m.menuIndex < 0 || m.menuIndex >= len(m.categories) || m.scanResults == nil || m.scanResults.ScanResults == nil {
+		return nil
 	}
 	name := m.categories[m.menuIndex].Name
-	matched := make([]config.FileInfo, 0)
-	for _, file := range m.scanResults.ScanResults.Files {
-		if file.CategoryName == name {
-			matched = append(matched, file)
+	var files []config.FileInfo
+	for _, f := range m.scanResults.ScanResults.Files {
+		if f.CategoryName == name {
+			files = append(files, f)
 		}
 	}
-	if len(matched) <= previewFileCap {
-		return matched, 0
-	}
-	return matched[:previewFileCap], len(matched) - previewFileCap
+	return files
 }
 
-func (m Model) previewPaneWidth() int {
-	inner := m.width - 10
-	if inner < 40 {
-		inner = 40
-	}
-	w := inner / 2
-	if w < 28 {
-		w = 28
-	}
-	if w > inner-24 {
-		w = inner - 24
-	}
-	return w
-}
-
+// previewBodyHeight is how many file rows fit; the popup adds 7 rows of
+// border, header and scroll hint and must leave the screen edges visible.
 func (m Model) previewBodyHeight() int {
-	h := m.categoryViewport.Height
-	if h < 8 {
-		h = 12
-	}
-	h -= 4
-	if h < 4 {
-		h = 4
-	}
-	return h
-}
-
-func truncatePreviewPath(path string, width int) string {
-	if width < 4 {
-		return path
-	}
-	runes := []rune(path)
-	if len(runes) <= width {
-		return path
-	}
-	return "…" + string(runes[len(runes)-(width-1):])
+	return max(3, min(15, m.height-11))
 }
 
 func (m Model) renderFilePreview() string {
-	width := m.previewPaneWidth()
+	width := min(m.width-8, 90)
+	inner := width - 4 // border + padding
+	sizeW := 10
+	pathW := max(8, inner-sizeW-2)
+
+	cat := m.categories[m.menuIndex]
+	files := m.previewFiles()
+	page := m.previewBodyHeight()
+	start := min(m.filePreviewOffset, max(0, len(files)-page))
+	end := min(start+page, len(files))
+
 	var b strings.Builder
-	if m.menuIndex < 0 || m.menuIndex >= len(m.categories) {
-		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("Highlight a category to preview files"))
+	b.WriteString(lipgloss.NewStyle().Foreground(Secondary).Bold(true).Render(strings.ToUpper(cat.Name)))
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render(fmt.Sprintf("%d files · %s", cat.Files, cat.Size)))
+	b.WriteString("\n\n")
+	if len(files) == 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("No files in this category"))
 	} else {
-		cat := m.categories[m.menuIndex]
-		b.WriteString(lipgloss.NewStyle().Foreground(Secondary).Bold(true).Render(strings.ToUpper(cat.Name)))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render(
-			fmt.Sprintf("%d files · %s", cat.Files, cat.Size)))
+		rows := make([]string, 0, end-start)
+		for _, f := range files[start:end] {
+			path := f.Path
+			if ansi.StringWidth(path) > pathW {
+				path = ansi.TruncateLeft(path, ansi.StringWidth(path)-pathW+1, "…")
+			}
+			pad := strings.Repeat(" ", max(0, pathW-ansi.StringWidth(path)))
+			rows = append(rows, fmt.Sprintf("%s%s  %*s", path, pad, sizeW, utils.HumanizeBytes(f.Size)))
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render(strings.Join(rows, "\n")))
 		b.WriteString("\n\n")
-		files, extra := m.previewFiles()
-		start := m.filePreviewOffset
-		if start > len(files) {
-			start = 0
-		}
-		end := start + m.previewBodyHeight()
-		if end > len(files) {
-			end = len(files)
-		}
-		pathWidth := width - 14
-		if pathWidth < 8 {
-			pathWidth = 8
-		}
-		if len(files) == 0 {
-			b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("No files in this category"))
-		} else {
-			for _, file := range files[start:end] {
-				line := fmt.Sprintf("%s  %s", truncatePreviewPath(file.Path, pathWidth), utils.HumanizeBytes(file.Size))
-				b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render(line))
-				b.WriteString("\n")
-			}
-			if extra > 0 && end >= len(files) {
-				b.WriteString("\n")
-				b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render(fmt.Sprintf("+ %d more", extra)))
-			}
-		}
+		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Italic(true).Render(
+			fmt.Sprintf("%d–%d of %d", start+1, end, len(files))))
 	}
+
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Accent).
-		Width(width).
+		BorderForeground(Secondary).
 		Padding(0, 1).
+		Width(width - 2).
 		Render(b.String())
+}
+
+// overlayCenter draws fg centred over bg; bg stays visible around fg.
+func overlayCenter(bg, fg string, width int) string {
+	bgLines := strings.Split(bg, "\n")
+	fgLines := strings.Split(fg, "\n")
+	fgW := lipgloss.Width(fg)
+	x := max(0, (width-fgW)/2)
+	y := max(0, (len(bgLines)-len(fgLines))/2)
+	for i, line := range fgLines {
+		row := y + i
+		if row >= len(bgLines) {
+			break
+		}
+		left := ansi.Truncate(bgLines[row], x, "")
+		left += strings.Repeat(" ", max(0, x-ansi.StringWidth(left)))
+		right := ansi.TruncateLeft(bgLines[row], x+fgW, "")
+		bgLines[row] = left + "\x1b[0m" + line + "\x1b[0m" + right
+	}
+	return strings.Join(bgLines, "\n")
 }
 
 // calculateSelectedSize calculates total size of selected categories
@@ -1889,9 +1856,9 @@ func (m Model) getFooterText() string {
 		return "Enter Continue  |  Esc Back  |  Q Quit"
 	case ModeSelect:
 		if m.filePreviewOpen {
-			return "↑/↓ Categories  |  PgUp/PgDn Files  |  Shift+X Close  |  Space Toggle  |  Esc Back"
+			return "↑/↓ PgUp/PgDn Scroll files  |  Esc/Shift+X Close"
 		}
-		return "↑/↓ Navigate  |  Space Toggle  |  Shift+X Preview  |  Enter Select  |  Esc Back"
+		return "↑/↓ Navigate  |  Space Toggle  |  Shift+X Files  |  Enter Select  |  Esc Back"
 	case ModeComplete:
 		return "Press any key to continue"
 	case ModeSchedule:
