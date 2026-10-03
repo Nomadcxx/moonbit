@@ -397,6 +397,14 @@ func TestCleanPreviewSeparatesDeletesFromTruncations(t *testing.T) {
 	assert.Contains(t, output, "DRY RUN - Would delete 1 file and truncate 1 file")
 }
 
+func TestDockerCommandsExposeDryRunAndForce(t *testing.T) {
+	for _, cmd := range []*cobra.Command{dockerImagesCmd, dockerAllCmd} {
+		assert.NotNil(t, cmd.Flags().Lookup("dry-run"), "%s missing --dry-run", cmd.Name())
+		assert.NotNil(t, cmd.Flags().Lookup("force"), "%s missing --force", cmd.Name())
+		assert.Equal(t, "true", cmd.Flags().Lookup("dry-run").DefValue)
+	}
+}
+
 func TestDockerOutputMatchesExecutedPruneCommands(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -408,12 +416,36 @@ func TestDockerOutputMatchesExecutedPruneCommands(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, tt.command.Flags().Set("dry-run", "true"))
+			require.NoError(t, tt.command.Flags().Set("force", "false"))
+			t.Cleanup(func() {
+				_ = tt.command.Flags().Set("dry-run", "true")
+				_ = tt.command.Flags().Set("force", "false")
+			})
+
 			binDir := t.TempDir()
+			logPath := filepath.Join(t.TempDir(), "docker.log")
 			t.Setenv("PATH", binDir)
 			t.Setenv("MOONBIT_HOME", t.TempDir())
-			writeExecutable(t, filepath.Join(binDir, "docker"), "#!/bin/sh\nexit 0\n")
+			writeExecutable(t, filepath.Join(binDir, "docker"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 0\n")
+			t.Setenv("DOCKER_LOG", logPath)
+
 			output := captureStdout(t, func() { tt.command.Run(tt.command, nil) })
+			assert.Contains(t, output, "DRY RUN")
 			assert.Contains(t, output, tt.preview)
+
+			logged, err := os.ReadFile(logPath)
+			require.NoError(t, err)
+			assert.NotContains(t, string(logged), "prune")
+
+			require.NoError(t, tt.command.Flags().Set("force", "true"))
+			forceOut := captureStdout(t, func() { tt.command.Run(tt.command, nil) })
+			assert.NotContains(t, forceOut, "DRY RUN")
+			assert.Contains(t, forceOut, tt.preview)
+
+			logged, err = os.ReadFile(logPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(logged), "prune")
 		})
 	}
 }

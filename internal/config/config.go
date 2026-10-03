@@ -649,6 +649,11 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
+	if uid, gid, ok := paths.OwnerID(); ok {
+		_ = os.Chown(filepath.Dir(path), uid, gid)
+		_ = os.Chown(path, uid, gid)
+	}
+
 	return nil
 }
 
@@ -661,8 +666,8 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("max_depth must be between 1 and 10, got %d", cfg.Scan.MaxDepth)
 	}
 	for _, pattern := range cfg.Scan.IgnorePatterns {
-		if _, err := regexp.Compile(pattern); err != nil {
-			return fmt.Errorf("invalid scan ignore pattern %q: %w", pattern, err)
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("scan ignore pattern is empty")
 		}
 	}
 
