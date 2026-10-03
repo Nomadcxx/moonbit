@@ -10,6 +10,7 @@ type AppCacheRule struct {
 	Risk            RiskLevel
 	Selected        bool
 	MinAgeDays      int
+	Action          CleanAction
 }
 
 func AppCacheCategories(userHome string) []Category {
@@ -225,6 +226,100 @@ func AppCacheCategories(userHome string) []Category {
 			Selected: false,
 		},
 		{
+			// Same Electron layout as IDE App Caches. A separate name so existing
+			// configs pick these up: Normalize only appends categories by name.
+			Name: "AI IDE App Caches",
+			Roots: []string{
+				userHome + "/.config/Windsurf",
+				userHome + "/.config/Kiro",
+				userHome + "/.config/Trae",
+				userHome + "/.config/Void",
+				userHome + "/.config/Positron",
+			},
+			Leaves: []string{
+				"Cache",
+				"Code Cache",
+				"GPUCache",
+				"DawnGraphiteCache",
+				"DawnWebGPUCache",
+				"CachedData",
+				"CachedExtensionVSIXs",
+				"Crashpad",
+				"logs",
+			},
+			Risk:     Low,
+			Selected: false,
+		},
+		{
+			// MinAgeDays keeps files a running agent is still writing.
+			Name: "AI Agent CLI Logs & Temp",
+			Roots: []string{
+				userHome + "/.codex/cache",
+				userHome + "/.codex/log",
+				userHome + "/.hermes/cache",
+				userHome + "/.hermes/logs",
+				userHome + "/.copilot/logs",
+				userHome + "/.factory/logs",
+				userHome + "/.factory/cache",
+				userHome + "/.factory/temp",
+				userHome + "/.qwen/debug",
+				userHome + "/.gemini/logs",
+				userHome + "/.local/state/goose/logs",
+				userHome + "/.crush/logs",
+				userHome + "/.openclaw/logs",
+				userHome + "/.kimi-code/logs",
+				userHome + "/.coderabbit/logs",
+				userHome + "/.claude/debug",
+			},
+			Leaves:     []string{""},
+			Risk:       Low,
+			Selected:   false,
+			MinAgeDays: 7,
+		},
+		{
+			// The live agent worker holds its log open; unlinking it frees
+			// nothing until the worker exits, so truncate instead.
+			Name:     "Cursor Agent Worker Logs",
+			Roots:    []string{userHome + "/.cursor/projects/*/worker.log"},
+			Leaves:   []string{""},
+			Risk:     Low,
+			Selected: false,
+			Action:   ActionTruncate,
+		},
+		{
+			// Conversation history: deleting it loses resume/history for those
+			// sessions. Gemini's and Qwen's tmp are left out on purpose: they
+			// hold the user's named /chat save checkpoints. Claude prunes its own
+			// transcripts (cleanupPeriodDays), so it is not listed.
+			Name: "AI Agent Old Sessions",
+			Roots: []string{
+				userHome + "/.codex/sessions",
+				userHome + "/.codex/archived_sessions",
+				userHome + "/.pi/agent/sessions",
+				userHome + "/.copilot/session-state",
+				userHome + "/.factory/sessions",
+				userHome + "/.local/share/goose/sessions",
+				userHome + "/.qwen/projects/*/chats",
+				userHome + "/.coderabbit/reviews",
+				userHome + "/.cursor/projects/*/agent-transcripts",
+			},
+			Leaves:     []string{""},
+			Risk:       Medium,
+			Selected:   false,
+			MinAgeDays: 30,
+		},
+		{
+			Name: "Dart Pub Cache",
+			Roots: []string{
+				userHome + "/.pub-cache/hosted",
+				userHome + "/.pub-cache/git",
+				userHome + "/.pub-cache/_temp",
+			},
+			Leaves:   []string{""},
+			Risk:     Low,
+			Selected: false,
+		},
+		{
 			Name: "Playwright Cache",
 			Roots: []string{
 				userHome + "/.cache/ms-playwright",
@@ -245,6 +340,7 @@ func AppCacheCategories(userHome string) []Category {
 			Selected:        rule.Selected,
 			ShredEnabled:    false,
 			MinAgeDays:      rule.MinAgeDays,
+			Action:          rule.Action,
 		})
 	}
 	return categories
