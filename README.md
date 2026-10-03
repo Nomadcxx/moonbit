@@ -15,7 +15,8 @@
 - **Packaging**: AUR, `.deb` and `.rpm` per release, a Nix flake, and static binaries
 - **Package Managers**: Pacman, APT, DNF, Zypper, AUR helpers (yay, paru)
 - **Safe Cache Cleanup**: Package caches, temp files, thumbnails, font caches, logs, and conservative system caches
-- **App Cache Cleanup**: Deep-scan discovery for IDE, Electron, AI-tool, Bottles, and Lutris cache/log/temp paths
+- **App Cache Cleanup**: Deep-scan discovery for IDE, Electron, coding-harness, Bottles, Lutris, and Dart pub cache paths
+- **Category File Preview**: On Select Categories, Shift+X lists the files the highlighted category would clean
 - **Docker Cleanup**: Images, containers, volumes, build cache
 - **Media Servers**: Plex and Jellyfin transcoding cleanup
 - **Duplicate Finder**: Locate duplicate files with configurable minimum sizes
@@ -120,7 +121,9 @@ Set it in `~/.config/environment.d/moonbit.conf` to make it stick.
 
 The TUI offers two scan modes:
 - **Quick Scan** - Fast scan of conservative, commonly safe cleanup categories
-- **Deep Scan** - Comprehensive scan including logs, system caches, and deep-only app cache categories
+- **Deep Scan** - Comprehensive scan including logs, system caches, deep-only app caches, and old coding-harness CLI versions
+
+On Select Categories, **Shift+X** opens a popup of files the highlighted category would clean. Esc or Shift+X closes it.
 
 The Schedule screen can enable or disable moonbit's systemd timer and daemon modes, and it warns if both automation modes are active.
 
