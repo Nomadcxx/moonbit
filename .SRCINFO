@@ -1,6 +1,6 @@
 pkgbase = moonbit
 	pkgdesc = A system cleaner for Linux, with a TUI and a CLI
-	pkgver = 1.7.1
+	pkgver = 1.8.0
 	pkgrel = 1
 	url = https://github.com/Nomadcxx/moonbit
 	install = moonbit.install
@@ -10,7 +10,7 @@ pkgbase = moonbit
 	makedepends = go>=1.24
 	depends = systemd
 	optdepends = docker: Docker cleanup support
-	source = moonbit-1.7.1.tar.gz::https://github.com/Nomadcxx/moonbit/archive/v1.7.1.tar.gz
+	source = moonbit-1.8.0.tar.gz::https://github.com/Nomadcxx/moonbit/archive/v1.8.0.tar.gz
 	sha256sums = f27cd1b316f83ed421f8d2bf287077421f4afb5e769a1ba4b720a8ecccd479a9
 
 pkgname = moonbit

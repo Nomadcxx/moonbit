@@ -16,7 +16,7 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        version = "1.7.1";
+        version = "1.8.0";
       in
       {
         packages = rec {
