@@ -25,10 +25,14 @@ var ErrBusy = errors.New("another operation in progress")
 // proceeds unlocked: it cannot touch the root session cache either.
 func TryAcquire() (func(), error) {
 	_ = os.MkdirAll(filepath.Dir(Path), 0o755)
-	f, err := os.OpenFile(Path, os.O_CREATE|os.O_RDWR|unix.O_CLOEXEC, 0o644)
+	// 0600: flock(2) does not need a writable fd, so a world-readable lock
+	// can be pinned LOCK_EX by any local user. The directory stays 0755 so
+	// the panel socket under /run/moonbit remains connectable.
+	f, err := os.OpenFile(Path, os.O_CREATE|os.O_RDWR|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return func() {}, nil
 	}
+	_ = f.Chmod(0o600)
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {

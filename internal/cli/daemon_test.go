@@ -24,27 +24,84 @@ func TestParseDurationRejectsNonPositive(t *testing.T) {
 
 func TestPerformCleanUsesLiveClean(t *testing.T) {
 	originalClean := daemonCleanSession
+	originalScan := daemonScanSession
 	originalState := daemonState
 	originalOut := daemonOut
+	originalMode := scanMode
 	defer func() {
 		daemonCleanSession = originalClean
+		daemonScanSession = originalScan
 		daemonState = originalState
 		daemonOut = originalOut
+		scanMode = originalMode
 	}()
 
 	daemonState = &DaemonState{StartTime: time.Now(), logger: (*audit.Logger)(nil)}
 	daemonOut = io.Discard
 
 	var gotDryRun bool
+	var gotMode string
 	daemonCleanSession = func(dryRun bool) error {
 		gotDryRun = dryRun
+		gotMode = scanMode
 		return nil
 	}
 
 	performClean()
 
 	assert.False(t, gotDryRun, "scheduled daemon clean should actually clean")
+	assert.Equal(t, "quick", gotMode, "daemon clean must apply the timer's Selected/Low filter")
 	assert.Equal(t, 1, daemonState.stats().CleanCount)
+}
+
+func TestSkippedCleanRunsAfterScanCompletes(t *testing.T) {
+	originalClean := daemonCleanSession
+	originalScan := daemonScanSession
+	originalState := daemonState
+	originalOut := daemonOut
+	originalMode := scanMode
+	defer func() {
+		daemonCleanSession = originalClean
+		daemonScanSession = originalScan
+		daemonState = originalState
+		daemonOut = originalOut
+		scanMode = originalMode
+		cleanPending.Store(false)
+	}()
+
+	daemonState = &DaemonState{StartTime: time.Now(), logger: (*audit.Logger)(nil)}
+	daemonOut = io.Discard
+	daemonScanSession = func() error { return nil }
+
+	cleaned := make(chan struct{}, 1)
+	daemonCleanSession = func(dryRun bool) error {
+		cleaned <- struct{}{}
+		return nil
+	}
+
+	select {
+	case opSem <- struct{}{}:
+	default:
+		t.Fatal("opSem already occupied")
+	}
+	performClean()
+	<-opSem
+
+	performScan()
+
+	select {
+	case <-cleaned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("skipped clean was not retried after the scan finished")
+	}
+	// The retry goroutine still holds opSem until performClean returns.
+	// Wait for that before restoring package globals (scanMode, daemonState).
+	select {
+	case opSem <- struct{}{}:
+		<-opSem
+	case <-time.After(2 * time.Second):
+		t.Fatal("retried clean did not release the op slot")
+	}
 }
 
 func TestCheckTimerConflictsRejectsActiveMoonbitTimer(t *testing.T) {

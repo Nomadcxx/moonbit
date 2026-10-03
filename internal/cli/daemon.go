@@ -10,12 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/Nomadcxx/moonbit/internal/audit"
 	"github.com/Nomadcxx/moonbit/internal/oplock"
 	"github.com/Nomadcxx/moonbit/internal/utils"
+	"github.com/Nomadcxx/moonbit/internal/validation"
 	"github.com/spf13/cobra"
 )
 
@@ -55,6 +57,7 @@ var (
 	daemonSocket        string
 	daemonSocketMode    string
 	daemonInitialScan   bool
+	daemonScanMode      string
 )
 
 // DaemonState tracks the running daemon state
@@ -169,6 +172,12 @@ func withOpLock(fn func() error) error {
 var daemonOut io.Writer = os.Stdout
 var daemonErr io.Writer = os.Stderr
 var daemonCleanSession = CleanSession
+var daemonScanSession = ScanAndSave
+
+// cleanPending is set when a scheduled clean lost the op slot (usually to a
+// coincident scan). performScan retries it after releasing the slot so a
+// skipped clean is not deferred a full cleanInterval.
+var cleanPending atomic.Bool
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -176,6 +185,8 @@ var daemonCmd = &cobra.Command{
 	Long: `Run moonbit as a continuous background daemon that periodically scans and cleans the system.
 
 The daemon stays running and performs automatic maintenance at configured intervals.
+
+Scheduled scans and cleans default to --mode quick (Selected + Low risk), matching the systemd timer units. Pass --mode deep to include opt-in categories.
 
 Examples:
   moonbit daemon                    # Start daemon with default intervals (scan: 1h, clean: 24h)
@@ -218,6 +229,10 @@ Examples:
 
 		if err := checkTimerConflicts(); err != nil {
 			return err
+		}
+
+		if err := validation.ValidateMode(scheduledMode()); err != nil {
+			return fmt.Errorf("invalid --mode: %w", err)
 		}
 
 		// Setup logging
@@ -265,6 +280,7 @@ Examples:
 		fmt.Fprintln(daemonOut, S.Bold("MoonBit Daemon Started"))
 		fmt.Fprintf(daemonOut, "  Scan interval:  %s\n", S.Success(scanInterval.String()))
 		fmt.Fprintf(daemonOut, "  Clean interval: %s\n", S.Success(cleanInterval.String()))
+		fmt.Fprintf(daemonOut, "  Mode:           %s\n", S.Success(scheduledMode()))
 		fmt.Fprintf(daemonOut, "  Log file:       %s\n", S.Muted(daemonLogFile))
 		fmt.Fprintf(daemonOut, "  PID file:       %s\n", S.Muted(daemonPidFile))
 		fmt.Fprintln(daemonOut)
@@ -410,13 +426,32 @@ func shouldInitialScan(socket string, explicitlySet, value bool) bool {
 	return value
 }
 
+func scheduledMode() string {
+	if daemonScanMode == "" {
+		return "quick"
+	}
+	return daemonScanMode
+}
+
+func withScheduledMode(fn func() error) error {
+	prev := scanMode
+	scanMode = scheduledMode()
+	defer func() { scanMode = prev }()
+	return fn()
+}
+
 func performScan() {
 	release, err := acquireOp()
 	if err != nil {
 		fmt.Fprintf(daemonOut, "%s Skipping scan — another operation in progress\n", S.Warning("⚠"))
 		return
 	}
-	defer release()
+	defer func() {
+		release()
+		if cleanPending.Load() {
+			go performClean()
+		}
+	}()
 
 	now := time.Now()
 	daemonState.setLastScanTime(now)
@@ -428,8 +463,7 @@ func performScan() {
 
 	start := time.Now()
 
-	// Run scan
-	if err := ScanAndSave(); err != nil {
+	if err := withScheduledMode(daemonScanSession); err != nil {
 		fmt.Fprintf(daemonOut, "%s Scan failed: %v\n", S.Error("✗"), err)
 
 		if logger := daemonState.auditLogger(); logger != nil {
@@ -458,10 +492,12 @@ func performScan() {
 func performClean() {
 	release, err := acquireOp()
 	if err != nil {
+		cleanPending.Store(true)
 		fmt.Fprintf(daemonOut, "%s Skipping clean — another operation in progress\n", S.Warning("⚠"))
 		return
 	}
 	defer release()
+	cleanPending.Store(false)
 
 	now := time.Now()
 	daemonState.setLastCleanTime(now)
@@ -473,8 +509,7 @@ func performClean() {
 
 	start := time.Now()
 
-	// Run clean
-	if err := daemonCleanSession(false); err != nil {
+	if err := withScheduledMode(func() error { return daemonCleanSession(false) }); err != nil {
 		fmt.Fprintf(daemonOut, "%s Clean failed: %v\n", S.Error("✗"), err)
 
 		if logger := daemonState.auditLogger(); logger != nil {
@@ -563,6 +598,7 @@ func init() {
 
 	daemonCmd.Flags().StringVar(&daemonScanInterval, "scan", "1h", "Scan interval (e.g., 30m, 1h, 2h)")
 	daemonCmd.Flags().StringVar(&daemonCleanInterval, "clean", "24h", "Clean interval (e.g., 12h, 24h, 7d)")
+	daemonCmd.Flags().StringVar(&daemonScanMode, "mode", "quick", "Scan/clean mode: 'quick' (Selected+Low, matches the timer units) or 'deep'")
 	daemonCmd.Flags().StringVar(&daemonLogFile, "log", "/var/log/moonbit/daemon.log", "Log file path")
 	daemonCmd.Flags().StringVar(&daemonPidFile, "pid", DefaultPidFile, "PID file path")
 	daemonCmd.Flags().StringVar(&daemonSocket, "socket", "", "Unix socket path for panel control (e.g. /run/moonbit/panel.sock)")
