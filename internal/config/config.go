@@ -649,6 +649,11 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
+	if uid, gid, ok := paths.OwnerID(); ok {
+		_ = os.Chown(filepath.Dir(path), uid, gid)
+		_ = os.Chown(path, uid, gid)
+	}
+
 	return nil
 }
 

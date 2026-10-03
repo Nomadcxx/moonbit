@@ -582,3 +582,47 @@ func TestWalkDirectoryWithRules_NonexistentPath(t *testing.T) {
 	err := s.walkDirectoryWithRules(ctx, "/nonexistent/path/that/does/not/exist", category, progressCh, compileCategoryRules(category), make(map[string]struct{}))
 	assert.NoError(t, err)
 }
+
+func TestDefaultIgnorePatternsMatchPathComponents(t *testing.T) {
+	root := t.TempDir()
+	keep := []string{
+		filepath.Join(root, ".cargo", "git", "db", "crate.crate"),
+		filepath.Join(root, ".cache", "digitizer", "innocent.bin"),
+		filepath.Join(root, "svn-mirror", "innocent.bin"),
+	}
+	drop := []string{
+		filepath.Join(root, ".git", "objects", "pack.bin"),
+		filepath.Join(root, "node_modules", "pkg", "index.js"),
+	}
+	for _, path := range append(append([]string{}, keep...), drop...) {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+		require.NoError(t, os.WriteFile(path, []byte("x"), 0644))
+	}
+
+	cfg := &config.Config{}
+	cfg.Scan.IgnorePatterns = config.DefaultConfig().Scan.IgnorePatterns
+	s := NewScanner(cfg)
+	category := &config.Category{Name: "Test", Paths: []string{root}}
+	progressCh := make(chan ScanMsg, 8)
+	go s.ScanCategory(context.Background(), category, progressCh)
+
+	var complete *ScanComplete
+	for msg := range progressCh {
+		require.NoError(t, msg.Error)
+		if msg.Complete != nil {
+			complete = msg.Complete
+		}
+	}
+	require.NotNil(t, complete)
+
+	found := map[string]bool{}
+	for _, file := range complete.Stats.Files {
+		found[file.Path] = true
+	}
+	for _, path := range keep {
+		assert.True(t, found[path], "should keep %s", path)
+	}
+	for _, path := range drop {
+		assert.False(t, found[path], "should skip %s", path)
+	}
+}

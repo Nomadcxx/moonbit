@@ -129,13 +129,15 @@ func compileIgnoreFilter(patterns []string) *regexp.Regexp {
 	cleaned := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
 		if pattern != "" {
-			cleaned = append(cleaned, pattern)
+			cleaned = append(cleaned, regexp.QuoteMeta(pattern))
 		}
 	}
 	if len(cleaned) == 0 {
 		return nil
 	}
-	return regexp.MustCompile("(" + strings.Join(cleaned, "|") + ")")
+	// Literal path components, not unanchored regex substrings. Default
+	// ".git" otherwise matches /git in ~/.cargo/git/db and any char+git.
+	return regexp.MustCompile(`(?:^|/)(?:` + strings.Join(cleaned, "|") + `)(?:/|$)`)
 }
 
 func (s *Scanner) isIgnored(path string) bool {

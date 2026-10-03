@@ -1262,60 +1262,95 @@ var journalVacuumCmd = &cobra.Command{
 var dockerCmd = &cobra.Command{
 	Use:   "docker",
 	Short: "Clean Docker resources",
-	Long:  "Clean unused Docker images, containers, volumes, and build cache using Docker CLI",
+	Long:  "Clean unused Docker images, containers, volumes, and build cache using Docker CLI.\n\nBy default this previews the prune command. Pass --force to apply it.",
+}
+
+func dockerDryRun(cmd *cobra.Command) bool {
+	if force, _ := cmd.Flags().GetBool("force"); force {
+		return false
+	}
+	dry, err := cmd.Flags().GetBool("dry-run")
+	return err != nil || dry
+}
+
+func runDockerCleanup(cmd *cobra.Command, operation string) {
+	spec, ok := docker.PruneSpecFor(operation)
+	if !ok {
+		fmt.Println("❌ Invalid Docker cleanup operation")
+		return
+	}
+	auditLog, _ := audit.NewLogger()
+	if auditLog != nil {
+		defer auditLog.Close()
+	}
+
+	if operation == docker.OperationAll {
+		fmt.Println("🐳 Cleaning all unused Docker resources...")
+	} else {
+		fmt.Println("🐳 Cleaning unused Docker images...")
+	}
+
+	checkCmd := exec.Command("docker", "version")
+	if err := checkCmd.Run(); err != nil {
+		fmt.Println("❌ Docker is not installed or not running")
+		if auditLog != nil {
+			auditLog.LogDockerOperation(spec.AuditOperation, []string{}, "failed", err)
+		}
+		return
+	}
+
+	fmt.Println("\n📊 Current Docker disk usage:")
+	dfCmd := exec.Command("docker", "system", "df")
+	dfCmd.Stdout = os.Stdout
+	dfCmd.Stderr = os.Stderr
+	_ = dfCmd.Run()
+
+	if dockerDryRun(cmd) {
+		fmt.Printf("\nDRY RUN - would run: docker %s\n", strings.Join(spec.Args, " "))
+		fmt.Println("\n💡 Use --force to actually prune:")
+		fmt.Printf("   moonbit docker %s --force\n", operation)
+		return
+	}
+
+	fmt.Printf("\n🗑️  Running: docker %s\n", strings.Join(spec.Args, " "))
+
+	pruneCmd := exec.Command("docker", spec.Args...)
+	pruneCmd.Stdout = os.Stdout
+	pruneCmd.Stderr = os.Stderr
+	err := pruneCmd.Run()
+	if auditLog != nil {
+		result := "success"
+		if err != nil {
+			result = "failed"
+		}
+		auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
+	}
+	if err != nil {
+		if operation == docker.OperationAll {
+			fmt.Printf("❌ Failed to prune Docker resources: %v\n", err)
+		} else {
+			fmt.Printf("❌ Failed to prune images: %v\n", err)
+		}
+		return
+	}
+
+	if operation == docker.OperationAll {
+		fmt.Println("\n📊 Updated Docker disk usage:")
+		dfAfter := exec.Command("docker", "system", "df")
+		dfAfter.Stdout = os.Stdout
+		dfAfter.Stderr = os.Stderr
+		_ = dfAfter.Run()
+		fmt.Println("\nDocker cleanup complete!")
+		return
+	}
+	fmt.Println("✅ Docker images cleaned successfully!")
 }
 
 var dockerImagesCmd = &cobra.Command{
 	Use:   docker.OperationImages,
 	Short: "Remove unused Docker images",
 	Run: func(cmd *cobra.Command, args []string) {
-		spec, ok := docker.PruneSpecFor(docker.OperationImages)
-		if !ok {
-			fmt.Println("❌ Invalid Docker cleanup operation")
-			return
-		}
-		auditLog, _ := audit.NewLogger()
-		if auditLog != nil {
-			defer auditLog.Close()
-		}
-
-		fmt.Println("🐳 Cleaning unused Docker images...")
-
-		checkCmd := exec.Command("docker", "version")
-		if err := checkCmd.Run(); err != nil {
-			fmt.Println("❌ Docker is not installed or not running")
-			if auditLog != nil {
-				auditLog.LogDockerOperation(spec.AuditOperation, []string{}, "failed", err)
-			}
-			return
-		}
-
-		dfCmd := exec.Command("docker", "system", "df")
-		dfCmd.Stdout = os.Stdout
-		dfCmd.Stderr = os.Stderr
-		dfCmd.Run()
-
-		fmt.Printf("\n🗑️  Running: docker %s\n", strings.Join(spec.Args, " "))
-
-		pruneCmd := exec.Command("docker", spec.Args...)
-		pruneCmd.Stdout = os.Stdout
-		pruneCmd.Stderr = os.Stderr
-
-		err := pruneCmd.Run()
-		if auditLog != nil {
-			result := "success"
-			if err != nil {
-				result = "failed"
-			}
-			auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
-		}
-
-		if err != nil {
-			fmt.Printf("❌ Failed to prune images: %v\n", err)
-			return
-		}
-
-		fmt.Println("✅ Docker images cleaned successfully!")
+		runDockerCleanup(cmd, docker.OperationImages)
 	},
 }
 
@@ -1323,60 +1358,7 @@ var dockerAllCmd = &cobra.Command{
 	Use:   docker.OperationAll,
 	Short: "Remove all unused Docker resources",
 	Run: func(cmd *cobra.Command, args []string) {
-		spec, ok := docker.PruneSpecFor(docker.OperationAll)
-		if !ok {
-			fmt.Println("❌ Invalid Docker cleanup operation")
-			return
-		}
-		auditLog, _ := audit.NewLogger()
-		if auditLog != nil {
-			defer auditLog.Close()
-		}
-
-		fmt.Println("🐳 Cleaning all unused Docker resources...")
-
-		checkCmd := exec.Command("docker", "version")
-		if err := checkCmd.Run(); err != nil {
-			fmt.Println("❌ Docker is not installed or not running")
-			if auditLog != nil {
-				auditLog.LogDockerOperation(spec.AuditOperation, []string{}, "failed", err)
-			}
-			return
-		}
-
-		fmt.Println("\n📊 Current Docker disk usage:")
-		dfCmd := exec.Command("docker", "system", "df")
-		dfCmd.Stdout = os.Stdout
-		dfCmd.Stderr = os.Stderr
-		dfCmd.Run()
-
-		fmt.Printf("\n🗑️  Running: docker %s\n", strings.Join(spec.Args, " "))
-
-		pruneCmd := exec.Command("docker", spec.Args...)
-		pruneCmd.Stdout = os.Stdout
-		pruneCmd.Stderr = os.Stderr
-
-		err := pruneCmd.Run()
-		if auditLog != nil {
-			result := "success"
-			if err != nil {
-				result = "failed"
-			}
-			auditLog.LogDockerOperation(spec.AuditOperation, spec.Args, result, err)
-		}
-
-		if err != nil {
-			fmt.Printf("❌ Failed to prune Docker resources: %v\n", err)
-			return
-		}
-
-		fmt.Println("\n📊 Updated Docker disk usage:")
-		dfCmd2 := exec.Command("docker", "system", "df")
-		dfCmd2.Stdout = os.Stdout
-		dfCmd2.Stderr = os.Stderr
-		dfCmd2.Run()
-
-		fmt.Println("\nDocker cleanup complete!")
+		runDockerCleanup(cmd, docker.OperationAll)
 	},
 }
 
@@ -1951,6 +1933,10 @@ func init() {
 
 	dockerCmd.AddCommand(dockerImagesCmd)
 	dockerCmd.AddCommand(dockerAllCmd)
+	for _, c := range []*cobra.Command{dockerImagesCmd, dockerAllCmd} {
+		c.Flags().Bool("dry-run", true, "Preview only (default); pass --force to apply")
+		c.Flags().Bool("force", false, "Actually prune Docker resources")
+	}
 
 	duplicatesCmd.AddCommand(duplicatesFindCmd)
 	duplicatesCmd.AddCommand(duplicatesCleanCmd)

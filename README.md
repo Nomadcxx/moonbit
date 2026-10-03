@@ -149,8 +149,10 @@ moonbit pkg orphans             # Remove orphaned packages
 moonbit pkg kernels             # Remove old kernels (Debian/Ubuntu)
 
 # Docker cleanup
-moonbit docker images           # Remove unused images
-moonbit docker all              # Remove all unused resources
+moonbit docker images           # Preview unused-image prune
+moonbit docker images --force   # Remove unused images
+moonbit docker all              # Preview full prune (includes unused volumes)
+moonbit docker all --force      # Remove all unused Docker resources
 
 # Systemd journal
 moonbit journal vacuum --size=500M          # Preview
