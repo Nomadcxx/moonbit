@@ -94,6 +94,14 @@ func TestSkippedCleanRunsAfterScanCompletes(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("skipped clean was not retried after the scan finished")
 	}
+	// The retry goroutine still holds opSem until performClean returns.
+	// Wait for that before restoring package globals (scanMode, daemonState).
+	select {
+	case opSem <- struct{}{}:
+		<-opSem
+	case <-time.After(2 * time.Second):
+		t.Fatal("retried clean did not release the op slot")
+	}
 }
 
 func TestCheckTimerConflictsRejectsActiveMoonbitTimer(t *testing.T) {
