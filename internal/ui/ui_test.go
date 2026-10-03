@@ -771,3 +771,99 @@ func TestUpdateWithTickInactive(t *testing.T) {
 	assert.NotNil(t, newModel)
 	assert.Nil(t, cmd) // Should not return another tick when inactive
 }
+
+func selectModelWithFiles() Model {
+	m := NewModel()
+	m.mode = ModeSelect
+	m.categories = []CategoryInfo{
+		{Name: "Font Cache", Enabled: true, Files: 2, Size: "3.0 KB"},
+		{Name: "Pacman Cache", Enabled: false, Files: 1, Size: "1.0 KB"},
+	}
+	m.scanResults = &config.SessionCache{
+		ScanResults: &config.Category{Files: []config.FileInfo{
+			{Path: "/home/u/.cache/fontconfig/a", Size: 2048, CategoryName: "Font Cache"},
+			{Path: "/home/u/.cache/fontconfig/b", Size: 1024, CategoryName: "Font Cache"},
+			{Path: "/var/cache/pacman/pkg/x.pkg.tar.zst", Size: 1024, CategoryName: "Pacman Cache"},
+		}},
+		TotalFiles: 3,
+		TotalSize:  4096,
+	}
+	return m
+}
+
+func TestShiftXTogglesFilePreviewOnSelectScreen(t *testing.T) {
+	m := selectModelWithFiles()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	assert.True(t, updated.(Model).filePreviewOpen)
+
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	assert.False(t, updated.(Model).filePreviewOpen)
+}
+
+func TestShiftXIgnoredOutsideSelectScreen(t *testing.T) {
+	m := NewModel()
+	m.mode = ModeWelcome
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	assert.False(t, updated.(Model).filePreviewOpen)
+}
+
+func TestPreviewFilesFollowsHighlightedCategory(t *testing.T) {
+	m := selectModelWithFiles()
+	files, extra := m.previewFiles()
+	require.Len(t, files, 2)
+	assert.Zero(t, extra)
+	assert.Equal(t, "/home/u/.cache/fontconfig/a", files[0].Path)
+
+	m.menuIndex = 1
+	files, extra = m.previewFiles()
+	require.Len(t, files, 1)
+	assert.Zero(t, extra)
+	assert.Equal(t, "/var/cache/pacman/pkg/x.pkg.tar.zst", files[0].Path)
+
+	m.menuIndex = len(m.categories) // Select All
+	files, extra = m.previewFiles()
+	assert.Empty(t, files)
+	assert.Zero(t, extra)
+}
+
+func TestPreviewFilesCapsLongLists(t *testing.T) {
+	m := NewModel()
+	m.mode = ModeSelect
+	m.categories = []CategoryInfo{{Name: "Pacman Cache", Files: previewFileCap + 5}}
+	files := make([]config.FileInfo, previewFileCap+5)
+	for i := range files {
+		files[i] = config.FileInfo{Path: filepath.Join("/var/cache/pacman/pkg", strings.Repeat("x", 8)), Size: 1, CategoryName: "Pacman Cache"}
+	}
+	m.scanResults = &config.SessionCache{ScanResults: &config.Category{Files: files}}
+
+	got, extra := m.previewFiles()
+	assert.Len(t, got, previewFileCap)
+	assert.Equal(t, 5, extra)
+}
+
+func TestRenderSelectPreviewShowsHighlightedFiles(t *testing.T) {
+	m := selectModelWithFiles()
+	m.filePreviewOpen = true
+	out := m.renderSelect()
+	assert.Contains(t, out, "fontconfig/a")
+	assert.NotContains(t, out, "x.pkg.tar.zst")
+
+	m.filePreviewOpen = false
+	out = m.renderSelect()
+	assert.NotContains(t, out, "fontconfig/a")
+}
+
+func TestRenderSelectPreviewHintWhenNotOnCategory(t *testing.T) {
+	m := selectModelWithFiles()
+	m.filePreviewOpen = true
+	m.menuIndex = len(m.categories)
+	assert.Contains(t, m.renderSelect(), "Highlight a category")
+}
+
+func TestSelectFooterMentionsShiftX(t *testing.T) {
+	m := NewModel()
+	m.mode = ModeSelect
+	assert.Contains(t, m.getFooterText(), "Shift+X")
+	m.filePreviewOpen = true
+	assert.Contains(t, m.getFooterText(), "PgUp")
+}
