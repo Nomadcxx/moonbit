@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -173,7 +174,113 @@ func DynamicCategories() []Category {
 		})
 	}
 
+	if old := oldCLIVersions(home); len(old) > 0 {
+		categories = append(categories, Category{
+			Name:  "Old AI CLI Versions",
+			Paths: old,
+			Risk:  Medium,
+		})
+	}
+
 	return categories
+}
+
+// cliVersionStores are self-updating CLIs that keep every release they ever
+// downloaded beside the active one. pointer is the launcher symlink naming the
+// active release, relative to home; empty means the CLI runs its newest one.
+var cliVersionStores = []struct{ dir, pointer string }{
+	{".local/share/claude/versions", ".local/bin/claude"},
+	{".local/share/cursor-agent/versions", ".local/bin/cursor-agent"},
+	{".codex/packages/app-server-daemon/releases", ".codex/packages/app-server-daemon/current"},
+	{".cache/copilot/pkg/linux-x64", ""},
+	{".cache/copilot/pkg/linux-arm64", ""},
+}
+
+// oldCLIVersions lists releases that are neither active nor the newest. A
+// store whose pointer does not resolve into it is skipped entirely: guessing
+// the active release wrong would break the CLI.
+func oldCLIVersions(home string) []string {
+	realHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return nil
+	}
+	var old []string
+	var inUse []string
+	for _, store := range cliVersionStores {
+		// Resolved stores run as root at clean time; one symlinked out of
+		// home would offer whatever it points at for deletion.
+		dir, err := filepath.EvalSymlinks(filepath.Join(home, store.dir))
+		if err != nil || !paths.IsWithin(realHome, dir) {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		keep := map[string]bool{}
+		if store.pointer != "" {
+			target, err := filepath.EvalSymlinks(filepath.Join(home, store.pointer))
+			rel, relErr := filepath.Rel(dir, target)
+			if err != nil || relErr != nil || rel == "." || strings.HasPrefix(rel, "..") {
+				continue
+			}
+			keep[strings.Split(rel, string(filepath.Separator))[0]] = true
+		}
+		// Without a pointer, releases are directories and the newest is
+		// active; stray files must not take its place.
+		isRelease := func(e os.DirEntry) bool {
+			return e.Type()&os.ModeSymlink == 0 && (store.pointer != "" || e.IsDir())
+		}
+		var newest string
+		var newestTime time.Time
+		for _, e := range entries {
+			if !isRelease(e) {
+				continue
+			}
+			if info, err := e.Info(); err == nil && info.ModTime().After(newestTime) {
+				newest, newestTime = e.Name(), info.ModTime()
+			}
+		}
+		keep[newest] = true
+		for _, e := range entries {
+			if keep[e.Name()] || !isRelease(e) {
+				continue
+			}
+			if inUse == nil {
+				inUse = processPaths()
+			}
+			p := filepath.Join(dir, e.Name())
+			if !slices.ContainsFunc(inUse, func(u string) bool { return paths.IsWithin(p, u) }) {
+				old = append(old, p)
+			}
+		}
+	}
+	return old
+}
+
+// processPaths returns the executable, working directory and absolute
+// arguments of every live process. A session started before a self-update
+// keeps running the old release and lazily loads files from it; JS releases
+// run under node, so only the arguments point into them. /proc is readable
+// for the user's own processes, or all of them as root.
+func processPaths() []string {
+	procs, _ := filepath.Glob("/proc/[0-9]*")
+	out := []string{}
+	for _, proc := range procs {
+		for _, link := range []string{"exe", "cwd"} {
+			if p, err := os.Readlink(filepath.Join(proc, link)); err == nil {
+				out = append(out, strings.TrimSuffix(p, " (deleted)"))
+			}
+		}
+		if cmdline, err := os.ReadFile(filepath.Join(proc, "cmdline")); err == nil {
+			for _, arg := range strings.Split(string(cmdline), "\x00") {
+				if filepath.IsAbs(arg) {
+					out = append(out, arg)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // AuthoritativeCategories is the full set of categories a cached scan result may
@@ -212,6 +319,11 @@ func coveredByConfig(detected Category, configured []Category) bool {
 		covered := false
 		for _, c := range configured {
 			for _, root := range c.Paths {
+				// A filtered root above the detected path takes only some of
+				// its files; on the same path the user's filter wins.
+				if len(c.Filters) > 0 && !paths.IsWithin(p, root) {
+					continue
+				}
 				if paths.IsWithin(root, p) {
 					covered = true
 				}

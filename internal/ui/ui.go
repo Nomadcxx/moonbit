@@ -25,6 +25,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // loadASCIIArt loads the ASCII art from ascii.txt file
@@ -116,6 +117,10 @@ type Model struct {
 	// Categories for selection
 	categories    []CategoryInfo
 	selectedCount int
+
+	// Shift+X popup listing the highlighted category's files
+	filePreviewOpen   bool
+	filePreviewOffset int
 
 	// Viewports for scrolling
 	categoryViewport viewport.Model
@@ -270,6 +275,17 @@ func (m Model) handleCompleteKey() (tea.Model, tea.Cmd) {
 
 // handleKey processes keyboard input
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == ModeSelect {
+		if m.filePreviewOpen {
+			return m.handleFilePreviewKey(msg)
+		}
+		if isShiftX(msg) && m.menuIndex < len(m.categories) {
+			m.filePreviewOpen = true
+			m.filePreviewOffset = 0
+			return m, nil
+		}
+	}
+
 	// Allow viewport scrolling in certain modes
 	if m.mode == ModeSelect || m.mode == ModeResults {
 		switch msg.String() {
@@ -1099,7 +1115,11 @@ func (m Model) View() string {
 		Height(m.height).
 		Align(lipgloss.Center, lipgloss.Top)
 
-	return bgStyle.Render(content.String())
+	screen := bgStyle.Render(content.String())
+	if m.mode == ModeSelect && m.filePreviewOpen {
+		return overlayCenter(screen, m.renderFilePreview(), m.width)
+	}
+	return screen
 }
 
 // renderWelcome renders the welcome screen (sysc-greet style)
@@ -1444,6 +1464,124 @@ func (m Model) renderSelect() string {
 	return header.String() + scanSummary + m.categoryViewport.View() + "\n\n" + footer
 }
 
+func isShiftX(msg tea.KeyMsg) bool {
+	s := msg.String()
+	return s == "X" || s == "shift+x"
+}
+
+// handleFilePreviewKey keeps the popup modal: keys scroll it or close it and
+// never reach the category list underneath.
+func (m Model) handleFilePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	page := m.previewBodyHeight()
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q", "X", "shift+x":
+		m.filePreviewOpen = false
+		m.filePreviewOffset = 0
+		return m, nil
+	case "up":
+		m.filePreviewOffset--
+	case "down":
+		m.filePreviewOffset++
+	case "pgup":
+		m.filePreviewOffset -= page
+	case "pgdown":
+		m.filePreviewOffset += page
+	case "home":
+		m.filePreviewOffset = 0
+	case "end":
+		m.filePreviewOffset = math.MaxInt
+	}
+	files := m.previewFiles()
+	m.filePreviewOffset = max(0, min(m.filePreviewOffset, len(files)-page))
+	return m, nil
+}
+
+// previewFiles returns the scanned files of the highlighted category.
+func (m Model) previewFiles() []config.FileInfo {
+	if m.menuIndex < 0 || m.menuIndex >= len(m.categories) || m.scanResults == nil || m.scanResults.ScanResults == nil {
+		return nil
+	}
+	name := m.categories[m.menuIndex].Name
+	var files []config.FileInfo
+	for _, f := range m.scanResults.ScanResults.Files {
+		if f.CategoryName == name {
+			files = append(files, f)
+		}
+	}
+	return files
+}
+
+// previewBodyHeight is how many file rows fit; the popup adds 7 rows of
+// border, header and scroll hint and must leave the screen edges visible.
+func (m Model) previewBodyHeight() int {
+	return max(3, min(15, m.height-11))
+}
+
+func (m Model) renderFilePreview() string {
+	width := min(m.width-8, 90)
+	inner := width - 4 // border + padding
+	sizeW := 10
+	pathW := max(8, inner-sizeW-2)
+
+	cat := m.categories[m.menuIndex]
+	files := m.previewFiles()
+	page := m.previewBodyHeight()
+	start := min(m.filePreviewOffset, max(0, len(files)-page))
+	end := min(start+page, len(files))
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Foreground(Secondary).Bold(true).Render(strings.ToUpper(cat.Name)))
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render(fmt.Sprintf("%d files · %s", cat.Files, cat.Size)))
+	b.WriteString("\n\n")
+	if len(files) == 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Render("No files in this category"))
+	} else {
+		rows := make([]string, 0, end-start)
+		for _, f := range files[start:end] {
+			path := f.Path
+			if ansi.StringWidth(path) > pathW {
+				path = ansi.TruncateLeft(path, ansi.StringWidth(path)-pathW+1, "…")
+			}
+			pad := strings.Repeat(" ", max(0, pathW-ansi.StringWidth(path)))
+			rows = append(rows, fmt.Sprintf("%s%s  %*s", path, pad, sizeW, utils.HumanizeBytes(f.Size)))
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(FgPrimary).Render(strings.Join(rows, "\n")))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(FgMuted).Italic(true).Render(
+			fmt.Sprintf("%d–%d of %d", start+1, end, len(files))))
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(Secondary).
+		Padding(0, 1).
+		Width(width - 2).
+		Render(b.String())
+}
+
+// overlayCenter draws fg centred over bg; bg stays visible around fg.
+func overlayCenter(bg, fg string, width int) string {
+	bgLines := strings.Split(bg, "\n")
+	fgLines := strings.Split(fg, "\n")
+	fgW := lipgloss.Width(fg)
+	x := max(0, (width-fgW)/2)
+	y := max(0, (len(bgLines)-len(fgLines))/2)
+	for i, line := range fgLines {
+		row := y + i
+		if row >= len(bgLines) {
+			break
+		}
+		left := ansi.Truncate(bgLines[row], x, "")
+		left += strings.Repeat(" ", max(0, x-ansi.StringWidth(left)))
+		right := ansi.TruncateLeft(bgLines[row], x+fgW, "")
+		bgLines[row] = left + "\x1b[0m" + line + "\x1b[0m" + right
+	}
+	return strings.Join(bgLines, "\n")
+}
+
 // calculateSelectedSize calculates total size of selected categories
 func (m Model) calculateSelectedSize() string {
 	totalMB := 0
@@ -1717,7 +1855,10 @@ func (m Model) getFooterText() string {
 	case ModeResults:
 		return "Enter Continue  |  Esc Back  |  Q Quit"
 	case ModeSelect:
-		return "↑/↓ Navigate  |  Space Toggle  |  Enter Select  |  Esc Back"
+		if m.filePreviewOpen {
+			return "↑/↓ PgUp/PgDn Scroll files  |  Esc/Shift+X Close"
+		}
+		return "↑/↓ Navigate  |  Space Toggle  |  Shift+X Files  |  Enter Select  |  Esc Back"
 	case ModeComplete:
 		return "Press any key to continue"
 	case ModeSchedule:
