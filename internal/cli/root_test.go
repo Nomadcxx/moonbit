@@ -252,6 +252,29 @@ func TestFilterCacheByCategorySelectionUsesProvenance(t *testing.T) {
 	assert.Equal(t, 1, filtered.TotalFiles)
 }
 
+func TestFilterCacheByCategorySelectionRejectsUnknownNames(t *testing.T) {
+	cache := &config.SessionCache{
+		ScanResults: &config.Category{
+			Name:      "All",
+			Files:     []config.FileInfo{{Path: "/tmp/opencode.log", Size: 10, CategoryName: "opencode Caches"}},
+			Size:      10,
+			FileCount: 1,
+		},
+		TotalSize:  10,
+		TotalFiles: 1,
+		ScannedAt:  time.Now(),
+	}
+
+	// A panel runs as root and names the categories itself, so a name the scan
+	// never reported has to fail the whole request. Falling back to the names
+	// that do match would clean more than the caller asked for.
+	filtered, err := filterCacheByCategorySelection(cache, []string{"opencode caches", "--all"}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown category")
+	assert.Nil(t, filtered)
+}
+
 func TestFilterCacheByCategorySelectionRejectsOldCacheWithoutProvenance(t *testing.T) {
 	cache := &config.SessionCache{
 		ScanResults: &config.Category{
