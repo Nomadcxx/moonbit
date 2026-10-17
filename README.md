@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="moonbit" />
+  <img src="header.webp" alt="moonbit" />
   
   **A system cleaner for Linux, with a TUI and a CLI**
   
