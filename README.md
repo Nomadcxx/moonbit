@@ -8,7 +8,12 @@
 </div>
 
 ---
-![TUI Demo](demos/tui-full.gif)
+<details>
+<summary>TUI demo</summary>
+
+<img src="demos/tui-full.gif" alt="TUI Demo" loading="lazy">
+
+</details>
 
 ## Features
 - **Distro Support**: Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE
